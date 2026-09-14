@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# 環境變數與敏感資訊
+.env
+.env.*
+!.env.example
+
+# 資料庫 / 遷移暫存
+*.sqlite3
+instance/
+
+# 系統 / IDE
+.DS_Store
+.idea/
+.vscode/

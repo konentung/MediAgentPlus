@@ -1,0 +1,36 @@
+[project]
+name = "mediagentplus"
+version = "0.1.0"
+description = "MediAgent+ 醫療照護 LINE 機器人後端"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "Flask>=3.1,<4",
+  "line-bot-sdk==3.25.0",
+  "Flask-SQLAlchemy>=3.1,<4",
+  "Flask-Migrate>=4.1,<5",
+  "psycopg[binary]>=3.2,<4",
+  "PyJWT>=2.9,<3",
+  "requests>=2.32,<3",
+  "python-dotenv>=1.0,<2",
+  "gunicorn>=23,<27",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
