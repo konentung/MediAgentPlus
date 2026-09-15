@@ -9,6 +9,7 @@
 ```bash
 # macOS
 brew install python@3.11 postgresql@16
+brew install --cask pgadmin4
 brew services start postgresql@16
 
 # Ubuntu / Debian
@@ -18,8 +19,10 @@ sudo systemctl start postgresql
 
 ### 2. 建立資料庫與虛擬環境
 
+用 pgAdmin 4 連到 `localhost:5432`，建立登入角色 `mediagent`（密碼 `mediagent`）與資料庫 `mediagent`，
+步驟見 [docs/local-operations.md](docs/local-operations.md) 第 3 節。不想開 GUI 可改用 `./scripts/setup_db.sh`。
+
 ```bash
-./scripts/setup_db.sh               # 建立 mediagent 使用者與資料庫（可帶參數自訂）
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 cp .env.example .env                # 填入 LINE / DB / JWT 設定

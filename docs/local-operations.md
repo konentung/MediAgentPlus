@@ -11,6 +11,7 @@
 |---|---|---|
 | Python | 3.11.x | 執行後端 |
 | PostgreSQL | 16（14 以上皆可） | 資料庫 |
+| pgAdmin 4 | 最新版 | 圖形介面管理資料庫 |
 | Git | 任意 | 版本控制 |
 | ngrok（選用） | 任意 | 讓 LINE 平台能連到本機 webhook |
 
@@ -19,6 +20,7 @@
 ```bash
 # macOS
 brew install python@3.11 postgresql@16
+brew install --cask pgadmin4
 brew services start postgresql@16
 echo 'export PATH="/opt/homebrew/opt/postgresql@16/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 
@@ -26,7 +28,10 @@ echo 'export PATH="/opt/homebrew/opt/postgresql@16/bin:$PATH"' >> ~/.zshrc && so
 sudo apt update
 sudo apt install python3.11 python3.11-venv postgresql
 sudo systemctl enable --now postgresql
+# pgAdmin 4 依官方說明安裝：https://www.pgadmin.org/download/pgadmin-4-apt/
 ```
+
+也可以直接到 https://www.pgadmin.org/download/ 下載安裝檔。
 
 確認版本：
 
@@ -52,22 +57,69 @@ pip install -r requirements-dev.txt
 
 ---
 
-## 3. 建立資料庫
+## 3. 建立資料庫（pgAdmin）
+
+### 3.1 連線到本機 PostgreSQL
+
+1. 開啟 pgAdmin 4，第一次啟動會要求設定 master password（保護 pgAdmin 內儲存的連線密碼）。
+2. 左側 Object Explorer 對 **Servers** 按右鍵 → **Register → Server…**。
+3. **General** 分頁：Name 填 `Local`。
+4. **Connection** 分頁：
+
+   | 欄位 | 值 |
+   |---|---|
+   | Host name/address | `localhost` |
+   | Port | `5432` |
+   | Maintenance database | `postgres` |
+   | Username | macOS Homebrew 為你的系統帳號（如 `konen`）；Linux 為 `postgres` |
+   | Password | Homebrew 預設沒有密碼可留空；Linux 需先為 `postgres` 設密碼（見下方） |
+
+5. 勾 Save password → **Save**。左側出現 `Local` 表示連線成功。
+
+Linux 若 `postgres` 尚未設密碼，先在終端機執行一次：
 
 ```bash
-./scripts/setup_db.sh
+sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres';"
 ```
 
-預設建立使用者 `mediagent`、密碼 `mediagent`、資料庫 `mediagent`。要自訂：
+### 3.2 建立登入角色
 
-```bash
-./scripts/setup_db.sh my_db my_user my_password
+1. 展開 `Local` → 對 **Login/Group Roles** 按右鍵 → **Create → Login/Group Role…**。
+2. **General**：Name 填 `mediagent`。
+3. **Definition**：Password 填 `mediagent`（正式環境請換強密碼）。
+4. **Privileges**：開啟 **Can login?** 與 **Create databases?**。
+5. **Save**。
+
+### 3.3 建立資料庫
+
+1. 對 **Databases** 按右鍵 → **Create → Database…**。
+2. **General**：Database 填 `mediagent`，Owner 選 `mediagent`。
+3. **Definition**：Encoding 保持 `UTF8`。
+4. **Save**。
+
+### 3.4 驗證
+
+對剛建立的 `mediagent` 資料庫按右鍵 → **Query Tool**，執行：
+
+```sql
+SELECT current_user, current_database(), now();
 ```
 
-手動驗證連線：
+看到結果即代表可用。對應的連線字串為：
+
+```
+postgresql+psycopg://mediagent:mediagent@localhost:5432/mediagent
+```
+
+之後資料表建立後，都可以在 `mediagent → Schemas → public → Tables` 底下瀏覽、用 **View/Edit Data** 直接看資料。
+
+### 3.5 命令列替代方案（選用）
+
+不想開 pgAdmin 時，也可以用腳本一次建立同樣的角色與資料庫：
 
 ```bash
-psql postgresql://mediagent:mediagent@localhost:5432/mediagent -c "select now();"
+./scripts/setup_db.sh                    # 預設 mediagent / mediagent / mediagent
+./scripts/setup_db.sh my_db my_user pw   # 自訂
 ```
 
 ---
@@ -266,6 +318,13 @@ OAuth state 存在記憶體，伺服器重啟後就失效；重新從 `/auth/lin
 
 **`psql: connection refused`**
 PostgreSQL 沒啟動。macOS 執行 `brew services start postgresql@16`，Linux 執行 `sudo systemctl start postgresql`。
+
+**pgAdmin 連線顯示 `password authentication failed`**
+Homebrew 安裝的 PostgreSQL 預設以系統帳號免密碼登入，Username 要填你的 macOS 帳號而不是 `postgres`。
+若要用 `postgres` 帳號，先在終端機執行 `createuser -s postgres` 建立。
+
+**pgAdmin 連線顯示 `connection refused`**
+PostgreSQL 沒啟動，見上一則 `psql: connection refused`。
 
 **修改 `.env` 沒有生效**
 設定在啟動時載入一次，改完要重啟伺服器。
