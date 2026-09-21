@@ -11,11 +11,10 @@ from flask import Blueprint, request
 
 from app.auth.decorators import current_principal, require_permission, require_role
 from app.core.container import get_container
-from app.core.exceptions import AuthorizationError, ValidationError
+from app.core.exceptions import ValidationError
 from app.core.responses import ok
 from app.domain.enums import Permission, Role
 from app.domain.rbac import AccessPolicy
-from app.repositories.binding_repository import RosterEntry
 
 admin_bp = Blueprint("admin", __name__, url_prefix="/admin")
 
@@ -39,42 +38,6 @@ def set_role(user_id: str):
         current_principal(), user_id, role, body.get("hospital_id")
     )
     return ok(get_container().users.to_principal(user).to_dict())
-
-
-# ---- 院方識別名單 ----
-@admin_bp.get("/roster")
-@require_permission(Permission.ROSTER_READ)
-def list_roster():
-    actor = current_principal()
-    hospital_id = request.args.get("hospital_id") or actor.hospital_id
-    if not AccessPolicy.can_access_hospital(actor, hospital_id):
-        raise AuthorizationError("不得存取其他院所的識別名單")
-    entries = get_container().roster_repo.list_by_hospital(hospital_id or "")
-    return ok([asdict(e) for e in entries])
-
-
-@admin_bp.post("/roster")
-@require_permission(Permission.ROSTER_MANAGE)
-def upsert_roster():
-    actor = current_principal()
-    body = request.get_json(silent=True) or {}
-    hospital_id = body.get("hospital_id") or actor.hospital_id
-    if not AccessPolicy.can_access_hospital(actor, hospital_id):
-        raise AuthorizationError("不得維護其他院所的識別名單")
-    required = ("id", "name", "birth_date", "phone_last4")
-    missing = [f for f in required if not body.get(f)]
-    if missing:
-        raise ValidationError("缺少必填欄位", details={"missing": missing})
-    entry = RosterEntry(
-        id=body["id"],
-        hospital_id=hospital_id,
-        name=body["name"],
-        birth_date=body["birth_date"],
-        phone_last4=str(body["phone_last4"]),
-        department=body.get("department"),
-        discharge_code=body.get("discharge_code"),
-    )
-    return ok(asdict(get_container().roster_repo.save(entry)), status=201)
 
 
 # ---- 真人客服工單 ----

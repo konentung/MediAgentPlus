@@ -5,7 +5,7 @@ from __future__ import annotations
 from app.core.exceptions import AuthorizationError, NotFoundError
 from app.domain.principal import Principal
 from app.domain.rbac import AccessPolicy
-from app.repositories.binding_repository import HandoffRepository, HandoffTicket
+from app.repositories.handoff_repository import HandoffRepository, HandoffTicket
 
 
 class HandoffService:

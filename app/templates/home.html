@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block title %}MediAgent+{% endblock %}
+
+{% block head %}
+<style>
+  .btn {
+    display: inline-block;
+    padding: 12px 24px;
+    border-radius: 8px;
+    background: #06c755;
+    color: #fff;
+    font-weight: 600;
+    text-decoration: none;
+  }
+  .btn.secondary { background: #e9ecef; color: #1f2430; }
+  .meta { font-size: 0.9rem; color: #8a93a2; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+  <h1>MediAgent+ 照護小幫手</h1>
+
+  <div id="anonymous" hidden>
+    <p>請使用 LINE 帳號登入以開始使用服務。</p>
+    <p><a class="btn" href="{{ url_for('api_v1.auth.line_login', redirect_to='/') }}">使用 LINE 登入</a></p>
+  </div>
+
+  <div id="signed-in" hidden>
+    <p><span id="display-name"></span> 您好</p>
+    <p class="meta">角色：<span id="role"></span></p>
+    <p><a class="btn secondary" href="#" id="logout">登出</a></p>
+  </div>
+</div>
+<script>
+  (function () {
+    var anonymous = document.getElementById("anonymous");
+    var signedIn = document.getElementById("signed-in");
+    var token = null;
+    try { token = sessionStorage.getItem("access_token"); } catch (err) { /* 無法讀取就視為未登入 */ }
+
+    function showAnonymous() {
+      anonymous.hidden = false;
+      signedIn.hidden = true;
+    }
+
+    if (!token) { showAnonymous(); return; }
+
+    // access_token 只是快照，是否仍有效以 /auth/me 為準
+    fetch("{{ url_for('api_v1.auth.me') }}", { headers: { Authorization: "Bearer " + token } })
+      .then(function (resp) { return resp.ok ? resp.json() : Promise.reject(resp.status); })
+      .then(function (body) {
+        document.getElementById("display-name").textContent = body.data.display_name || "LINE 使用者";
+        document.getElementById("role").textContent = body.data.role;
+        signedIn.hidden = false;
+      })
+      .catch(function () {
+        try { sessionStorage.clear(); } catch (err) { /* ignore */ }
+        showAnonymous();
+      });
+
+    document.getElementById("logout").addEventListener("click", function (event) {
+      event.preventDefault();
+      try { sessionStorage.clear(); } catch (err) { /* ignore */ }
+      showAnonymous();
+    });
+  })();
+</script>
+{% endblock %}

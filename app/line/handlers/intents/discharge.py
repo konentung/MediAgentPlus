@@ -17,7 +17,7 @@ class DischargeHandler(IntentHandler):
             # TODO: 個人化衛教 + 每日任務推播
             ctx.reply(M.text("這是你的個人化出院衛教，我會每天推播照護任務提醒。（功能開發中）"))
             return
-        # 通用版：先選科別與處置，並提供「想要個人化」入口（B1）
+        # 通用版：先選科別與處置，並提供「想要個人化」入口
         bubble = M.button_bubble(
             title="出院衛教（通用版）",
             body="請選擇科別與處置，我會提供對應的居家照護重點。\n想要個人化衛教與每日任務？填寫基本資料即可解鎖。",

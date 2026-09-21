@@ -16,12 +16,10 @@ _PUBLIC: frozenset[P] = frozenset(
         P.CONSULT_MEDICATION_ONCE,
         P.CONSULT_EDUCATION_GENERIC,
         P.HANDOFF_REQUEST,
-        P.BINDING_CREATE,
     }
 )
 
 _BOUND_USER: frozenset[P] = _PUBLIC | {
-    P.BINDING_REVOKE,
     P.PROFILE_READ_OWN,
     P.PROFILE_WRITE_OWN,
     P.EDUCATION_PERSONAL,
@@ -33,17 +31,13 @@ _CS_AGENT: frozenset[P] = frozenset(
         P.HANDOFF_ACCEPT,
         P.HANDOFF_REPLY,
         P.CONVERSATION_READ,
-        P.BINDING_MANUAL_VERIFY,
-        P.BINDING_UNLOCK,
         P.PATIENT_READ,
-        P.ROSTER_READ,
     }
 )
 
 _MEDICAL_STAFF: frozenset[P] = frozenset(
     {
         P.PATIENT_READ,
-        P.ROSTER_READ,
         P.CONVERSATION_READ,
         P.EDUCATION_CONTENT_MANAGE,
     }
@@ -53,7 +47,6 @@ _HOSPITAL_ADMIN: frozenset[P] = (
     _CS_AGENT
     | _MEDICAL_STAFF
     | {
-        P.ROSTER_MANAGE,
         P.STAFF_MANAGE,
         P.HOSPITAL_SETTINGS,
         P.RICHMENU_MANAGE,

@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block title %}{{ status }} {{ title }} - MediAgent+{% endblock %}
+
+{% block head %}
+<style>
+  .card .status { font-size: 2.5rem; font-weight: 700; color: #c0392b; margin: 0 0 4px; }
+  .card a { color: #2f6fed; text-decoration: none; }
+  .card a:hover { text-decoration: underline; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+  <p class="status">{{ status }}</p>
+  <h1>{{ title }}</h1>
+  <p>{{ message }}</p>
+  <p><a href="#" onclick="history.back(); return false;">回上一頁</a></p>
+</div>
+{% endblock %}

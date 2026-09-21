@@ -9,8 +9,11 @@ import os
 from datetime import timedelta
 
 from dotenv import load_dotenv
+from sqlalchemy.pool import StaticPool
 
-load_dotenv()
+# override=True：以 .env 檔為準，避免 IDE（例如 VS Code 的 envFile 快取）注入過期的環境變數。
+# 正式環境通常沒有 .env 檔，由部署平台注入環境變數，不受影響。
+load_dotenv(override=True)
 
 
 def _env(key: str, default: str = "") -> str:
@@ -56,10 +59,6 @@ class BaseConfig:
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(seconds=int(_env("JWT_ACCESS_EXPIRES_SECONDS", "3600")))
     JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=int(_env("JWT_REFRESH_EXPIRES_DAYS", "30")))
 
-    # ---- 前端 / 業務參數 ----
-    FRONTEND_URL = _env("FRONTEND_URL", "")
-    BINDING_MAX_FAILURES = int(_env("BINDING_MAX_FAILURES", "3"))
-
 
 class DevelopmentConfig(BaseConfig):
     ENV = "development"
@@ -69,9 +68,13 @@ class DevelopmentConfig(BaseConfig):
 class TestingConfig(BaseConfig):
     ENV = "testing"
     TESTING = True
-    # 測試不依賴 PostgreSQL，模型層尚未定義時以 in-memory SQLite 佔位
+    # 測試不依賴 PostgreSQL，改用 in-memory SQLite；StaticPool 讓整個 engine
+    # 共用同一條連線，否則 in-memory SQLite 每條連線各自獨立，跨連線就看不到已建立的表。
     SQLALCHEMY_DATABASE_URI = "sqlite://"
-    SQLALCHEMY_ENGINE_OPTIONS: dict = {}
+    SQLALCHEMY_ENGINE_OPTIONS: dict = {
+        "poolclass": StaticPool,
+        "connect_args": {"check_same_thread": False},
+    }
     LINE_CHANNEL_SECRET = "test-channel-secret"
     LINE_CHANNEL_ACCESS_TOKEN = "test-access-token"
     LINE_LOGIN_CHANNEL_ID = "1234567890"
@@ -91,6 +94,7 @@ class ProductionConfig(BaseConfig):
         "LINE_CHANNEL_ACCESS_TOKEN",
         "LINE_LOGIN_CHANNEL_ID",
         "LINE_LOGIN_CHANNEL_SECRET",
+        "LIFF_ID",
     )
 
     @classmethod

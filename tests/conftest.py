@@ -10,6 +10,7 @@ import pytest
 from app import create_app
 from app.domain.enums import BindingStatus, Role
 from app.domain.principal import Principal
+from app.extensions import db
 from app.repositories.user_repository import UserRecord
 
 
@@ -31,12 +32,35 @@ class FakeLineClient:
 def app():
     app = create_app("testing")
     app.extensions["container"].line_client = FakeLineClient()
+    # 全測試期間保持一個 app context，讓測試可以在 client 請求之外直接呼叫
+    # container 內的 repository（沿用既有測試寫法）。這顆 context 的物件參考
+    # 交給 `client` fixture，讓它在每次送出請求前後暫時 pop/push，避免 Flask
+    # 沿用同一個 app context 導致 flask.g（含 g.principal）跨請求殘留。
+    ctx = app.app_context()
+    ctx.push()
+    app.extensions["_test_app_ctx"] = ctx
+    db.create_all()
     yield app
+    db.session.remove()
+    db.drop_all()
+    ctx.pop()
 
 
 @pytest.fixture()
 def client(app):
-    return app.test_client()
+    ctx = app.extensions["_test_app_ctx"]
+    test_client = app.test_client()
+    original_open = test_client.open
+
+    def _open_with_fresh_context(*args, **kwargs):
+        ctx.pop()
+        try:
+            return original_open(*args, **kwargs)
+        finally:
+            ctx.push()
+
+    test_client.open = _open_with_fresh_context
+    return test_client
 
 
 @pytest.fixture()

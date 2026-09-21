@@ -158,7 +158,10 @@ python3.11 -c "import secrets; print(secrets.token_urlsafe(48))"
 
 分別產生兩組填入 `SECRET_KEY` 與 `JWT_SECRET_KEY`。
 
-`FRONTEND_URL` 有填時，LINE Login callback 會 302 導向前端並把 token 放在 URL fragment；留空則直接回傳 JSON，方便用瀏覽器測試。
+這個專案沒有獨立前端，LINE Login callback（`/api/v1/auth/line/callback`）直接用 Jinja render
+`app/templates/auth/callback.html` 顯示登入成功頁，並把 token 交給頁面上的 script 存進
+`sessionStorage`；若 `/api/v1/auth/line/login?redirect_to=...` 有帶 `redirect_to`，該頁會在存好
+token 後自動導向該路徑。
 
 ---
 
@@ -229,7 +232,7 @@ flask --app wsgi richmenu setup --image ./assets/richmenu.png
 | 指令 | 說明 |
 |---|---|
 | `pytest` | 執行全部測試（不需要 DB） |
-| `pytest tests/test_binding.py -v` | 只跑綁定流程測試 |
+| `pytest tests/test_webhook.py -v` | 只跑 webhook 測試 |
 | `ruff check . && ruff format .` | Lint 與格式化 |
 | `flask --app wsgi routes` | 列出所有 API 路由 |
 | `flask --app wsgi rbac show` | 輸出角色權限矩陣 |
@@ -242,8 +245,10 @@ flask --app wsgi richmenu setup --image ./assets/richmenu.png
 
 ### LINE Login 流程
 
-1. 瀏覽器開 http://localhost:5000/api/v1/auth/line/login，會導向 LINE 授權頁。
-2. 授權後回到 callback，畫面顯示 `access_token` 與 `refresh_token`。
+1. 瀏覽器開首頁 http://localhost:5000/ 按「使用 LINE 登入」（或直接開 /api/v1/auth/line/login），會導向 LINE 授權頁。
+2. 授權後回到 callback，畫面顯示「登入成功」，`access_token`/`refresh_token` 由頁面上的 script
+   存進瀏覽器的 `sessionStorage`，接著自動導回首頁並顯示登入者名稱與角色（手動測試可以打開
+   DevTools Console 執行 `sessionStorage.getItem('access_token')` 取值）。
 3. 帶 token 查詢身分：
 
 ```bash
@@ -259,43 +264,6 @@ curl -X POST http://localhost:5000/api/v1/liff/auth \
   -H "Content-Type: application/json" \
   -d '{"id_token": "<id_token>"}'
 ```
-
-### 綁定流程（B1 到 B9）
-
-以下用 `TOKEN` 代表上一步拿到的 access_token。
-
-```bash
-BASE=http://localhost:5000/api/v1/liff/binding
-AUTH="Authorization: Bearer $TOKEN"
-
-curl -X POST $BASE/start -H "$AUTH"
-curl -X POST $BASE/identity -H "$AUTH" -H "Content-Type: application/json" \
-  -d '{"identity_type": "self"}'
-curl -X POST $BASE/profile -H "$AUTH" -H "Content-Type: application/json" \
-  -d '{"name": "王小明", "birth_date": "1990-01-01", "phone_last4": "5678", "hospital_id": "H1", "department": "心臟內科"}'
-curl -X POST $BASE/verification -H "$AUTH" -H "Content-Type: application/json" \
-  -d '{"method": "sms_otp"}'
-curl -X POST $BASE/consent -H "$AUTH" -H "Content-Type: application/json" \
-  -d '{"accepted": true}'
-curl -X POST $BASE/verify -H "$AUTH" -H "Content-Type: application/json" \
-  -d '{"code": "<OTP>"}'
-```
-
-開發模式的 OTP 不會真的發簡訊，會印在伺服器 log：
-
-```
-INFO [app.services.verification] [DEV] SMS OTP for ***5678: 123456
-```
-
-要讓比對成功，需先由院所管理員把該病患加進識別名單：
-
-```bash
-curl -X POST http://localhost:5000/api/v1/admin/roster \
-  -H "Authorization: Bearer <admin_token>" -H "Content-Type: application/json" \
-  -d '{"id": "r1", "hospital_id": "H1", "name": "王小明", "birth_date": "1990-01-01", "phone_last4": "5678"}'
-```
-
-目前 Repository 是 in-memory 實作，伺服器重啟後資料會清空。接上資料庫模型後即可持久化。
 
 ---
 

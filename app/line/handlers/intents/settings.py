@@ -1,4 +1,4 @@
-"""設定頁 → 檢視 / 修改基本資料、解除綁定（二次確認在 LIFF 內完成）。"""
+"""設定頁 → 開啟 LIFF 設定頁（檢視 / 修改基本資料）。"""
 
 from __future__ import annotations
 

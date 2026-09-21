@@ -15,34 +15,21 @@ from app.auth.line_identity import LineIdentityVerifier
 from app.auth.line_login import LineLoginService
 from app.auth.state_store import InMemoryOAuthStateStore, OAuthStateStore
 from app.line.client import LineMessagingClient
-from app.repositories.binding_repository import (
-    BindingSessionRepository,
-    HandoffRepository,
-    InMemoryBindingSessionRepository,
-    InMemoryHandoffRepository,
-    InMemoryRosterRepository,
-    RosterRepository,
-)
-from app.repositories.user_repository import InMemoryUserRepository, UserRepository
-from app.services.binding_service import BindingService
+from app.repositories.handoff_repository import HandoffRepository, SqlAlchemyHandoffRepository
+from app.repositories.user_repository import SqlAlchemyUserRepository, UserRepository
 from app.services.handoff_service import HandoffService
 from app.services.user_service import UserService
-from app.services.verification import StubVerificationGateway, VerificationGateway
 
 
 @dataclass
 class ServiceContainer:
     # repositories
     user_repo: UserRepository
-    binding_repo: BindingSessionRepository
-    roster_repo: RosterRepository
     handoff_repo: HandoffRepository
     state_store: OAuthStateStore
     # services
     users: UserService
     handoff: HandoffService
-    binding: BindingService
-    verification: VerificationGateway
     jwt: JwtService
     line_login: LineLoginService
     liff_auth: LiffAuthService
@@ -51,23 +38,12 @@ class ServiceContainer:
     @classmethod
     def build(cls, app: Flask) -> ServiceContainer:
         cfg = app.config
-        user_repo = InMemoryUserRepository()
-        binding_repo = InMemoryBindingSessionRepository()
-        roster_repo = InMemoryRosterRepository()
-        handoff_repo = InMemoryHandoffRepository()
+        user_repo = SqlAlchemyUserRepository()
+        handoff_repo = SqlAlchemyHandoffRepository()
         state_store = InMemoryOAuthStateStore()
 
         users = UserService(user_repo)
         handoff = HandoffService(handoff_repo)
-        verification = StubVerificationGateway()
-        binding = BindingService(
-            binding_repo,
-            roster_repo,
-            users,
-            handoff,
-            verification,
-            max_failures=cfg["BINDING_MAX_FAILURES"],
-        )
         jwt_service = JwtService(
             secret=cfg["JWT_SECRET_KEY"],
             algorithm=cfg["JWT_ALGORITHM"],
@@ -91,14 +67,10 @@ class ServiceContainer:
 
         return cls(
             user_repo=user_repo,
-            binding_repo=binding_repo,
-            roster_repo=roster_repo,
             handoff_repo=handoff_repo,
             state_store=state_store,
             users=users,
             handoff=handoff,
-            binding=binding,
-            verification=verification,
             jwt=jwt_service,
             line_login=line_login,
             liff_auth=liff_auth,

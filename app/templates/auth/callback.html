@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}登入成功 - MediAgent+{% endblock %}
+
+{% block content %}
+<div class="card">
+  <h1>登入成功</h1>
+  <p>已透過 LINE 完成登入{% if display_name %}，{{ display_name }} 您好{% endif %}。</p>
+  <p id="redirect-hint" hidden>正在為您導向...</p>
+</div>
+<script id="auth-tokens" type="application/json">{{ tokens_json | safe }}</script>
+<script>
+  (function () {
+    var tokens = JSON.parse(document.getElementById("auth-tokens").textContent);
+    try {
+      sessionStorage.setItem("access_token", tokens.access_token);
+      sessionStorage.setItem("refresh_token", tokens.refresh_token);
+    } catch (err) {
+      // 私密瀏覽模式等情境可能無法寫入 sessionStorage，登入本身仍算成功
+    }
+    var redirectTo = {{ redirect_to | tojson }};
+    if (redirectTo) {
+      document.getElementById("redirect-hint").hidden = false;
+      window.location.replace(redirectTo);
+    }
+  })();
+</script>
+{% endblock %}

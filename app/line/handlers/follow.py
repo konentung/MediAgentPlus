@@ -17,7 +17,7 @@ class FollowHandler(EventHandler):
     event_type = FollowEvent
 
     def handle(self, ctx: BotContext) -> None:
-        # 歡迎訊息 → 安全聲明 → 資料使用說明 Flex（引導至 LIFF 基本資料表單 B1）
+        # 歡迎訊息 → 安全聲明 → 資料使用說明 Flex（引導至 LIFF 基本資料表單）
         ctx.reply(welcome_messages(ctx.liff_url("/binding")))
 
 

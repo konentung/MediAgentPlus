@@ -6,19 +6,13 @@ from flask import Blueprint, abort, current_app, request
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.webhook import WebhookParser
 
-from app.core.container import get_container
 from app.line.dispatcher import EventDispatcher
 
 line_bp = Blueprint("line", __name__, url_prefix="/line")
 
 
 def _dispatcher() -> EventDispatcher:
-    ext = current_app.extensions
-    if "line_dispatcher" not in ext:
-        ext["line_dispatcher"] = EventDispatcher.default(
-            get_container(), current_app.config["LIFF_ID"]
-        )
-    return ext["line_dispatcher"]
+    return current_app.extensions["line_dispatcher"]
 
 
 @line_bp.post("/webhook")

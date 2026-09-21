@@ -1,7 +1,8 @@
 """使用者 Repository。
 
-`UserRecord` 是資料庫模型設計前的暫時資料結構；`UserRepository` Protocol 定義了
-Service 層需要的介面，之後只要另外實作 `SqlAlchemyUserRepository` 即可無痛替換。
+`UserRecord` 是 Service 層使用的資料結構；`UserRepository` Protocol 定義了介面，
+`InMemoryUserRepository` 與 `SqlAlchemyUserRepository`（對應 `app.models.user.UserModel`）
+皆實作同一介面，替換時 Service / API 層不需改動。
 """
 
 from __future__ import annotations
@@ -11,7 +12,9 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Protocol
 
-from app.domain.enums import BindingStatus, IdentityType, Role
+from app.domain.enums import BindingStatus, Role
+from app.extensions import db
+from app.models.user import UserModel
 from app.repositories.base import InMemoryStore
 
 
@@ -23,7 +26,6 @@ class UserRecord:
     picture_url: str | None = None
     role: Role = Role.GUEST
     binding_status: BindingStatus = BindingStatus.UNBOUND
-    identity_type: IdentityType | None = None
     hospital_id: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
@@ -57,3 +59,55 @@ class InMemoryUserRepository:
         if current is None:
             raise KeyError(user_id)
         return self._store.save(replace(current, **changes))
+
+
+def _to_record(row: UserModel) -> UserRecord:
+    return UserRecord(
+        id=row.id,
+        line_user_id=row.line_user_id,
+        display_name=row.display_name,
+        picture_url=row.picture_url,
+        role=row.role,
+        binding_status=row.binding_status,
+        hospital_id=row.hospital_id,
+        created_at=row.created_at,
+    )
+
+
+def _apply(row: UserModel, user: UserRecord) -> None:
+    row.line_user_id = user.line_user_id
+    row.display_name = user.display_name
+    row.picture_url = user.picture_url
+    row.role = user.role
+    row.binding_status = user.binding_status
+    row.hospital_id = user.hospital_id
+
+
+class SqlAlchemyUserRepository:
+    def get_by_id(self, user_id: str) -> UserRecord | None:
+        row = db.session.get(UserModel, user_id)
+        return _to_record(row) if row else None
+
+    def get_by_line_user_id(self, line_user_id: str) -> UserRecord | None:
+        row = db.session.execute(
+            db.select(UserModel).where(UserModel.line_user_id == line_user_id)
+        ).scalar_one_or_none()
+        return _to_record(row) if row else None
+
+    def save(self, user: UserRecord) -> UserRecord:
+        row = db.session.get(UserModel, user.id)
+        if row is None:
+            row = UserModel(id=user.id, created_at=user.created_at)
+            db.session.add(row)
+        _apply(row, user)
+        db.session.commit()
+        return _to_record(row)
+
+    def update(self, user_id: str, **changes) -> UserRecord:
+        row = db.session.get(UserModel, user_id)
+        if row is None:
+            raise KeyError(user_id)
+        for key, value in changes.items():
+            setattr(row, key, value)
+        db.session.commit()
+        return _to_record(row)

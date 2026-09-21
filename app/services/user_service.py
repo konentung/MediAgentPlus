@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.core.exceptions import AuthorizationError, NotFoundError
-from app.domain.enums import BindingStatus, Role
+from app.domain.enums import Role
 from app.domain.principal import Principal
 from app.domain.rbac import AccessPolicy
 from app.repositories.user_repository import UserRecord, UserRepository
@@ -59,9 +59,6 @@ class UserService:
         if role.is_staff and not AccessPolicy.can_access_hospital(actor, effective_hospital):
             raise AuthorizationError("不得指派其他院所的人員")
         return self._users.update(target.id, role=role, hospital_id=effective_hospital)
-
-    def set_binding_status(self, user_id: str, status: BindingStatus, **changes) -> UserRecord:
-        return self._users.update(user_id, binding_status=status, **changes)
 
     # ---- 轉換 ----
     @staticmethod

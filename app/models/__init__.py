@@ -1,7 +1,6 @@
 """SQLAlchemy 模型層。
 
-資料表模型尚未設計；此處僅提供共用的 Mixin，日後每個模型繼承 `db.Model, TimestampMixin` 即可。
-Repository 層目前使用 in-memory 實作，換成 SQLAlchemy 實作時介面（Protocol）不變。
+每個模型繼承 `db.Model, TimestampMixin`；模型需在此 import，Flask-Migrate 才能偵測到。
 """
 
 from __future__ import annotations
@@ -23,3 +22,9 @@ class TimestampMixin:
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
     )
+
+
+from app.models.handoff import HandoffTicketModel  # noqa: E402
+from app.models.user import UserModel  # noqa: E402
+
+__all__ = ["TimestampMixin", "UserModel", "HandoffTicketModel"]

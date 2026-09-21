@@ -5,9 +5,9 @@
     @require_auth()
     def me(): ...
 
-    @bp.post("/admin/roster")
-    @require_permission(Permission.ROSTER_MANAGE)
-    def upsert_roster(): ...
+    @bp.put("/admin/users/<user_id>/role")
+    @require_permission(Permission.STAFF_MANAGE)
+    def set_role(user_id): ...
 """
 
 from __future__ import annotations

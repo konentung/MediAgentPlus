@@ -1,7 +1,7 @@
 """領域列舉：角色、權限、綁定狀態、意圖。
 
 角色依「服務地圖」拆成兩群：
-- 用戶端：GUEST（未綁定）→ PATIENT（本人）/ FAMILY（家屬）
+- 用戶端：GUEST（未驗證）→ PATIENT（本人）/ FAMILY（家屬）
 - 院方端：CS_AGENT（真人客服）、MEDICAL_STAFF（醫護 / 衛教）、HOSPITAL_ADMIN、SUPER_ADMIN
 """
 
@@ -44,11 +44,7 @@ class Permission(StrEnum):
     CONSULT_EDUCATION_GENERIC = "consult:education_generic"  # ② 衛教諮詢通用版
     HANDOFF_REQUEST = "handoff:request"  # 轉真人客服（任何時候一鍵可按）
 
-    # ---- 綁定流程（B1–B9） ----
-    BINDING_CREATE = "binding:create"
-    BINDING_REVOKE = "binding:revoke"  # 解除綁定（二次確認）
-
-    # ---- 已綁定使用者專屬 ----
+    # ---- 已驗證使用者專屬 ----
     PROFILE_READ_OWN = "profile:read_own"
     PROFILE_WRITE_OWN = "profile:write_own"
     EDUCATION_PERSONAL = "education:personal"  # ② 衛教個人化版 / 每日任務推播
@@ -58,16 +54,12 @@ class Permission(StrEnum):
     HANDOFF_ACCEPT = "handoff:accept"
     HANDOFF_REPLY = "handoff:reply"
     CONVERSATION_READ = "conversation:read"
-    BINDING_MANUAL_VERIFY = "binding:manual_verify"  # B8 連續 3 次失敗轉真人核對
-    BINDING_UNLOCK = "binding:unlock"  # B9 鎖定並轉真人處理
     PATIENT_READ = "patient:read"
 
     # ---- 醫護 / 衛教 ----
     EDUCATION_CONTENT_MANAGE = "education:content_manage"
-    ROSTER_READ = "roster:read"  # 院方識別名單
 
     # ---- 院所管理 ----
-    ROSTER_MANAGE = "roster:manage"
     STAFF_MANAGE = "staff:manage"
     HOSPITAL_SETTINGS = "hospital:settings"
     RICHMENU_MANAGE = "richmenu:manage"
@@ -79,26 +71,15 @@ class Permission(StrEnum):
 
 
 class BindingStatus(StrEnum):
-    """基本資料是否已填且驗證通過（= 是否綁定的唯一依據）。"""
+    """基本資料是否已填且驗證通過（服務地圖上的「已驗證？」菱形判斷）。
+
+    綁定流程本身尚未設計，目前只有這個狀態欄位；狀態的轉換邏輯待流程定案後實作。
+    """
 
     UNBOUND = "unbound"
-    PENDING = "pending"  # B1–B5 進行中
-    VERIFIED = "verified"  # B7 綁定完成
-    LOCKED = "locked"  # B9 已被其他 LINE 綁定 / 異常鎖定，需真人處理
-
-
-class IdentityType(StrEnum):
-    """B2 身分別。"""
-
-    SELF = "self"
-    FAMILY = "family"
-
-
-class VerificationMethod(StrEnum):
-    """B4 驗證方式。"""
-
-    DISCHARGE_CODE = "discharge_code"  # 出院單一次性代碼
-    SMS_OTP = "sms_otp"  # 手機簡訊 OTP
+    PENDING = "pending"  # 綁定進行中
+    VERIFIED = "verified"  # 驗證通過，可使用個人化功能
+    LOCKED = "locked"  # 異常鎖定，需真人處理
 
 
 class Intent(StrEnum):

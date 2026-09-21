@@ -11,7 +11,7 @@ def test_guest_only_has_public_permissions(principal_factory):
     assert AccessPolicy.has_permission(guest, Permission.CONSULT_SYMPTOM)
     assert AccessPolicy.has_permission(guest, Permission.HANDOFF_REQUEST)
     assert not AccessPolicy.has_permission(guest, Permission.REMINDER_MANAGE_OWN)
-    assert not AccessPolicy.has_permission(guest, Permission.ROSTER_READ)
+    assert not AccessPolicy.has_permission(guest, Permission.PATIENT_READ)
 
 
 def test_patient_and_family_share_bound_user_permissions():
@@ -21,8 +21,8 @@ def test_patient_and_family_share_bound_user_permissions():
 
 def test_staff_cannot_use_end_user_personal_features():
     assert Permission.REMINDER_MANAGE_OWN not in permissions_for(Role.CS_AGENT)
-    assert Permission.ROSTER_MANAGE not in permissions_for(Role.CS_AGENT)
-    assert Permission.BINDING_UNLOCK in permissions_for(Role.CS_AGENT)
+    assert Permission.STAFF_MANAGE not in permissions_for(Role.CS_AGENT)
+    assert Permission.HANDOFF_ACCEPT in permissions_for(Role.CS_AGENT)
 
 
 def test_hospital_admin_is_superset_of_cs_and_medical():

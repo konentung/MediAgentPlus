@@ -1,3 +1,5 @@
+import json
+import re
 from datetime import timedelta
 
 import pytest
@@ -68,7 +70,14 @@ def test_line_callback_issues_jwt(client, container, monkeypatch):
     )
     resp = client.get(f"/api/v1/auth/line/callback?code=abc&state={state.state}")
     assert resp.status_code == 200
-    token = resp.get_json()["data"]["access_token"]
+    assert resp.content_type.startswith("text/html")
+    assert "小明" in resp.get_data(as_text=True)
+    match = re.search(
+        r'<script id="auth-tokens" type="application/json">(.*?)</script>',
+        resp.get_data(as_text=True),
+        re.DOTALL,
+    )
+    token = json.loads(match.group(1))["access_token"]
     me = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert me.get_json()["data"]["line_user_id"] == "Uabc"
     assert me.get_json()["data"]["role"] == "guest"
