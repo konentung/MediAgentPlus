@@ -13,7 +13,8 @@ def test_browser_404_renders_html(client):
     resp = client.get("/does-not-exist", headers={"Accept": "text/html"})
     assert resp.status_code == 404
     assert resp.mimetype == "text/html"
-    assert "找不到頁面" in resp.get_data(as_text=True)
+    html = resp.get_data(as_text=True)
+    assert "找不到頁面" in html and 'href="/"' in html
 
 
 def test_browser_path_with_json_accept_returns_json(client):

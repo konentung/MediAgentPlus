@@ -15,6 +15,6 @@
   <p class="status">{{ status }}</p>
   <h1>{{ title }}</h1>
   <p>{{ message }}</p>
-  <p><a href="#" onclick="history.back(); return false;">回上一頁</a></p>
+  <p><a href="{{ url_for('pages.home') }}">回首頁</a></p>
 </div>
 {% endblock %}
