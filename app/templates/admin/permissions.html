@@ -1,0 +1,30 @@
+{% extends "admin/base.html" %}
+{% block title %}權限矩陣{% endblock %}
+
+{% block content %}
+<h1 class="h4 mb-1">權限矩陣</h1>
+<p class="text-secondary small mb-3">各角色擁有的權限一覽。權限由程式碼定義（<code>app/domain/rbac.py</code>），此頁僅供查閱。</p>
+<div class="card border-0 shadow-sm">
+  <div class="table-responsive"><table class="table table-sm small align-middle mb-0" id="matrix"></table></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+Admin.boot(async function (ctx) {
+  var matrix = await ctx.api("/api/v1/admin/permissions");
+  var roles = Object.keys(matrix);
+  var perms = {};
+  roles.forEach(function (r) { matrix[r].forEach(function (p) { perms[p] = true; }); });
+  var table = document.getElementById("matrix");
+  table.innerHTML = "<thead class='table-light'><tr><th>權限</th><th>說明</th>" +
+    roles.map(function (r) { return "<th class='text-center text-nowrap'>" + Admin.esc(Admin.label("roles", r)) + "</th>"; }).join("") +
+    "</tr></thead><tbody>" +
+    Object.keys(perms).sort().map(function (p) {
+      return "<tr><td class='text-nowrap'><code>" + Admin.esc(p) + "</code></td>" +
+        "<td class='text-secondary'>" + Admin.esc(Admin.choices.permissions[p] || "") + "</td>" +
+        roles.map(function (r) { return "<td class='text-center'>" + (matrix[r].indexOf(p) >= 0 ? "<span class='text-success fw-bold'>✓</span>" : "") + "</td>"; }).join("") + "</tr>";
+    }).join("") + "</tbody>";
+});
+</script>
+{% endblock %}

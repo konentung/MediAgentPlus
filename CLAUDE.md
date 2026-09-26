@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 專案概要
 
 MediAgent+ 醫療照護 LINE 機器人後端。Python 3.11、Flask 3、line-bot-sdk 3.25.0（`linebot.v3`）、PostgreSQL（psycopg 3）。沒有獨立前端專案（no SPA），需要網頁畫面的地方（目前是 LINE Login callback）直接用 Flask 內建的 Jinja2 render `app/templates/` 下的模板；LIFF 頁面之後也會走同一套模式。
-業務流程依據「服務地圖」設計：加好友 → Rich Menu 六格 → 依「基本資料已填且驗證通過？」分流。LIFF 綁定流程 B1–B9 **尚未設計**（曾有一版狀態機實作，已整個移除，待流程定案後重做）。對照表在 `docs/architecture.md`。
+業務流程依據「服務地圖」設計：加好友 → Rich Menu 六格 → 依「基本資料已填且驗證通過？」分流。「基本資料」就是 LIFF 病人自填表（`/liff/intake`），送出後由院方在後台（`/admin`）核對身份、建檔，`binding_status` 才變成 `VERIFIED`。對照表在 `docs/architecture.md`，表單與後台設計在 `docs/patient-form-design.md`。
 
 ## 常用指令
 
@@ -16,6 +16,7 @@ pip install -r requirements-dev.txt
 pytest                                   # 全部測試，不需要資料庫
 pytest tests/test_webhook.py -v          # 單一檔案
 pytest tests/test_rbac.py::test_hospital_scope   # 單一測試
+pytest tests/test_intake.py tests/test_patient_admin.py   # 病人表單 + 院方後台
 pytest -p no:warnings                    # 隱藏 PyJWT 短金鑰警告（測試用金鑰刻意很短）
 
 ruff check . && ruff format .            # lint + 格式化，行長 100，tests/ 不檢查 E501
@@ -24,7 +25,10 @@ ruff check . && ruff format .            # lint + 格式化，行長 100，tests
 flask --app wsgi routes                  # 列出路由
 flask --app wsgi rbac show               # 角色權限矩陣
 flask --app wsgi richmenu setup --image <png>   # 建立並設為預設 Rich Menu（2500×1686）
-flask --app wsgi user set-role <user_id> <role> # 以 SUPER_ADMIN 身分指派角色
+flask --app wsgi user set-role <user_id> <role> --hospital-id H1   # 以 SUPER_ADMIN 身分指派角色
+flask --app wsgi hospital add H1 "第一醫院" --region 台北市          # 新增院所（初始化用，之後可在後台新增）
+flask --app wsgi hospital list
+flask --app wsgi hospital import data/pharmacy/A21030000I-D21005-001.csv --only-hospitals  # 健保署特約醫事機構 CSV
 
 ./scripts/setup_db.sh                    # 本機建立 PostgreSQL 角色與資料庫（mediagent/mediagent）
 flask --app wsgi db migrate -m "..."     # 依模型變更產生 migration（需連得到 DATABASE_URL）
@@ -45,7 +49,7 @@ flask --app wsgi db upgrade              # 套用 migration
 
 `ROLE_PERMISSIONS` 是明確列舉（非階層繼承），`AccessPolicy` 是唯一的判斷入口，包含院所隔離 `can_access_hospital()`（SUPER_ADMIN 不受限）與角色指派範圍 `can_assign_role()`。新增權限時同時改 `Permission` 列舉與此對照表，`tests/test_rbac.py` 有對角色集合關係的斷言。
 
-`Principal.is_verified`（`BindingStatus.VERIFIED`）就是服務地圖上「基本資料已填且驗證通過？」菱形的判斷；`IntentHandler.requires_verified = True` 與 `@require_verified()` 都以此為準。目前沒有任何程式碼會把 `binding_status` 改成 `VERIFIED`（綁定流程未設計），本機測試個人化功能請直接改 DB 或用 `container.user_repo.update()`。
+`Principal.is_verified`（`BindingStatus.VERIFIED`）就是服務地圖上「基本資料已填且驗證通過？」菱形的判斷；`IntentHandler.requires_verified = True` 與 `@require_verified()` 都以此為準。狀態由 `IntakeService`（送出 → `PENDING`）與 `PatientRecordService.verify()`（院方核對 → `VERIFIED`，並把 GUEST 改為 PATIENT / FAMILY）驅動；本機要快速測個人化功能仍可直接 `container.user_repo.update()`。
 
 ### 依賴注入：`ServiceContainer`（`app/core/container.py`）
 
@@ -53,15 +57,25 @@ flask --app wsgi db upgrade              # 套用 migration
 
 ### 資料層：PostgreSQL（SQLAlchemy + Flask-Migrate）
 
-`User`、`HandoffTicket` 都有對應的 SQLAlchemy 模型（`app/models/user.py`、`app/models/handoff.py`，皆繼承 `db.Model, TimestampMixin`），`app/repositories/*.py` 裡的 `SqlAlchemy*Repository` 實作對應 Protocol，`ServiceContainer.build()` 組裝時直接用這些實作 —— Service / API 層完全不知道底層是 DB 還是記憶體。`InMemory*Repository` 仍保留在同一檔案內（未被使用），方便之後需要繞過 DB 的情境。`OAuthStateStore`（`app/auth/state_store.py`）刻意維持 in-memory，正式多 worker 部署時需換 Redis 實作。
+所有實體（`User`、`HandoffTicket`、`Hospital`、`Patient*`、`PatientRecord*`、`AuthSession`、`AuditLog`）都是 `app/models/` 下的 SQLAlchemy 模型（皆繼承 `db.Model, TimestampMixin`），`app/repositories/*.py` 裡的 `SqlAlchemy*Repository` 實作對應 Protocol，`ServiceContainer.build()` 組裝時直接用這些實作 —— Service / API 層完全不知道底層是 DB 還是記憶體。`InMemory*Repository` 只剩 User / Handoff 保留（未被使用）。`OAuthStateStore`（`app/auth/state_store.py`）與 rate limit 未設 `REDIS_URL` 時用單程序記憶體，設定後由容器改用 Redis 實作。
 
-Enum 欄位（`Role`/`BindingStatus`）一律用 `sa.Enum(..., native_enum=False)` 存成 VARCHAR，不用原生 Postgres enum type —— 這樣新增列舉值（例如未來新角色）只要改 Python enum + migration 加欄位資料，不必下 `ALTER TYPE`。除了 `Role`（會持續變動，刻意不加 CHECK constraint）之外都保留 CHECK constraint。之後若有 JSON 欄位，用 `JSONB().with_variant(JSON(), "sqlite")` 讓測試環境的 SQLite 也能跑。`hospital_id` 目前在 `User`/`HandoffTicket` 兩張表上都只是沒有外鍵的字串欄位 —— 專案裡還沒有 `Hospital` 實體，這是「急診動態分流」功能規劃時才會補上的擴充點（見下方規劃中功能）。
+Enum 欄位（`Role`/`BindingStatus`）一律用 `sa.Enum(..., native_enum=False)` 存成 VARCHAR，不用原生 Postgres enum type —— 這樣新增列舉值（例如未來新角色）只要改 Python enum + migration 加欄位資料，不必下 `ALTER TYPE`。除了 `Role`（會持續變動，刻意不加 CHECK constraint）之外都保留 CHECK constraint。之後若有 JSON 欄位，用 `JSONB().with_variant(JSON(), "sqlite")` 讓測試環境的 SQLite 也能跑。`Hospital` 實體已存在（`app/models/hospital.py`，`hospitals.id` 就是人可讀的院所代碼，例如 `H1`），其他表的 `hospital_id` 都是指向它的外鍵，應用層另由 `HospitalService.require_active()` 在寫入時確認院所啟用中。初始化用 `flask hospital add` 或 `flask hospital import <csv>`（支援自家範本與健保署「特約醫事機構」開放資料欄位，對應表在 `HospitalService.IMPORT_COLUMN_ALIASES`，藥局等非院所列自動略過），之後 SUPER_ADMIN 可在後台「院所設定」新增或匯入；HOSPITAL_ADMIN 只能改自己院所的名稱 / 電話 / 地址。
 
 改動模型後：`flask --app wsgi db migrate -m "..."` 產生 migration（需要連得到 `DATABASE_URL` 指到的資料庫，本機用 `./scripts/setup_db.sh` 建立）→ **人工檢查**產生的檔案（autogenerate 對 Enum/JSONB 這類型別不一定抓得對）→ `flask --app wsgi db upgrade`。`pytest` 全程走 in-memory SQLite（`TestingConfig`，`StaticPool` 讓整個 engine 共用一條連線），不需要真的 PostgreSQL，`tests/conftest.py` 的 `app`/`client` fixture 會在每次測試維持一個 app context（供測試直接呼叫 repository）但在每次送出 HTTP 請求時暫時 pop/push，避免 Flask 沿用同一個 app context 造成 `flask.g`（含快取的 `Principal`）跨請求殘留。
 
-### 綁定流程（B1–B9）尚未設計
+### 病人自填表與院方後台（取代原本的綁定流程 B1–B9）
 
-`users.binding_status` 只是狀態欄位，沒有對應的流程程式碼。曾經實作過一版「LIFF 多步驟表單 + 院方識別名單比對」的狀態機（含 `binding_sessions`、`roster_entries` 兩張表與 `BindingService`），因為流程方向未定已整個移除；重新設計時可從 git 歷史找回參考，但不要假設既有結構。
+- **欄位定義單一來源**：`app/domain/intake_schema.py` 的 `INTAKE_STEPS`（6 步）同時供 LIFF 頁面渲染（`public_schema()` 塞進模板）、伺服器端驗證（`validate_step` / `validate_all`，`partial=True` 為草稿）、後台顯示中文標籤。改欄位只改這一個檔案；`Field.storage` 決定落到哪張表（profile 欄位 / JSON / contacts / allergy:kind / condition:kind / medication / consent），`SqlAlchemyPatientRepository` 依此做 dict ↔ 多表轉換。
+- **資料歸屬**：自填資料（`patient_*` 7 張）跟著 `users` 走、跨院所共用一份；院方紀錄（`patient_records` + 審核 / 就診 / 風險 / 追蹤 / 備註）跟著 `hospital_id` 走。院所只看得到「`preferred_hospital_id` 是本院的待核對病人」或「已在本院建檔的病人」。`preferred_hospital_id` 是第 6 步的下拉選單（選項來自 `GET /api/v1/liff/hospitals`，schema 上是 `options_source="hospitals"`），LIFF 連結 `?hospital=` 只負責預選（院所把連結做成 QR）。
+- **身分證**：`FieldCipher`（`app/utils/crypto.py`，金鑰 `PATIENT_DATA_KEY`）加密存 `national_id_encrypted`，另存 `national_id_last4` 與 HMAC `national_id_fingerprint`；API 一律回遮罩 `******1234`，只有 `PATIENT_IDENTITY_READ` 能取明碼。前端回傳遮罩字串代表沒改。同一指紋出現在第二個帳號 → 該帳號 `LOCKED`。
+- **狀態轉換**：送出 → `PENDING`；院方 verify → `VERIFIED` + 角色；reject → `UNBOUND`。送出後（`PENDING` / `VERIFIED`）病人端**唯讀**：`IntakeService._ensure_can_edit()` 對存步驟 / 送出回 403（`details.read_only=true`），`GET /liff/intake` 回 `read_only` 讓前端把表單鎖成檢視模式；資料修正只能由院方在後台做。每次送出都存 `patient_form_submissions` JSON 快照，院方修正只改結構化表並寫 `patient_record_reviews.corrections`。
+- **後台**：`/admin/*`（`app/admin_pages.py`）是 Jinja + Bootstrap 骨架，頁內 JS 讀 `sessionStorage` 的 JWT 打 `/api/v1/admin/*`，沿用 LINE Login callback 存 token 的機制，沒有 cookie session。未登入 / 過期 / 非院方帳號都導到 `/admin/login`（獨立登入頁，`?next=` 只接受 `/admin` 開頭的路徑）；LIFF 端不經過這頁，維持 `liff.init()` 自動登入。選單依 `/api/v1/auth/me` 回傳的權限隱藏，真正授權在 API decorator。Service 透過 `lambda: container.line_client` 取 LINE client，測試替換 `container.line_client` 才會生效。
+- **安全相關慣例**：院方查詢範圍一律用 `AccessPolicy.hospital_scope(actor)`（無 `hospital_id` 的院方帳號直接 403，不可退化成不過濾）；高敏感操作（讀身分證明碼、鎖定 / 解鎖）寫 `audit_logs`（`container.audit_repo.record()`）；容易被暴力嘗試的端點掛 `@rate_limit()`（`app/core/ratelimit.py`，測試環境 `RATELIMIT_ENABLED=False`）；「今天」一律用 `app/utils/clock.today_tw()`；LINE 推播失敗只記 log 不讓交易失敗（`_notify`）。同一身分證出現在第二個帳號只回 409 不自動鎖定（家屬與本人可能各自填），冒用由院方核對時判斷、必要時後台鎖定。
+- `get_config()` 在 `FLASK_ENV` 未設定時視為 production 並拒絕範例金鑰；本機開發務必在 `.env` 設 `FLASK_ENV=development`。
+- **登入工作階段**：`AuthSessionService`（`app/services/auth_session_service.py`）管理 refresh token：`start()` 建 `auth_sessions` 列並簽發 pair（refresh 的 `jti` = session id）、`refresh()` 輪替並偵測重用、`logout()` 撤銷 family。網頁版 LINE Login 的 LINE token 加密存在 session 內，refresh 時呼叫 `LineLoginService.refresh_tokens()`、登出呼叫 `revoke_token()`；LIFF 沒有 LINE refresh token，只做自家輪替。鎖定帳號會 `revoke_all()`。任何簽發 token 的地方都要走這個 Service，不要直接 `jwt.issue_pair()`。
+- **Redis**：設定 `REDIS_URL` 後容器改用 `RedisOAuthStateStore` 與 `RedisRateLimiter`（啟動時 ping，連不上直接失敗）；未設定用記憶體版，只適合單程序。
+- **外鍵**：`users` / `handoff_tickets` / `patient_profiles.preferred_hospital_id` / `audit_logs` 的 `hospital_id` 以 SET NULL 指向 `hospitals`，`patient_records.hospital_id` 為 RESTRICT。migration 會先為孤兒代碼建立停用的佔位院所再加外鍵。
+- 尚未做：藥袋照片上傳（`patient_media`）。
 
 ### LINE 層慣例
 
@@ -76,16 +90,16 @@ Enum 欄位（`Role`/`BindingStatus`）一律用 `sa.Enum(..., native_enum=False
 
 ## 規劃中功能（Roadmap）— 技術設計
 
-以下 6 項功能是下一階段要擴充的範圍，**目前都尚未實作**，先寫成技術設計文件讓使用者確認方向是否正確，確認後再逐項排入開發。每項的格式一致：功能敘述 → 現況對應 → 資料模型設計 → 服務/API 設計 → 與既有架構整合點 → 外部依賴 → 待確認問題。
+以下 6 項功能是下一階段要擴充的範圍。**第 6 項（病人表單）與第 1 項的 `Hospital` 實體已實作**，其餘尚未實作，先寫成技術設計文件讓使用者確認方向是否正確，確認後再逐項排入開發。每項的格式一致：功能敘述 → 現況對應 → 資料模型設計 → 服務/API 設計 → 與既有架構整合點 → 外部依賴 → 待確認問題。
 
 ### 1. 急診動態分流
 
 **功能敘述**：當偵測到某區一家醫院陷入壅塞狀態，自動生成分流建議報告，透過 API（或 LINE）發送給該區 119 勤務指揮中心或基層診所醫師，建議暫時將病患轉往仍有餘裕的中大型醫院。
 
-**現況對應**：全新領域。目前整個專案沒有「急診」「分流」相關程式碼，也沒有 `Hospital` 實體 —— `hospital_id` 在所有既有的表（`User`/`HandoffTicket`）都只是不驗證的字串。這是唯一需要先補上 `Hospital` 實體的功能。
+**現況對應**：目前沒有「急診」「分流」相關程式碼。`Hospital` 實體已在病人表單功能時補上（`hospitals` 表含 `region`、`capacity_tier`、`contact_phone` 欄位，`lat`/`lng` 尚未加），可直接掛 `HospitalCongestionSnapshot`。
 
 **資料模型設計**：
-- `Hospital`（`id`、`name`、`region`、`capacity_tier`、`contact_phone`、`lat`/`lng`）— 其餘表的 `hospital_id` 之後可考慮補上外鍵指向這張表（現有資料需先清洗確保值域一致）。
+- `Hospital`（已存在：`id`、`name`、`region`、`capacity_tier`、`contact_phone`、`address`、`active`；需再加 `lat`/`lng`）— 其餘表的 `hospital_id` 之後可考慮補上外鍵（現有資料需先清洗確保值域一致）。
 - `HospitalCongestionSnapshot`（`hospital_id` FK、`reported_at`、`occupancy_level`：normal/busy/critical、`source`：his_api/manual、`note`）— 壅塞狀況的時序紀錄。
 
 **服務/API 設計**：
@@ -123,7 +137,7 @@ Enum 欄位（`Role`/`BindingStatus`）一律用 `sa.Enum(..., native_enum=False
 
 **功能敘述**：針對不同醫院及不同病因出院的患者，提供 Agentic AI 的衛教資訊，讓病人可以即時知道自己需要做什麼樣的動作。
 
-**現況對應**：延伸既有 `Intent.DISCHARGE` / `app/line/handlers/intents/discharge.py`（stub 已經依 `Principal.is_verified` 區分「已驗證→個人化」vs「未驗證→通用版」，TODO 明確寫著「個人化衛教 + 每日任務推播」尚未實作）。病人的 `discharge_code` 來源依賴綁定流程的設計（目前未定）。
+**現況對應**：延伸既有 `Intent.DISCHARGE` / `app/line/handlers/intents/discharge.py`（stub 已經依 `Principal.is_verified` 區分「已驗證→個人化」vs「未驗證→通用版」，TODO 明確寫著「個人化衛教 + 每日任務推播」尚未實作）。病人的 `discharge_code` 已可由院方在後台「就診 / 住院紀錄」填入（`PatientRecordRepository.latest_discharge_code()` 取最近一次）。
 
 **資料模型設計**：
 - `EducationContent`（`id`、`hospital_id` nullable、`discharge_code` nullable、`title`、`body`/結構化步驟、`media_url`）。
@@ -184,7 +198,7 @@ Enum 欄位（`Role`/`BindingStatus`）一律用 `sa.Enum(..., native_enum=False
 
 **功能敘述**：使用者提供的規劃表格只有功能名稱、沒有說明文字。技術設計先合理推論為「多步驟 LIFF 表單」—— 綁定流程 B1–B9 之後也會是這類表單之一，兩者可能共用同一套「LIFF 頁面 + 逐步提交 API」模式。
 
-**現況對應**：`app/api/v1/liff.py` 目前只有登入與 `/me`、`/profile`，沒有任何表單端點；綁定流程尚未設計。
+**現況對應（已實作）**：`app/api/v1/liff.py` 有 intake 表單端點，LIFF 頁面在 `app/liff_pages.py`，後台在 `app/admin_pages.py`；原本的綁定流程 B1–B9 由此表單取代。
 
 **資料模型設計**：
 - `PatientFormDefinition`（`id`、`hospital_id` nullable、`title`、`schema`：JSONB 描述欄位與驗證規則）— 供院所自訂表單（例如入院前健康問卷、用藥史調查）。
@@ -201,12 +215,15 @@ Enum 欄位（`Role`/`BindingStatus`）一律用 `sa.Enum(..., native_enum=False
 
 **待確認問題（本項最需要使用者澄清方向）**：這個表單具體要蒐集什麼資料 —— 是既有綁定流程的延伸，還是全新的問卷類表單？是否需要院所自訂欄位，還是先做固定幾種表單即可？
 
+**已實作（2026-09-23）**：固定的「病人自填表（intake）」與「院方紀錄表」兩種，不做院所自訂 schema。欄位、資料模型、API 與後台設計見 `docs/patient-form-design.md`；程式位置見上方「病人自填表與院方後台」。
+
 ---
 
-以上皆為規劃階段的技術設計文件，**尚未實作**；待使用者逐項確認方向後，再個別排入實作。
+以上第 1 項的 `Hospital` 與第 6 項已實作，其餘為規劃階段的技術設計文件；待使用者逐項確認方向後，再個別排入實作。
 
 ## 文件
 
 - `README.md`：端點表、角色摘要、資料庫現況。
 - `docs/local-operations.md`：本機安裝（pgAdmin 為主）、LINE Developers Console 設定、ngrok、curl 手動測試、常見問題。
 - `docs/architecture.md`：服務地圖節點與程式位置對照、狀態機圖、擴充點。
+- `docs/patient-form-design.md`：病人自填表 / 院方紀錄表的欄位、資料模型、API 與後台設計（Roadmap 第 6 項，已實作）。

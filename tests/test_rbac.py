@@ -93,3 +93,10 @@ def test_verified_only_endpoint(client, make_user, auth_header):
     assert client.get("/api/v1/liff/profile", headers=auth_header(guest)).status_code == 403
     patient = make_user(Role.PATIENT, BindingStatus.VERIFIED)
     assert client.get("/api/v1/liff/profile", headers=auth_header(patient)).status_code == 200
+
+
+def test_every_permission_has_chinese_description():
+    from app.admin_pages import PERMISSION_DESCRIPTIONS
+
+    assert set(PERMISSION_DESCRIPTIONS) == set(Permission)
+    assert all(desc.strip() for desc in PERMISSION_DESCRIPTIONS.values())

@@ -68,6 +68,15 @@ def container(app):
     return app.extensions["container"]
 
 
+@pytest.fixture(autouse=True)
+def hospitals(app):
+    """多數測試假設 H1、H2 兩家院所存在。"""
+    repo = app.extensions["container"].hospital_repo
+    for hid, name in (("H1", "第一醫院"), ("H2", "第二診所")):
+        repo.create(id=hid, name=name, region="台北市")
+    return repo
+
+
 @pytest.fixture()
 def make_user(container):
     def _make(

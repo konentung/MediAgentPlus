@@ -1,0 +1,74 @@
+{% extends "admin/base.html" %}
+{% block title %}人員與角色{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+  <h1 class="h4 mb-0">人員與角色</h1>
+  <form class="d-flex gap-2" id="search-form" role="search">
+    <input class="form-control" type="search" name="q" placeholder="顯示名稱或使用者 ID" style="min-width: 260px;">
+    <div class="form-check form-switch d-flex align-items-center ms-2">
+      <input class="form-check-input" type="checkbox" id="all-users">
+      <label class="form-check-label small ms-1" for="all-users">含一般使用者</label>
+    </div>
+    <button class="btn btn-outline-secondary" type="submit">搜尋</button>
+  </form>
+</div>
+
+<div class="alert alert-secondary small">
+  院所人員需先用 LINE 登入過本系統一次（帳號才會出現在這裡），再由院所管理員指派角色。
+  院所管理員只能指派真人客服、醫護、院所管理員三種角色，且只能指派給本院所。
+</div>
+
+<div class="card border-0 shadow-sm">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="table-light"><tr><th>顯示名稱</th><th>使用者 ID</th><th>角色</th><th>院所</th><th>綁定狀態</th><th style="width: 320px;">指派角色</th></tr></thead>
+      <tbody id="rows"><tr><td colspan="6" class="text-center text-secondary py-4">載入中…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+Admin.boot(async function (ctx) {
+  var ASSIGNABLE = ctx.me.role === "super_admin"
+    ? Object.keys(Admin.choices.roles)
+    : ["cs_agent", "medical_staff", "hospital_admin"];
+
+  async function load() {
+    var q = document.querySelector('#search-form input[name="q"]').value.trim();
+    var all = document.getElementById("all-users").checked;
+    var users = await ctx.api("/api/v1/admin/users?q=" + encodeURIComponent(q) + "&staff=" + (all ? "0" : "1"));
+    var tbody = document.getElementById("rows");
+    if (!users.length) { tbody.innerHTML = '<tr><td colspan="6" class="text-center text-secondary py-4">沒有符合的使用者</td></tr>'; return; }
+    tbody.innerHTML = users.map(function (u) {
+      var options = ASSIGNABLE.map(function (r) { return '<option value="' + r + '"' + (r === u.role ? " selected" : "") + ">" + Admin.esc(Admin.label("roles", r)) + "</option>"; }).join("");
+      return "<tr><td>" + Admin.esc(u.display_name || "—") + "</td><td class='small text-secondary'>" + Admin.esc(u.user_id) + "</td>" +
+        "<td>" + Admin.esc(Admin.label("roles", u.role)) + "</td><td>" + Admin.esc(Admin.hospitalName(u.hospital_id)) + "</td>" +
+        "<td>" + Admin.esc(Admin.label("binding_statuses", u.binding_status)) + "</td>" +
+        '<td><form class="d-flex gap-2" data-user="' + u.user_id + '"><select class="form-select form-select-sm" name="role">' + options + "</select>" +
+        (ctx.me.role === "super_admin" ? '<select class="form-select form-select-sm" name="hospital_id" data-current="' + Admin.esc(u.hospital_id || "") + '"></select>' : "") +
+        '<button class="btn btn-sm btn-brand" type="submit">儲存</button></form></td></tr>';
+    }).join("");
+    tbody.querySelectorAll('select[name="hospital_id"]').forEach(function (sel) {
+      Admin.hospitalOptions(sel, true, "（不指派院所）");
+      sel.value = sel.getAttribute("data-current");
+    });
+    tbody.querySelectorAll("form[data-user]").forEach(function (form) {
+      form.addEventListener("submit", async function (e) {
+        e.preventDefault();
+        try {
+          await ctx.api("/api/v1/admin/users/" + form.getAttribute("data-user") + "/role", { method: "PUT", body: Admin.formData(form) });
+          Admin.toast("已更新角色");
+          await load();
+        } catch (err) { Admin.toast(err.message, "danger"); }
+      });
+    });
+  }
+  document.getElementById("search-form").addEventListener("submit", function (e) { e.preventDefault(); load(); });
+  document.getElementById("all-users").addEventListener("change", load);
+  await load();
+});
+</script>
+{% endblock %}

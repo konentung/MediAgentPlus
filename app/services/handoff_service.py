@@ -18,10 +18,7 @@ class HandoffService:
         return self._tickets.create(subject, reason, principal.hospital_id)
 
     def list_open(self, actor: Principal) -> list[HandoffTicket]:
-        hospital_scope = (
-            None if AccessPolicy.can_access_hospital(actor, None) else actor.hospital_id
-        )
-        return self._tickets.list_open(hospital_scope)
+        return self._tickets.list_open(AccessPolicy.hospital_scope(actor))
 
     def accept(self, actor: Principal, ticket_id: str) -> HandoffTicket:
         ticket = self._tickets.get(ticket_id)

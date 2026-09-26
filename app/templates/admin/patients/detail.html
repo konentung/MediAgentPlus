@@ -1,0 +1,445 @@
+{% extends "admin/base.html" %}
+{% block title %}病人詳情{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb small">
+    <li class="breadcrumb-item"><a href="{{ url_for('admin_pages.patients') }}">病人資料</a></li>
+    <li class="breadcrumb-item active" aria-current="page" id="crumb-name">載入中…</li>
+  </ol>
+</nav>
+
+<div id="loading" class="text-secondary py-5 text-center">載入中…</div>
+
+<div id="content" class="d-none">
+  <div class="card border-0 shadow-sm mb-3">
+    <div class="card-body">
+      <div class="d-flex flex-wrap align-items-start justify-content-between gap-3">
+        <div>
+          <h1 class="h4 mb-1"><span id="p-name"></span> <span class="badge ms-1" id="p-status"></span></h1>
+          <div class="text-secondary small" id="p-meta"></div>
+          <div class="mt-2 d-flex flex-wrap gap-1" id="p-flags"></div>
+        </div>
+        <div class="d-flex flex-wrap gap-2" id="header-actions">
+          <button class="btn btn-brand" data-perm="patient:verify" data-bs-toggle="modal" data-bs-target="#verify-modal" id="btn-verify">核對身份 / 建檔</button>
+          <button class="btn btn-outline-danger" data-perm="patient:verify" data-bs-toggle="modal" data-bs-target="#reject-modal" id="btn-reject">退回補正</button>
+          <button class="btn btn-outline-secondary" data-perm="patient:identity_read" id="btn-reveal">顯示完整身分證</button>
+          <button class="btn btn-outline-danger" data-perm="patient:verify" id="btn-lock">鎖定帳號</button>
+          <button class="btn btn-outline-success" data-perm="patient:verify" id="btn-unlock">解除鎖定</button>
+        </div>
+      </div>
+      <div class="alert alert-secondary small mt-3 mb-0 d-none" id="record-info"></div>
+    </div>
+  </div>
+
+  <ul class="nav nav-tabs mb-3" role="tablist">
+    <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-profile" type="button" role="tab">自填資料</button></li>
+    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-encounters" type="button" role="tab">就診 / 住院</button></li>
+    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-care" type="button" role="tab">風險與追蹤</button></li>
+    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-notes" type="button" role="tab">備註</button></li>
+    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-history" type="button" role="tab">送出紀錄 / 審核</button></li>
+  </ul>
+
+  <div class="tab-content">
+    <div class="tab-pane fade show active" id="tab-profile" role="tabpanel">
+      <div class="d-flex justify-content-end mb-2" data-perm="patient:write">
+        <button class="btn btn-sm btn-outline-secondary" id="btn-correct" data-bs-toggle="modal" data-bs-target="#correct-modal">修正自填資料</button>
+      </div>
+      <div class="row g-3" id="profile-sections"></div>
+    </div>
+
+    <div class="tab-pane fade" id="tab-encounters" role="tabpanel">
+      <div class="d-flex justify-content-end mb-2" data-perm="encounter:manage">
+        <button class="btn btn-sm btn-brand" data-bs-toggle="modal" data-bs-target="#encounter-modal">新增就診 / 住院紀錄</button>
+      </div>
+      <div id="encounters"></div>
+    </div>
+
+    <div class="tab-pane fade" id="tab-care" role="tabpanel">
+      <div class="row g-3">
+        <div class="col-lg-6">
+          <div class="card border-0 shadow-sm h-100">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+              <span class="fw-bold">風險警示</span>
+              <button class="btn btn-sm btn-outline-secondary" data-perm="patient:write" data-bs-toggle="modal" data-bs-target="#flag-modal">新增</button>
+            </div>
+            <ul class="list-group list-group-flush" id="flags"></ul>
+          </div>
+        </div>
+        <div class="col-lg-6">
+          <div class="card border-0 shadow-sm h-100">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+              <span class="fw-bold">追蹤事項</span>
+              <button class="btn btn-sm btn-outline-secondary" data-perm="patient:write" data-bs-toggle="modal" data-bs-target="#followup-modal">新增</button>
+            </div>
+            <ul class="list-group list-group-flush" id="followups"></ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-pane fade" id="tab-notes" role="tabpanel">
+      <form class="card border-0 shadow-sm mb-3" id="note-form">
+        <div class="card-body">
+          <label class="form-label fw-semibold" for="note-body">新增備註</label>
+          <textarea class="form-control" id="note-body" name="body" rows="2" required></textarea>
+          <div class="d-flex align-items-center gap-2 mt-2">
+            <select class="form-select form-select-sm w-auto" name="visibility" id="note-visibility"></select>
+            <button class="btn btn-sm btn-brand ms-auto" type="submit">送出</button>
+          </div>
+        </div>
+      </form>
+      <ul class="list-group" id="notes"></ul>
+    </div>
+
+    <div class="tab-pane fade" id="tab-history" role="tabpanel">
+      <div class="row g-3">
+        <div class="col-lg-6">
+          <div class="card border-0 shadow-sm"><div class="card-header bg-white fw-bold">送出紀錄</div><ul class="list-group list-group-flush" id="submissions"></ul></div>
+        </div>
+        <div class="col-lg-6">
+          <div class="card border-0 shadow-sm"><div class="card-header bg-white fw-bold">院方審核 / 修正</div><ul class="list-group list-group-flush" id="reviews"></ul></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="verify-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog"><form class="modal-content" id="verify-form">
+    <div class="modal-header"><h2 class="modal-title h6">核對身份並建檔</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="關閉"></button></div>
+    <div class="modal-body">
+      <p class="small text-secondary">請與病人出示的證件核對姓名、身分證字號、出生日期。通過後病人的 LINE 帳號將可使用個人化功能。</p>
+      <div class="mb-3"><label class="form-label" for="v-method">核對方式</label><select class="form-select" id="v-method" name="identity_method" required></select></div>
+      <div class="mb-3"><label class="form-label" for="v-mrn">院內病歷號（選填）</label><input class="form-control" id="v-mrn" name="medical_record_no" maxlength="32"></div>
+      <div class="mb-3 d-none" id="v-hospital-wrap"><label class="form-label" for="v-hospital">建檔院所</label><select class="form-select" id="v-hospital" name="hospital_id"></select></div>
+      <div class="mb-0"><label class="form-label" for="v-note">備註（選填）</label><input class="form-control" id="v-note" name="note" maxlength="500"></div>
+    </div>
+    <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button><button type="submit" class="btn btn-brand">確認通過</button></div>
+  </form></div>
+</div>
+
+<div class="modal fade" id="reject-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog"><form class="modal-content" id="reject-form">
+    <div class="modal-header"><h2 class="modal-title h6">退回補正</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="關閉"></button></div>
+    <div class="modal-body">
+      <label class="form-label" for="r-reason">退回原因（會透過 LINE 通知病人）</label>
+      <textarea class="form-control" id="r-reason" name="reason" rows="3" required maxlength="500"></textarea>
+    </div>
+    <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button><button type="submit" class="btn btn-danger">退回</button></div>
+  </form></div>
+</div>
+
+<div class="modal fade" id="correct-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog"><form class="modal-content" id="correct-form">
+    <div class="modal-header"><h2 class="modal-title h6">修正自填資料</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="關閉"></button></div>
+    <div class="modal-body">
+      <p class="small text-secondary">身分證字號、填表人身份與同意事項不可由院方修改。清單型欄位請請病人自行在 LIFF 更新。</p>
+      <div class="mb-3"><label class="form-label" for="c-field">欄位</label><select class="form-select" id="c-field" required></select></div>
+      <div class="mb-3" id="c-value-wrap"><label class="form-label" for="c-value">新值</label><input class="form-control" id="c-value"></div>
+      <div class="mb-0"><label class="form-label" for="c-note">修正原因</label><input class="form-control" id="c-note" maxlength="500"></div>
+    </div>
+    <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button><button type="submit" class="btn btn-brand">儲存</button></div>
+  </form></div>
+</div>
+
+<div class="modal fade" id="encounter-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg"><form class="modal-content" id="encounter-form">
+    <div class="modal-header"><h2 class="modal-title h6">新增就診 / 住院紀錄</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="關閉"></button></div>
+    <div class="modal-body row g-3">
+      <div class="col-md-4"><label class="form-label" for="e-type">類型</label><select class="form-select" id="e-type" name="encounter_type" required></select></div>
+      <div class="col-md-4"><label class="form-label" for="e-date">就診日期</label><input class="form-control" type="date" id="e-date" name="visit_date" required></div>
+      <div class="col-md-4"><label class="form-label" for="e-dept">科別</label><input class="form-control" id="e-dept" name="department" maxlength="50"></div>
+      <div class="col-md-4"><label class="form-label" for="e-doc">主治醫師</label><input class="form-control" id="e-doc" name="attending_physician" maxlength="50"></div>
+      <div class="col-md-4"><label class="form-label" for="e-adm">入院日期</label><input class="form-control" type="date" id="e-adm" name="admitted_at"></div>
+      <div class="col-md-4"><label class="form-label" for="e-dis">出院日期</label><input class="form-control" type="date" id="e-dis" name="discharged_at"></div>
+      <div class="col-md-4"><label class="form-label" for="e-code">出院代碼</label><input class="form-control" id="e-code" name="discharge_code" maxlength="32" placeholder="供衛教內容配對"></div>
+      <div class="col-md-4"><label class="form-label" for="e-icd">診斷 ICD-10</label><input class="form-control" id="e-icd" maxlength="16" placeholder="E11"></div>
+      <div class="col-md-4"><label class="form-label" for="e-dx">診斷說明</label><input class="form-control" id="e-dx" maxlength="200"></div>
+      <div class="col-12"><label class="form-label" for="e-summary">給病人看的白話摘要（病人在 LIFF 可見）</label><textarea class="form-control" id="e-summary" name="patient_visible_summary" rows="2"></textarea></div>
+    </div>
+    <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button><button type="submit" class="btn btn-brand">新增</button></div>
+  </form></div>
+</div>
+
+<div class="modal fade" id="flag-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog"><form class="modal-content" id="flag-form">
+    <div class="modal-header"><h2 class="modal-title h6">新增風險警示</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="關閉"></button></div>
+    <div class="modal-body">
+      <div class="mb-3"><label class="form-label" for="fl-type">類型</label><select class="form-select" id="fl-type" name="flag_type" required></select></div>
+      <div class="mb-3"><label class="form-label" for="fl-level">等級</label><select class="form-select" id="fl-level" name="level"></select></div>
+      <div class="mb-0"><label class="form-label" for="fl-note">說明</label><input class="form-control" id="fl-note" name="note" maxlength="500"></div>
+    </div>
+    <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button><button type="submit" class="btn btn-brand">新增</button></div>
+  </form></div>
+</div>
+
+<div class="modal fade" id="followup-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog"><form class="modal-content" id="followup-form">
+    <div class="modal-header"><h2 class="modal-title h6">新增追蹤事項</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="關閉"></button></div>
+    <div class="modal-body">
+      <div class="mb-3"><label class="form-label" for="fu-kind">類型</label><select class="form-select" id="fu-kind" name="kind" required></select></div>
+      <div class="mb-3"><label class="form-label" for="fu-date">到期日</label><input class="form-control" type="date" id="fu-date" name="due_date" required></div>
+      <div class="mb-0"><label class="form-label" for="fu-desc">說明</label><input class="form-control" id="fu-desc" name="description" maxlength="500"></div>
+    </div>
+    <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button><button type="submit" class="btn btn-brand">新增</button></div>
+  </form></div>
+</div>
+
+<script id="intake-schema" type="application/json">{{ schema_json | safe }}</script>
+{% endblock %}
+
+{% block scripts %}
+<script>
+Admin.boot(async function (ctx) {
+  var USER_ID = {{ user_id | tojson }};
+  var API = "/api/v1/admin/patients/" + USER_ID;
+  var SCHEMA = JSON.parse(document.getElementById("intake-schema").textContent);
+  var FIELDS = {};
+  SCHEMA.forEach(function (s) { s.fields.forEach(function (f) { FIELDS[f.key] = f; }); });
+  var detail = null;
+  var esc = Admin.esc, label = Admin.label;
+
+  var BADGE = { pending: "text-bg-warning", verified: "text-bg-success", locked: "text-bg-danger", unbound: "text-bg-secondary" };
+  function localToday() {
+    var d = new Date();
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
+  var LEVEL = { low: "text-bg-secondary", medium: "text-bg-warning", high: "text-bg-danger" };
+
+  function display(field, value) {
+    if (value == null || value === "" || (Array.isArray(value) && !value.length)) return '<span class="text-secondary">—</span>';
+    if (field.type === "bool") return value ? "是" : "否";
+    if (field.type === "select") return esc(optLabel(field, value));
+    if (field.type === "multi") return value.map(function (v) { return '<span class="badge text-bg-light border me-1">' + esc(optLabel(field, v)) + "</span>"; }).join("");
+    if (field.type === "list") {
+      return '<ul class="mb-0 ps-3">' + value.map(function (item) {
+        return "<li>" + field.item_fields.map(function (sub) {
+          var v = item[sub.key];
+          if (v == null || v === "") return null;
+          return esc(sub.label) + "：" + esc(sub.type === "select" ? optLabel(sub, v) : v);
+        }).filter(Boolean).join("，") + "</li>";
+      }).join("") + "</ul>";
+    }
+    return esc(value);
+  }
+  function optLabel(field, value) {
+    var hit = (field.options || []).filter(function (o) { return o.value === value; })[0];
+    return hit ? hit.label : value;
+  }
+
+  function renderProfile(profile) {
+    var wrap = document.getElementById("profile-sections");
+    wrap.innerHTML = SCHEMA.map(function (step) {
+      var rows = step.fields.filter(function (f) { return f.type !== "hidden"; }).map(function (f) {
+        var value = profile[f.key];
+        if (f.key === "national_id") value = profile.national_id;
+        return '<div class="col-5 col-lg-4 text-secondary small py-1">' + esc(f.label) + '</div><div class="col-7 col-lg-8 py-1" data-value="' + f.key + '">' + display(f, value) + "</div>";
+      }).join("");
+      return '<div class="col-lg-6"><div class="card border-0 shadow-sm h-100"><div class="card-header bg-white fw-bold">' + step.number + ". " + esc(step.title) + '</div><div class="card-body"><div class="row g-0 small">' + rows + "</div></div></div></div>";
+    }).join("");
+  }
+
+  function renderHeader() {
+    var p = detail.profile, u = detail.user, r = detail.record;
+    document.getElementById("crumb-name").textContent = p.full_name || "（未填姓名）";
+    document.getElementById("p-name").textContent = p.full_name || "（未填姓名）";
+    var badge = document.getElementById("p-status");
+    badge.className = "badge ms-1 " + (BADGE[u.binding_status] || "text-bg-secondary");
+    badge.textContent = label("binding_statuses", u.binding_status);
+    document.getElementById("p-meta").textContent = [
+      "身分證 " + (p.national_id || "—"), "出生 " + (p.birth_date || "—"), "手機 " + (p.phone || "—"),
+      p.filler_relation === "family" ? "家屬代填（" + (p.filler_name || "") + "）" : "本人填寫",
+      "LINE 角色 " + label("roles", u.role),
+      "常去院所 " + Admin.hospitalName(p.preferred_hospital_id)
+    ].join("　·　");
+    document.getElementById("p-flags").innerHTML = detail.flags.filter(function (f) { return f.active; }).map(function (f) {
+      return '<span class="badge ' + (LEVEL[f.level] || "text-bg-secondary") + '">' + esc(label("flag_types", f.flag_type)) + (f.note ? "：" + esc(f.note) : "") + "</span>";
+    }).join("");
+    var info = document.getElementById("record-info");
+    if (r) {
+      info.classList.remove("d-none");
+      info.innerHTML = "已於 <b>" + esc(Admin.hospitalName(r.hospital_id)) + "</b> 建檔" + (r.medical_record_no ? "，病歷號 <b>" + esc(r.medical_record_no) + "</b>" : "") +
+        "，核對方式 " + esc(label("identity_methods", r.identity_method)) + "，" + Admin.fmtDate(r.identity_verified_at);
+      document.getElementById("btn-verify").textContent = "更新病歷號";
+    } else {
+      info.classList.add("d-none");
+    }
+    var isPending = u.binding_status === "pending", isLocked = u.binding_status === "locked";
+    document.getElementById("btn-reject").classList.toggle("d-none", !isPending || !ctx.can("patient:verify"));
+    document.getElementById("btn-lock").classList.toggle("d-none", isLocked || !ctx.can("patient:verify"));
+    document.getElementById("btn-unlock").classList.toggle("d-none", !isLocked || !ctx.can("patient:verify"));
+    document.getElementById("btn-verify").disabled = !p.submitted_at || isLocked || (!r && !isPending);
+    document.getElementById("btn-verify").title = isLocked ? "請先解除鎖定" : (!p.submitted_at ? "病人尚未送出表單" : "");
+    if (!r && !ctx.me.hospital_id) {
+      document.getElementById("v-hospital-wrap").classList.remove("d-none");
+      Admin.hospitalOptions(document.getElementById("v-hospital"), true);
+      document.getElementById("v-hospital").value = p.preferred_hospital_id || "";
+    }
+  }
+
+  function renderEncounters() {
+    var wrap = document.getElementById("encounters");
+    if (!detail.record) { wrap.innerHTML = '<div class="text-secondary small">病人尚未在本院建檔，建檔後才能新增就診紀錄。</div>'; return; }
+    if (!detail.encounters.length) { wrap.innerHTML = '<div class="text-secondary small">尚無就診紀錄</div>'; return; }
+    wrap.innerHTML = detail.encounters.map(function (e) {
+      var dx = (e.diagnoses || []).map(function (d) { return esc((d.icd10_code ? d.icd10_code + " " : "") + (d.description || "")); }).join("；");
+      return '<div class="card border-0 shadow-sm mb-2"><div class="card-body">' +
+        '<div class="d-flex justify-content-between"><div><span class="badge text-bg-light border me-2">' + esc(label("encounter_types", e.encounter_type)) + "</span><b>" + esc(e.visit_date) + "</b> " + esc(e.department || "") + (e.attending_physician ? " · " + esc(e.attending_physician) : "") + "</div>" +
+        (e.discharge_code ? '<span class="badge text-bg-info">出院代碼 ' + esc(e.discharge_code) + "</span>" : "") + "</div>" +
+        (dx ? '<div class="small mt-2">診斷：' + dx + "</div>" : "") +
+        (e.admitted_at || e.discharged_at ? '<div class="small text-secondary mt-1">住院 ' + esc(e.admitted_at || "?") + " ～ " + esc(e.discharged_at || "?") + "</div>" : "") +
+        (e.patient_visible_summary ? '<div class="small mt-2 border-start ps-2">病人可見：' + esc(e.patient_visible_summary) + "</div>" : "") +
+        "</div></div>";
+    }).join("");
+  }
+
+  function renderCare() {
+    var flags = document.getElementById("flags");
+    flags.innerHTML = detail.flags.length ? detail.flags.map(function (f) {
+      return '<li class="list-group-item d-flex justify-content-between align-items-center' + (f.active ? "" : " text-secondary text-decoration-line-through") + '">' +
+        '<span><span class="badge ' + (LEVEL[f.level] || "text-bg-secondary") + ' me-2">' + esc(label("flag_levels", f.level)) + "</span>" + esc(label("flag_types", f.flag_type)) + (f.note ? '<span class="small text-secondary"> — ' + esc(f.note) + "</span>" : "") + "</span>" +
+        (f.active && ctx.can("patient:write") ? '<button class="btn btn-sm btn-link text-secondary" data-flag-off="' + f.id + '">解除</button>' : "") + "</li>";
+    }).join("") : '<li class="list-group-item text-secondary small">無</li>';
+    flags.querySelectorAll("[data-flag-off]").forEach(function (b) {
+      b.addEventListener("click", function () { act("PATCH", API + "/flags/" + b.getAttribute("data-flag-off"), { active: false }, "已解除警示"); });
+    });
+
+    var fus = document.getElementById("followups");
+    fus.innerHTML = detail.follow_ups.length ? detail.follow_ups.map(function (f) {
+      var overdue = f.status === "open" && f.due_date < localToday();
+      return '<li class="list-group-item d-flex justify-content-between align-items-center">' +
+        "<span><b class='" + (overdue ? "text-danger" : "") + "'>" + esc(f.due_date) + "</b> " + esc(label("follow_up_kinds", f.kind)) + (f.description ? ' <span class="small text-secondary">— ' + esc(f.description) + "</span>" : "") + "</span>" +
+        (f.status === "open" && ctx.can("patient:write") ? '<button class="btn btn-sm btn-outline-success" data-fu-done="' + f.id + '">完成</button>' : '<span class="badge text-bg-light border">' + esc(label("follow_up_statuses", f.status)) + "</span>") + "</li>";
+    }).join("") : '<li class="list-group-item text-secondary small">無</li>';
+    fus.querySelectorAll("[data-fu-done]").forEach(function (b) {
+      b.addEventListener("click", function () { act("PATCH", API + "/follow-ups/" + b.getAttribute("data-fu-done"), { status: "done" }, "已完成"); });
+    });
+  }
+
+  function renderNotes() {
+    document.getElementById("notes").innerHTML = detail.notes.length ? detail.notes.map(function (n) {
+      return '<li class="list-group-item"><div class="d-flex justify-content-between small text-secondary"><span>' + Admin.fmtDate(n.created_at) + "</span><span class='badge text-bg-light border'>" + esc(label("note_visibility", n.visibility)) + "</span></div><div class='mt-1' style='white-space: pre-wrap;'>" + esc(n.body) + "</div></li>";
+    }).join("") : '<li class="list-group-item text-secondary small">尚無備註</li>';
+  }
+
+  function renderHistory() {
+    var STATUS = { submitted: ["text-bg-warning", "待審核"], reviewed: ["text-bg-success", "已審核"], rejected: ["text-bg-danger", "已退回"] };
+    document.getElementById("submissions").innerHTML = detail.submissions.length ? detail.submissions.map(function (s) {
+      var st = STATUS[s.status] || ["text-bg-secondary", s.status];
+      return '<li class="list-group-item small"><span class="badge ' + st[0] + ' me-2">' + st[1] + "</span>" + Admin.fmtDate(s.created_at) + (s.review_note ? '<div class="text-secondary mt-1">' + esc(s.review_note) + "</div>" : "") + "</li>";
+    }).join("") : '<li class="list-group-item text-secondary small">尚未送出</li>';
+    document.getElementById("reviews").innerHTML = detail.reviews.length ? detail.reviews.map(function (r) {
+      var changes = Object.keys(r.corrections || {}).map(function (k) {
+        var f = FIELDS[k]; var c = r.corrections[k];
+        return esc(f ? f.label : k) + "：" + esc(JSON.stringify(c.from)) + " → " + esc(JSON.stringify(c.to));
+      }).join("<br>");
+      return '<li class="list-group-item small">' + Admin.fmtDate(r.created_at) + (r.review_note ? " · " + esc(r.review_note) : "") + (changes ? '<div class="text-secondary mt-1">' + changes + "</div>" : "") + "</li>";
+    }).join("") : '<li class="list-group-item text-secondary small">無</li>';
+  }
+
+  async function load() {
+    detail = await ctx.api(API);
+    renderHeader(); renderProfile(detail.profile); renderEncounters(); renderCare(); renderNotes(); renderHistory();
+    document.getElementById("loading").classList.add("d-none");
+    document.getElementById("content").classList.remove("d-none");
+  }
+
+  async function act(method, url, body, successMessage, modalId) {
+    try {
+      await ctx.api(url, { method: method, body: body });
+      if (modalId) bootstrap.Modal.getInstance(document.getElementById(modalId)).hide();
+      Admin.toast(successMessage);
+      await load();
+    } catch (err) {
+      Admin.toast(err.message + (err.details && err.details.fields ? "：" + Object.values(err.details.fields).join("；") : ""), "danger");
+    }
+  }
+
+  Admin.options(document.getElementById("v-method"), "identity_methods");
+  Admin.options(document.getElementById("e-type"), "encounter_types");
+  Admin.options(document.getElementById("fl-type"), "flag_types");
+  Admin.options(document.getElementById("fl-level"), "flag_levels");
+  document.getElementById("fl-level").value = "medium";
+  Admin.options(document.getElementById("fu-kind"), "follow_up_kinds");
+  Admin.options(document.getElementById("note-visibility"), "note_visibility");
+
+  // 可修正欄位：純量型，排除身份與同意
+  var correctable = Object.keys(FIELDS).filter(function (k) {
+    var f = FIELDS[k];
+    return ["text", "textarea", "date", "number", "select", "bool"].indexOf(f.type) >= 0 &&
+      ["national_id", "filler_relation"].indexOf(k) < 0 && k.indexOf("consent_") !== 0;
+  });
+  var cField = document.getElementById("c-field");
+  cField.innerHTML = correctable.map(function (k) { return '<option value="' + k + '">' + esc(FIELDS[k].label) + "</option>"; }).join("");
+  function renderCorrectInput() {
+    var f = FIELDS[cField.value]; var wrap = document.getElementById("c-value-wrap");
+    var current = detail ? detail.profile[f.key] : null;
+    var input;
+    if (f.type === "select") {
+      input = '<select class="form-select" id="c-value"><option value="">（清空）</option>' + f.options.map(function (o) { return '<option value="' + o.value + '"' + (o.value === current ? " selected" : "") + ">" + esc(o.label) + "</option>"; }).join("") + "</select>";
+    } else if (f.type === "bool") {
+      input = '<select class="form-select" id="c-value"><option value="true"' + (current === true ? " selected" : "") + '>是</option><option value="false"' + (current === false ? " selected" : "") + ">否</option></select>";
+    } else {
+      input = '<input class="form-control" id="c-value" type="' + (f.type === "date" ? "date" : f.type === "number" ? "number" : "text") + '" value="' + esc(current == null ? "" : current) + '">';
+    }
+    wrap.innerHTML = '<label class="form-label" for="c-value">新值</label>' + input;
+  }
+  cField.addEventListener("change", renderCorrectInput);
+  document.getElementById("correct-modal").addEventListener("show.bs.modal", renderCorrectInput);
+
+  document.getElementById("verify-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    act("POST", API + "/verify", Admin.formData(e.target), "已核對通過並建檔", "verify-modal");
+  });
+  document.getElementById("reject-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    act("POST", API + "/reject", Admin.formData(e.target), "已退回並通知病人", "reject-modal");
+  });
+  document.getElementById("correct-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var f = FIELDS[cField.value]; var raw = document.getElementById("c-value").value;
+    var value = raw === "" ? null : f.type === "bool" ? raw === "true" : f.type === "number" ? Number(raw) : raw;
+    var changes = {}; changes[f.key] = value;
+    act("PATCH", API + "/profile", { changes: changes, note: document.getElementById("c-note").value || null }, "已修正", "correct-modal");
+  });
+  document.getElementById("encounter-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var body = Admin.formData(e.target);
+    var icd = document.getElementById("e-icd").value.trim(), dx = document.getElementById("e-dx").value.trim();
+    body.diagnoses = icd || dx ? [{ icd10_code: icd || null, description: dx || null }] : [];
+    act("POST", API + "/encounters", body, "已新增就診紀錄", "encounter-modal").then(function () { e.target.reset(); });
+  });
+  document.getElementById("flag-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    act("POST", API + "/flags", Admin.formData(e.target), "已新增風險警示", "flag-modal").then(function () { e.target.reset(); });
+  });
+  document.getElementById("followup-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    act("POST", API + "/follow-ups", Admin.formData(e.target), "已新增追蹤事項", "followup-modal").then(function () { e.target.reset(); });
+  });
+  document.getElementById("note-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    act("POST", API + "/notes", Admin.formData(e.target), "已新增備註").then(function () { document.getElementById("note-body").value = ""; });
+  });
+  document.getElementById("btn-lock").addEventListener("click", function () {
+    var reason = window.prompt("鎖定原因（會記入稽核紀錄）");
+    if (reason === null) return;
+    act("POST", API + "/lock", { reason: reason }, "已鎖定帳號");
+  });
+  document.getElementById("btn-unlock").addEventListener("click", function () {
+    if (!window.confirm("解除鎖定後病人可以重新填寫資料，確定？")) return;
+    act("POST", API + "/unlock", {}, "已解除鎖定");
+  });
+  document.getElementById("btn-reveal").addEventListener("click", async function () {
+    try {
+      var result = await ctx.api(API + "/national-id");
+      document.querySelector('[data-value="national_id"]').textContent = result.national_id;
+      Admin.toast("已顯示完整身分證字號（此操作會被記錄）", "warning");
+    } catch (err) { Admin.toast(err.message, "danger"); }
+  });
+
+  await load();
+});
+</script>
+{% endblock %}

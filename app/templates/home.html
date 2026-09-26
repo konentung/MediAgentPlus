@@ -30,6 +30,7 @@
   <div id="signed-in" hidden>
     <p><span id="display-name"></span> 您好</p>
     <p class="meta">角色：<span id="role"></span></p>
+    <p id="admin-entry" hidden><a class="btn" href="/admin">院方後台</a></p>
     <p><a class="btn secondary" href="#" id="logout">登出</a></p>
   </div>
 </div>
@@ -53,6 +54,8 @@
       .then(function (body) {
         document.getElementById("display-name").textContent = body.data.display_name || "LINE 使用者";
         document.getElementById("role").textContent = body.data.role;
+        var staffRoles = ["cs_agent", "medical_staff", "hospital_admin", "super_admin"];
+        document.getElementById("admin-entry").hidden = staffRoles.indexOf(body.data.role) < 0;
         signedIn.hidden = false;
       })
       .catch(function () {
@@ -62,6 +65,11 @@
 
     document.getElementById("logout").addEventListener("click", function (event) {
       event.preventDefault();
+      var refresh = null;
+      try { refresh = sessionStorage.getItem("refresh_token"); } catch (err) { /* ignore */ }
+      if (refresh) {
+        navigator.sendBeacon("/api/v1/auth/logout", new Blob([JSON.stringify({ refresh_token: refresh })], { type: "application/json" }));
+      }
       try { sessionStorage.clear(); } catch (err) { /* ignore */ }
       showAnonymous();
     });

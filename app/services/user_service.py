@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-from app.core.exceptions import AuthorizationError, NotFoundError
+from app.core.exceptions import AuthorizationError, NotFoundError, ValidationError
 from app.domain.enums import Role
 from app.domain.principal import Principal
 from app.domain.rbac import AccessPolicy
 from app.repositories.user_repository import UserRecord, UserRepository
+from app.services.hospital_service import HospitalService
 
 
 class UserService:
-    def __init__(self, users: UserRepository) -> None:
+    def __init__(self, users: UserRepository, hospitals: HospitalService) -> None:
         self._users = users
+        self._hospitals = hospitals
 
-    # ---- 查詢 / 建立 ----
     def get_or_create_by_line(
         self, line_user_id: str, display_name: str | None = None, picture_url: str | None = None
     ) -> UserRecord:
@@ -47,20 +48,45 @@ class UserService:
     def get_by_line_user_id(self, line_user_id: str) -> UserRecord | None:
         return self._users.get_by_line_user_id(line_user_id)
 
-    # ---- 權限相關 ----
     def assign_role(
-        self, actor: Principal, target_user_id: str, role: Role, hospital_id: str | None = None
+        self,
+        actor: Principal,
+        target_user_id: str,
+        role: Role,
+        hospital_id: str | None = None,
+        *,
+        clear_hospital: bool = False,
     ) -> UserRecord:
-        """指派角色；需具 STAFF_MANAGE 且該角色在可指派範圍內，且不得跨院所。"""
-        if not AccessPolicy.can_assign_role(actor, role):
-            raise AuthorizationError(f"你沒有權限指派角色 {role.value}")
+        """指派角色。
+
+        - 目標的新角色與現任角色都必須在 actor 可指派範圍內（避免院所管理員降級其他管理員）。
+        - 不能改自己的角色。
+        - 院方角色（SUPER_ADMIN 除外）必須有所屬院所，且不得跨院所。
+        - `clear_hospital=True` 才會把院所清空；未提供 hospital_id 時沿用目標原本的院所。
+        """
+        if actor.user_id == target_user_id:
+            raise AuthorizationError("不能修改自己的角色")
         target = self.get(target_user_id)
-        effective_hospital = hospital_id or target.hospital_id or actor.hospital_id
-        if role.is_staff and not AccessPolicy.can_access_hospital(actor, effective_hospital):
-            raise AuthorizationError("不得指派其他院所的人員")
+        if not AccessPolicy.can_assign_role(actor, role) or not AccessPolicy.can_assign_role(
+            actor, target.role
+        ):
+            raise AuthorizationError(f"你沒有權限指派角色 {role.value}")
+        if target.role.is_staff and not AccessPolicy.can_access_hospital(actor, target.hospital_id):
+            raise AuthorizationError("不得修改其他院所人員的角色")
+
+        if clear_hospital:
+            effective_hospital = None
+        else:
+            effective_hospital = hospital_id or target.hospital_id or actor.hospital_id
+        if role.is_staff and role is not Role.SUPER_ADMIN:
+            if not effective_hospital:
+                raise ValidationError("院方人員必須指定所屬院所")
+            if not AccessPolicy.can_access_hospital(actor, effective_hospital):
+                raise AuthorizationError("不得指派其他院所的人員")
+        if effective_hospital:
+            self._hospitals.require_active(effective_hospital)
         return self._users.update(target.id, role=role, hospital_id=effective_hospital)
 
-    # ---- 轉換 ----
     @staticmethod
     def to_principal(user: UserRecord) -> Principal:
         return Principal(

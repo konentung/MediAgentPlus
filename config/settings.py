@@ -27,6 +27,9 @@ class BaseConfig:
     DEBUG = False
     TESTING = False
     SECRET_KEY = _env("SECRET_KEY", "dev-secret-key")
+    # 信任的 reverse proxy 層數（ngrok / nginx），讓 request.remote_addr 拿到真實 IP；0 = 不信任
+    TRUSTED_PROXY_COUNT = int(_env("TRUSTED_PROXY_COUNT", "0"))
+    MAX_CONTENT_LENGTH = 50 * 1024 * 1024
     LOG_LEVEL = _env("LOG_LEVEL", "INFO")
 
     # ---- PostgreSQL ----
@@ -35,6 +38,9 @@ class BaseConfig:
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True}
+
+    # ---- Redis（選用）：設定後 OAuth state 與 rate limit 改用 Redis，多 worker 共用 ----
+    REDIS_URL = _env("REDIS_URL")
 
     # ---- LINE Messaging API ----
     LINE_CHANNEL_SECRET = _env("LINE_CHANNEL_SECRET")
@@ -59,6 +65,11 @@ class BaseConfig:
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(seconds=int(_env("JWT_ACCESS_EXPIRES_SECONDS", "3600")))
     JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=int(_env("JWT_REFRESH_EXPIRES_DAYS", "30")))
 
+    # ---- 病人資料欄位加密（身分證字號）----
+    # Fernet 金鑰，產生方式見 .env.example。
+    # 未設定時由 SECRET_KEY 衍生，僅供開發；正式環境必填（見 ProductionConfig.REQUIRED_KEYS）。
+    PATIENT_DATA_KEY = _env("PATIENT_DATA_KEY")
+
 
 class DevelopmentConfig(BaseConfig):
     ENV = "development"
@@ -82,6 +93,8 @@ class TestingConfig(BaseConfig):
     LIFF_ID = "1234567890-abcdefgh"
     LIFF_CHANNEL_ID = "1234567890"
     JWT_SECRET_KEY = "test-jwt-secret"
+    PATIENT_DATA_KEY = ""  # 由 SECRET_KEY 衍生
+    RATELIMIT_ENABLED = False
 
 
 class ProductionConfig(BaseConfig):
@@ -95,6 +108,7 @@ class ProductionConfig(BaseConfig):
         "LINE_LOGIN_CHANNEL_ID",
         "LINE_LOGIN_CHANNEL_SECRET",
         "LIFF_ID",
+        "PATIENT_DATA_KEY",
     )
 
     @classmethod
@@ -112,10 +126,19 @@ CONFIG_MAP: dict[str, type[BaseConfig]] = {
 }
 
 
+DEFAULT_SECRETS = ("dev-secret-key", "change-me", "change-me-too")
+
+
 def get_config(name: str | None = None) -> type[BaseConfig]:
-    """依名稱（或 FLASK_ENV）取得設定類別。"""
-    env_name = name or os.getenv("FLASK_ENV", "development")
-    config = CONFIG_MAP.get(env_name, DevelopmentConfig)
+    """依名稱（或 FLASK_ENV）取得設定類別。
+
+    FLASK_ENV 未設定時視為 production：漏設環境變數時寧可啟動失敗，
+    也不要用寫死的開發金鑰對外服務（否則任何人都能簽出任意使用者的 JWT）。
+    """
+    env_name = name or os.getenv("FLASK_ENV", "production")
+    config = CONFIG_MAP.get(env_name, ProductionConfig)
     if config is ProductionConfig:
         ProductionConfig.validate()
+        if config.SECRET_KEY in DEFAULT_SECRETS or config.JWT_SECRET_KEY in DEFAULT_SECRETS:
+            raise RuntimeError("SECRET_KEY / JWT_SECRET_KEY 不可使用範例預設值")
     return config

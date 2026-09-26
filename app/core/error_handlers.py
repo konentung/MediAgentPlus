@@ -59,5 +59,8 @@ def register_error_handlers(app: Flask) -> None:
 
     @app.errorhandler(Exception)
     def handle_unexpected(err: Exception):
-        current_app.logger.exception("Unhandled exception: %s", err)
+        # 只記型別與 traceback；不把 str(err) 帶進 log，SQLAlchemy 例外會夾帶含個資的 SQL 參數
+        current_app.logger.error(
+            "Unhandled %s at %s %s", type(err).__name__, request.method, request.path, exc_info=True
+        )
         return _respond("internal_error", "伺服器發生未預期的錯誤", 500)

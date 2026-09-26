@@ -24,6 +24,8 @@ def test_home_page_renders(client):
         ("/settings", "/settings"),
         ("//evil.com", "/"),
         ("https://evil.com", "/"),
+        ("/\\evil.com", "/"),
+        ("/\\\\evil.com", "/"),
     ],
 )
 def test_safe_redirect_to(value, expected):

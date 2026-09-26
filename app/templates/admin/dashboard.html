@@ -1,0 +1,67 @@
+{% extends "admin/base.html" %}
+{% block title %}儀表板{% endblock %}
+
+{% block content %}
+<h1 class="h4 mb-4">儀表板</h1>
+<div class="row g-3">
+  <div class="col-sm-6 col-lg-4" data-perm="patient:read">
+    <a class="card border-0 shadow-sm text-decoration-none text-body h-100" href="{{ url_for('admin_pages.patients') }}?status=pending">
+      <div class="card-body">
+        <div class="text-secondary small">待核對病人</div>
+        <div class="display-6 fw-bold" id="stat-pending">—</div>
+      </div>
+    </a>
+  </div>
+  <div class="col-sm-6 col-lg-4" data-perm="patient:read">
+    <a class="card border-0 shadow-sm text-decoration-none text-body h-100" href="{{ url_for('admin_pages.patients') }}?status=active">
+      <div class="card-body">
+        <div class="text-secondary small">到期追蹤事項</div>
+        <div class="display-6 fw-bold" id="stat-followups">—</div>
+      </div>
+    </a>
+  </div>
+  <div class="col-sm-6 col-lg-4" data-perm="handoff:accept">
+    <a class="card border-0 shadow-sm text-decoration-none text-body h-100" href="{{ url_for('admin_pages.handoffs') }}">
+      <div class="card-body">
+        <div class="text-secondary small">待接真人客服工單</div>
+        <div class="display-6 fw-bold" id="stat-handoffs">—</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<div class="card border-0 shadow-sm mt-4" data-perm="patient:read">
+  <div class="card-header bg-white fw-bold">最新待核對病人</div>
+  <div class="table-responsive">
+    <table class="table table-hover mb-0 align-middle">
+      <thead class="table-light"><tr><th>姓名</th><th>手機</th><th>填表人</th><th>送出時間</th><th></th></tr></thead>
+      <tbody id="recent-pending"><tr><td colspan="5" class="text-secondary text-center py-4">載入中…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+Admin.boot(async function (ctx) {
+  if (!ctx.can("patient:read")) return;
+  var stats = await ctx.api("/api/v1/admin/dashboard");
+  document.getElementById("stat-pending").textContent = stats.pending_patients;
+  document.getElementById("stat-followups").textContent = stats.due_follow_ups;
+  document.getElementById("stat-handoffs").textContent = stats.open_handoffs;
+
+  var rows = await ctx.api("/api/v1/admin/patients?status=pending");
+  var tbody = document.getElementById("recent-pending");
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="text-secondary text-center py-4">目前沒有待核對的病人</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.slice(0, 10).map(function (p) {
+    return "<tr><td>" + Admin.esc(p.full_name) + "</td><td>" + Admin.esc(p.phone) + "</td>" +
+      "<td>" + (p.filler_relation === "family" ? "家屬代填" : "本人") + "</td>" +
+      "<td>" + Admin.fmtDate(p.submitted_at) + "</td>" +
+      '<td class="text-end"><a class="btn btn-sm btn-brand" href="/admin/patients/' + encodeURIComponent(p.user_id) + '">核對</a></td></tr>';
+  }).join("");
+});
+</script>
+{% endblock %}

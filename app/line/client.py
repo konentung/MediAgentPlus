@@ -26,7 +26,6 @@ class LineMessagingClient:
     def __init__(self, channel_access_token: str) -> None:
         self._configuration = Configuration(access_token=channel_access_token)
 
-    # ---- 訊息 ----
     def reply(self, reply_token: str, messages: Sequence[Message]) -> None:
         with ApiClient(self._configuration) as api_client:
             MessagingApi(api_client).reply_message(
@@ -43,7 +42,6 @@ class LineMessagingClient:
         with ApiClient(self._configuration) as api_client:
             return MessagingApi(api_client).get_profile(user_id)
 
-    # ---- Rich Menu ----
     def create_rich_menu(
         self, request: RichMenuRequest, image_bytes: bytes, content_type: str = "image/png"
     ) -> str:

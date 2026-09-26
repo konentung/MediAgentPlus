@@ -1,0 +1,49 @@
+{% extends "admin/base.html" %}
+{% block title %}真人客服工單{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-3">
+  <h1 class="h4 mb-0">真人客服工單</h1>
+  <button class="btn btn-outline-secondary btn-sm" id="btn-reload">重新整理</button>
+</div>
+<div class="card border-0 shadow-sm">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="table-light"><tr><th>建立時間</th><th>原因</th><th>使用者</th><th>院所</th><th>狀態</th><th></th></tr></thead>
+      <tbody id="rows"><tr><td colspan="6" class="text-center text-secondary py-4">載入中…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+Admin.boot(async function (ctx) {
+  async function load() {
+    var tbody = document.getElementById("rows");
+    var tickets = await ctx.api("/api/v1/admin/handoffs");
+    if (!tickets.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="text-center text-secondary py-4">目前沒有待接的工單</td></tr>';
+      return;
+    }
+    tbody.innerHTML = tickets.map(function (t) {
+      return "<tr><td class='small text-secondary'>" + Admin.fmtDate(t.created_at) + "</td><td>" + Admin.esc(t.reason) + "</td>" +
+        "<td><a href='/admin/patients/" + Admin.esc(t.user_id) + "' class='small'>" + Admin.esc(t.user_id) + "</a></td>" +
+        "<td>" + Admin.esc(t.hospital_id || "—") + "</td><td><span class='badge text-bg-warning'>" + Admin.esc(t.status) + "</span></td>" +
+        '<td class="text-end"><button class="btn btn-sm btn-brand" data-accept="' + t.id + '">接單</button></td></tr>';
+    }).join("");
+    tbody.querySelectorAll("[data-accept]").forEach(function (b) {
+      b.addEventListener("click", async function () {
+        try {
+          await ctx.api("/api/v1/admin/handoffs/" + b.getAttribute("data-accept") + "/accept", { method: "POST", body: {} });
+          Admin.toast("已接單");
+          await load();
+        } catch (err) { Admin.toast(err.message, "danger"); }
+      });
+    });
+  }
+  document.getElementById("btn-reload").addEventListener("click", load);
+  await load();
+});
+</script>
+{% endblock %}

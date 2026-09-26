@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import String
+from sqlalchemy import ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.domain.enums import BindingStatus, Role
@@ -37,4 +37,6 @@ class UserModel(db.Model, TimestampMixin):
         default=BindingStatus.UNBOUND,
         nullable=False,
     )
-    hospital_id: Mapped[str | None] = mapped_column(String(32), index=True)
+    hospital_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("hospitals.id", ondelete="SET NULL"), index=True
+    )

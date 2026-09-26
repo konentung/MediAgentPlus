@@ -22,12 +22,12 @@ class IntentHandler(ABC):
             ctx.reply(common.locked_messages())
             return
         if self.requires_verified and not ctx.principal.is_verified:
-            ctx.reply(common.binding_required_messages(ctx.liff_url("/binding"), self.feature_name))
+            ctx.reply(common.binding_required_messages(ctx.liff_url("/intake"), self.feature_name))
             return
         if self.required_permission and not AccessPolicy.has_permission(
             ctx.principal, self.required_permission
         ):
-            ctx.reply(common.binding_required_messages(ctx.liff_url("/binding"), self.feature_name))
+            ctx.reply(common.binding_required_messages(ctx.liff_url("/intake"), self.feature_name))
             return
         self.handle(ctx, params)
 

@@ -1,0 +1,413 @@
+{% extends "liff/base.html" %}
+
+{% block title %}基本資料填寫 - MediAgent+{% endblock %}
+
+{% block content %}
+<header class="d-flex align-items-center justify-content-between mb-3">
+  <h1 class="h5 brand mb-0">基本資料填寫</h1>
+  <span class="badge text-bg-light border" id="step-indicator"></span>
+</header>
+
+<div class="progress mb-3" role="progressbar" aria-label="填寫進度" aria-valuemin="0" aria-valuemax="6" style="height: 6px;">
+  <div class="progress-bar" id="progress-bar" style="width: 0%; background: #2f6f62;"></div>
+</div>
+
+<div id="status-banner" class="alert alert-info d-none small" role="status"></div>
+
+<section id="form-view">
+  <div class="card shadow-sm border-0">
+    <div class="card-body">
+      <h2 class="h6 fw-bold mb-1" id="step-title"></h2>
+      <p class="text-secondary small mb-1" id="step-description"></p>
+      <p class="text-secondary small mb-3"><span class="text-danger">*</span> 為必填欄位，可先跳過、送出前補齊即可</p>
+      <div id="form-error" class="alert alert-danger d-none small" role="alert"></div>
+      <form id="step-form" novalidate></form>
+    </div>
+  </div>
+
+  <nav class="d-flex gap-2 mt-3" aria-label="步驟切換">
+    <button type="button" class="btn btn-outline-secondary" id="btn-prev">上一頁</button>
+    <button type="button" class="btn btn-outline-secondary ms-auto" id="btn-draft">儲存草稿</button>
+    <button type="button" class="btn btn-brand" id="btn-next">下一頁</button>
+  </nav>
+  <p class="text-secondary small mt-3 mb-0">資料僅供您就診的院所核對身份與照護使用，身分證字號加密儲存。</p>
+</section>
+
+<section id="done-view" class="d-none text-center py-4">
+  <div class="display-6 brand mb-2">✓</div>
+  <h2 class="h5">已送出</h2>
+  <p class="text-secondary">院所核對身份後會透過 LINE 通知您。核對完成前仍可使用一般諮詢功能。</p>
+  <button type="button" class="btn btn-outline-secondary" id="btn-edit-again">檢視已送出的資料</button>
+</section>
+
+<script id="intake-schema" type="application/json">{{ schema_json | safe }}</script>
+<template id="consent-text">
+  <details class="small text-secondary mb-3">
+    <summary class="fw-bold text-body">個人資料蒐集、處理及利用告知事項（版本 {{ consent_version }}）</summary>
+    <ol class="mt-2 ps-3">
+      <li>蒐集目的：提供醫療照護、衛教與用藥提醒服務，並供您就診的院所建立病人資料。</li>
+      <li>蒐集項目：本表單所填之身份、聯絡、健康狀況、過敏、病史與用藥資料。</li>
+      <li>利用期間與方式：於服務存續期間，由本服務及您同意的合作院所以電子方式處理及利用。</li>
+      <li>您得依個人資料保護法請求查閱、複製、補充、更正、停止處理或刪除您的個人資料。</li>
+      <li>您可自由選擇是否提供；未提供必填欄位將無法完成院所建檔與個人化功能。</li>
+    </ol>
+  </details>
+</template>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var STEPS = JSON.parse(document.getElementById("intake-schema").textContent);
+  var HOSPITAL_FROM_URL = {{ hospital_id | tojson }};
+  var state = { index: 0, data: {}, completed: [], api: null, submitted: false, hospitals: [], readOnly: false };
+  var els = {
+    form: document.getElementById("step-form"),
+    title: document.getElementById("step-title"),
+    desc: document.getElementById("step-description"),
+    indicator: document.getElementById("step-indicator"),
+    progress: document.getElementById("progress-bar"),
+    error: document.getElementById("form-error"),
+    banner: document.getElementById("status-banner"),
+    prev: document.getElementById("btn-prev"),
+    next: document.getElementById("btn-next"),
+    draft: document.getElementById("btn-draft"),
+    formView: document.getElementById("form-view"),
+    doneView: document.getElementById("done-view")
+  };
+
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) {
+      if (k === "class") node.className = attrs[k];
+      else if (k === "text") node.textContent = attrs[k];
+      else if (k === "html") node.innerHTML = attrs[k];
+      else node.setAttribute(k, attrs[k]);
+    });
+    (children || []).forEach(function (c) { if (c) node.appendChild(c); });
+    return node;
+  }
+
+  // 必填標記：欄位名稱後面加紅色星號
+  function labelFor(field, forId, extraClass) {
+    var label = el("label", { class: extraClass, for: forId, text: field.label });
+    if (field.required) label.appendChild(el("span", { class: "text-danger ms-1", text: "*", "aria-label": "必填" }));
+    return label;
+  }
+
+  function inputFor(field, value, name) {
+    var common = { class: "form-control", name: name, id: "f-" + name };
+    if (field.type === "textarea") {
+      var ta = el("textarea", Object.assign(common, { rows: 3 }));
+      ta.value = value || "";
+      return ta;
+    }
+    if (field.type === "select") {
+      var sel = el("select", { class: "form-select", name: name, id: "f-" + name });
+      sel.appendChild(el("option", { value: "", text: "請選擇" }));
+      // 動態選項（院所清單）：沒填過時預選院所 QR / 連結帶入的代碼
+      var options = field.options_source === "hospitals"
+        ? state.hospitals.map(function (h) { return { value: h.id, label: h.name + (h.region ? "（" + h.region + "）" : "") }; })
+        : field.options;
+      if (field.options_source === "hospitals" && !value && HOSPITAL_FROM_URL) value = HOSPITAL_FROM_URL;
+      options.forEach(function (o) {
+        var opt = el("option", { value: o.value, text: o.label });
+        if (o.value === value) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      return sel;
+    }
+    var type = field.type === "number" ? "number" : field.type === "date" ? "date" : "text";
+    var input = el("input", Object.assign(common, { type: type }));
+    if (field.type === "number") input.step = "any";
+    if (field.key === "national_id") input.autocomplete = "off";
+    input.value = value == null ? "" : value;
+    return input;
+  }
+
+  function renderMulti(field, value) {
+    var wrap = el("div", { class: "d-flex flex-wrap gap-2", "data-multi": field.key });
+    field.options.forEach(function (o) {
+      var id = "f-" + field.key + "-" + o.value;
+      var checked = (value || []).indexOf(o.value) >= 0;
+      var box = el("input", { class: "btn-check", type: "checkbox", id: id, value: o.value, name: field.key });
+      box.checked = checked;
+      wrap.appendChild(box);
+      wrap.appendChild(el("label", { class: "btn btn-outline-secondary btn-sm", for: id, text: o.label }));
+    });
+    return wrap;
+  }
+
+  function renderBool(field, value) {
+    var id = "f-" + field.key;
+    var box = el("input", { class: "form-check-input", type: "checkbox", id: id, name: field.key });
+    box.checked = value === true;
+    return el("div", { class: "form-check form-switch" }, [box, labelFor(field, id, "form-check-label")]);
+  }
+
+  function renderListItem(field, item, index) {
+    var card = el("div", { class: "border rounded p-2 mb-2 bg-light-subtle", "data-item": index });
+    var row = el("div", { class: "row g-2" });
+    field.item_fields.forEach(function (sub) {
+      var col = el("div", { class: sub.type === "text" && sub.key !== "phone" ? "col-12" : "col-6" });
+      var name = field.key + "." + index + "." + sub.key;
+      col.appendChild(labelFor(sub, "f-" + name, "form-label small mb-1"));
+      col.appendChild(inputFor(sub, item ? item[sub.key] : "", name));
+      row.appendChild(col);
+    });
+    card.appendChild(row);
+    var remove = el("button", { type: "button", class: "btn btn-link btn-sm text-danger p-0 mt-1", text: "移除" });
+    remove.addEventListener("click", function () { card.remove(); });
+    card.appendChild(remove);
+    return card;
+  }
+
+  function renderList(field, value) {
+    var wrap = el("div", { "data-list": field.key });
+    var items = el("div", { class: "list-items" });
+    (value || []).forEach(function (item, i) { items.appendChild(renderListItem(field, item, i)); });
+    wrap.appendChild(items);
+    var add = el("button", { type: "button", class: "btn btn-outline-secondary btn-sm", text: "＋ 新增一筆" });
+    add.addEventListener("click", function () {
+      items.appendChild(renderListItem(field, null, items.children.length));
+    });
+    wrap.appendChild(add);
+    return wrap;
+  }
+
+  function renderField(field) {
+    var value = state.data[field.key];
+    var group = el("div", { class: "mb-3", "data-field": field.key });
+    if (field.type === "bool") {
+      group.appendChild(renderBool(field, value));
+    } else {
+      group.appendChild(labelFor(field, "f-" + field.key, "form-label fw-semibold"));
+      if (field.type === "multi") group.appendChild(renderMulti(field, value));
+      else if (field.type === "list") group.appendChild(renderList(field, value));
+      else group.appendChild(inputFor(field, value, field.key));
+    }
+    if (field.help) group.appendChild(el("div", { class: "form-text", text: field.help }));
+    group.appendChild(el("div", { class: "invalid-feedback d-block small", "data-error": field.key }));
+    return group;
+  }
+
+  function currentStep() { return STEPS[state.index]; }
+
+  function renderStep() {
+    var step = currentStep();
+    els.title.textContent = step.title;
+    els.desc.textContent = step.description;
+    els.indicator.textContent = "第 " + step.number + " / " + STEPS.length + " 步";
+    // 進度 = 目前步驟 / 總步數（第 1 步即顯示 1/6，最後一步填滿）
+    els.progress.style.width = Math.round(((state.index + 1) / STEPS.length) * 100) + "%";
+    els.progress.setAttribute("aria-valuenow", state.index + 1);
+    els.form.innerHTML = "";
+    if (step.number === 6) els.form.appendChild(document.getElementById("consent-text").content.cloneNode(true));
+    step.fields.forEach(function (f) { els.form.appendChild(renderField(f)); });
+    els.prev.disabled = state.index === 0;
+    var last = state.index === STEPS.length - 1;
+    els.next.textContent = last ? "送出" : "下一頁";
+    applyVisibility();
+    clearErrors();
+    if (state.readOnly) {
+      // 送出後唯讀：所有輸入停用、隱藏儲存 / 送出，只留上一頁 / 下一頁瀏覽
+      els.form.querySelectorAll("input, select, textarea, button").forEach(function (n) { n.disabled = true; });
+      els.form.querySelectorAll(".btn-link, [data-list] > .btn").forEach(function (n) { n.classList.add("d-none"); });
+      els.draft.classList.add("d-none");
+      els.next.classList.toggle("d-none", last);
+      els.next.textContent = "下一頁";
+    }
+  }
+
+  // show_if / none_flag：依目前輸入值決定顯示與停用
+  function applyVisibility() {
+    // 條件可能參照其他步驟的欄位（例如懷孕狀態看第 1 步的性別），所以要合併已存的資料
+    var values = Object.assign({}, state.data, collectStep(currentStep()));
+    currentStep().fields.forEach(function (f) {
+      var group = els.form.querySelector('[data-field="' + f.key + '"]');
+      if (!group) return;
+      if (f.show_if) group.classList.toggle("d-none", values[f.show_if[0]] !== f.show_if[1]);
+      if (f.none_flag) {
+        var none = values[f.none_flag] === true;
+        group.querySelectorAll("input, select, button").forEach(function (n) { n.disabled = none; });
+        group.classList.toggle("opacity-50", none);
+      }
+    });
+  }
+  els.form.addEventListener("change", applyVisibility);
+
+  function readScalar(field, input) {
+    if (!input) return null;
+    var v = input.value.trim();
+    if (v === "") return null;
+    return field.type === "number" ? Number(v) : v;
+  }
+
+  function collectStep(step) {
+    var out = {};
+    step.fields.forEach(function (f) {
+      if (f.type === "bool") {
+        var box = els.form.querySelector('input[name="' + f.key + '"]');
+        out[f.key] = box ? box.checked : false;
+      } else if (f.type === "multi") {
+        if (f.none_flag && out[f.none_flag] === true) { out[f.key] = []; return; }
+        out[f.key] = Array.prototype.map.call(
+          els.form.querySelectorAll('[data-multi="' + f.key + '"] input:checked'), function (n) { return n.value; });
+      } else if (f.type === "list") {
+        if (f.none_flag && out[f.none_flag] === true) { out[f.key] = []; return; }
+        out[f.key] = Array.prototype.map.call(
+          els.form.querySelectorAll('[data-list="' + f.key + '"] [data-item]'), function (card) {
+            var item = {};
+            f.item_fields.forEach(function (sub) {
+              item[sub.key] = readScalar(sub, card.querySelector('[name$=".' + sub.key + '"]'));
+            });
+            return item;
+          });
+      } else {
+        out[f.key] = readScalar(f, els.form.querySelector('[name="' + f.key + '"]'));
+      }
+    });
+    return out;
+  }
+
+  function clearErrors() {
+    els.error.classList.add("d-none");
+    els.form.querySelectorAll("[data-error]").forEach(function (n) { n.textContent = ""; });
+    els.form.querySelectorAll(".is-invalid").forEach(function (n) { n.classList.remove("is-invalid"); });
+  }
+
+  function stepIndexOfField(key) {
+    var base = key.split("[")[0];
+    return STEPS.findIndex(function (s) { return s.fields.some(function (f) { return f.key === base; }); });
+  }
+
+  function showErrors(err) {
+    els.error.textContent = err.message || "資料有誤，請檢查";
+    els.error.classList.remove("d-none");
+    var fields = (err.details && err.details.fields) || {};
+    Object.keys(fields).forEach(function (key) {
+      var base = key.split("[")[0];
+      var slot = els.form.querySelector('[data-error="' + base + '"]');
+      if (slot) slot.textContent = (slot.textContent ? slot.textContent + "；" : "") + fields[key];
+      var input = els.form.querySelector('[name="' + base + '"]');
+      if (input) input.classList.add("is-invalid");
+    });
+  }
+
+  async function saveStep(partial) {
+    clearErrors();
+    var payload = collectStep(currentStep());
+    payload.partial = partial;
+    var result = await state.api("/api/v1/liff/intake/steps/" + currentStep().number, { method: "PUT", body: payload });
+    state.data = result.profile;
+    state.completed = result.profile.completed_steps || [];
+  }
+
+  // 送出時的整體必填檢查失敗：依步驟彙整缺漏，跳回第一個有缺的步驟並標出欄位
+  function handleSubmitError(err) {
+    var fields = (err.details && err.details.fields) || {};
+    var keys = Object.keys(fields);
+    if (!keys.length) { showErrors(err); return; }
+    var byStep = {};
+    keys.forEach(function (key) {
+      var idx = stepIndexOfField(key);
+      if (idx < 0) return;
+      var label = (STEPS[idx].fields.filter(function (f) { return f.key === key.split("[")[0]; })[0] || {}).label || key;
+      (byStep[idx] = byStep[idx] || []).push(label);
+    });
+    var indexes = Object.keys(byStep).map(Number).sort(function (a, b) { return a - b; });
+    els.banner.className = "alert alert-warning small";
+    els.banner.innerHTML = "還有必填欄位沒填，無法送出：<ul class='mb-0 mt-1 ps-3'>" + indexes.map(function (i) {
+      return "<li>第 " + STEPS[i].number + " 步「" + STEPS[i].title + "」：" + byStep[i].filter(function (v, j, a) { return a.indexOf(v) === j; }).join("、") + "</li>";
+    }).join("") + "</ul>";
+    els.banner.classList.remove("d-none");
+    state.index = indexes[0];
+    renderStep();
+    var stepKeys = {};
+    keys.forEach(function (key) { if (stepIndexOfField(key) === state.index) stepKeys[key] = fields[key]; });
+    showErrors({ message: "請補齊這一步的必填欄位", details: { fields: stepKeys } });
+    window.scrollTo(0, 0);
+  }
+
+  async function next() {
+    if (state.readOnly) {
+      state.index = Math.min(STEPS.length - 1, state.index + 1);
+      renderStep();
+      window.scrollTo(0, 0);
+      return;
+    }
+    els.next.disabled = true;
+    try {
+      // 「下一頁」只檢查格式、不擋必填，讓病人可以先跳過不確定的欄位；必填在最後送出時整體檢查
+      await saveStep(true);
+      if (state.index === STEPS.length - 1) {
+        try {
+          await state.api("/api/v1/liff/intake/submit", { method: "POST", body: {} });
+        } catch (err) {
+          handleSubmitError(err);
+          return;
+        }
+        state.submitted = true;
+        els.formView.classList.add("d-none");
+        els.doneView.classList.remove("d-none");
+        return;
+      }
+      state.index += 1;
+      renderStep();
+      window.scrollTo(0, 0);
+    } catch (err) {
+      showErrors(err);
+    } finally {
+      els.next.disabled = false;
+    }
+  }
+
+  els.next.addEventListener("click", next);
+  els.prev.addEventListener("click", function () {
+    if (!state.readOnly) state.data = Object.assign({}, state.data, collectStep(currentStep()));
+    state.index = Math.max(0, state.index - 1);
+    renderStep();
+  });
+  els.draft.addEventListener("click", async function () {
+    try {
+      await saveStep(true);
+      LiffApp.toast("草稿已儲存 ✓");
+    } catch (err) { showErrors(err); }
+  });
+  document.getElementById("btn-edit-again").addEventListener("click", function () {
+    // 送出後即唯讀：回表單只能檢視
+    state.readOnly = true;
+    els.banner.textContent = "資料已送出，正在等待院所核對，目前只能檢視。";
+    els.banner.className = "alert alert-info small";
+    els.doneView.classList.add("d-none");
+    els.formView.classList.remove("d-none");
+    state.index = 0;
+    renderStep();
+  });
+
+  LiffApp.boot(async function (ctx) {
+    state.api = ctx.api;
+    var init = await ctx.api("/api/v1/liff/intake");
+    state.hospitals = await ctx.api("/api/v1/liff/hospitals");
+    state.data = init.data || {};
+    state.completed = init.completed_steps || [];
+    state.readOnly = !!init.read_only;
+    if (init.binding_status === "pending") {
+      els.banner.textContent = "資料已送出，正在等待院所核對，目前只能檢視。若需修改請聯絡院所或等候退回通知。";
+      els.banner.classList.remove("d-none");
+    } else if (init.binding_status === "verified") {
+      els.banner.textContent = "已完成院所核對，資料為唯讀。需要修改請於就診時告知院所人員。";
+      els.banner.classList.remove("d-none");
+    } else if (init.binding_status === "locked") {
+      els.banner.className = "alert alert-danger small";
+      els.banner.textContent = "帳號已鎖定，請透過主選單「找真人」聯絡客服。";
+      els.banner.classList.remove("d-none");
+    }
+    // 唯讀從第 1 步開始瀏覽；可編輯時從第一個尚未完成的步驟開始
+    var firstIncomplete = STEPS.findIndex(function (s) { return state.completed.indexOf(s.number) < 0; });
+    state.index = state.readOnly || firstIncomplete < 0 ? 0 : firstIncomplete;
+    renderStep();
+  });
+})();
+</script>
+{% endblock %}

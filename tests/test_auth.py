@@ -95,3 +95,22 @@ def test_liff_auth_issues_jwt(client, container, monkeypatch):
     assert data["principal"]["line_user_id"] == "Uliff"
     assert "access_token" in data["tokens"]
     assert client.post("/api/v1/liff/auth", json={}).status_code == 422
+
+
+def test_config_defaults_to_production_and_rejects_sample_secrets(monkeypatch):
+    from config.settings import get_config
+
+    monkeypatch.delenv("FLASK_ENV", raising=False)
+    for key in ("SECRET_KEY", "JWT_SECRET_KEY"):
+        monkeypatch.setenv(key, "change-me")
+    for key in (
+        "LINE_CHANNEL_SECRET",
+        "LINE_CHANNEL_ACCESS_TOKEN",
+        "LINE_LOGIN_CHANNEL_ID",
+        "LINE_LOGIN_CHANNEL_SECRET",
+        "LIFF_ID",
+        "PATIENT_DATA_KEY",
+    ):
+        monkeypatch.setenv(key, "x")
+    with pytest.raises(RuntimeError):
+        get_config()

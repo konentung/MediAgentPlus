@@ -145,7 +145,7 @@ cp .env.example .env
 1. 同一個 Provider 下建立 **LINE Login** channel。
 2. Basic settings 的 **Channel ID** → `LINE_LOGIN_CHANNEL_ID`，**Channel secret** → `LINE_LOGIN_CHANNEL_SECRET`。
 3. LINE Login 分頁的 Callback URL 填入 `LINE_LOGIN_REDIRECT_URI`（本機為 `http://localhost:5000/api/v1/auth/line/callback`）。
-4. LIFF 分頁點 Add，Endpoint URL 先填前端網址（可先填 `https://localhost`），Scope 勾 `profile`、`openid`。
+4. LIFF 分頁點 Add，Endpoint URL 填 `https://<你的網域>/liff`（本機用 ngrok 網址），Scope 勾 `profile`、`openid`。這樣 `https://liff.line.me/<LIFF_ID>/intake?hospital=H1` 會開到 `/liff/intake`。
 5. 取得 **LIFF ID** → `LIFF_ID`。`LIFF_CHANNEL_ID` 留空即沿用 `LINE_LOGIN_CHANNEL_ID`。
 6. 在 LINE Login channel 的 Basic settings 底下「Linked OA」連結到上面的 Messaging API 官方帳號，登入時才會提示加好友。
 
@@ -157,6 +157,32 @@ python3.11 -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
 分別產生兩組填入 `SECRET_KEY` 與 `JWT_SECRET_KEY`。
+
+### 4.4 Redis（正式環境）
+
+多 worker（gunicorn `-w 2` 以上）或多台機器部署時，OAuth state 與 rate limit 必須共用儲存，
+請設定 `REDIS_URL=redis://host:6379/0`；本機單一程序可留空。
+
+### 4.5 建立第一家院所與管理員
+
+```bash
+flask --app wsgi hospital add H1 "第一醫院" --region 台北市
+flask --app wsgi user set-role <你的 user_id> super_admin      # user_id 可在 /api/v1/auth/me 或 pgAdmin 的 users 表查到
+```
+
+之後到後台 `/admin/settings` 就能新增或用 CSV 匯入其他院所（支援健保署「特約醫事機構」開放資料格式），`/admin/staff` 指派人員到院所。批次匯入也可用 CLI：
+
+```bash
+flask --app wsgi hospital import data/pharmacy/A21030000I-D21005-001.csv --only-hospitals
+```
+
+病人身分證字號以 Fernet 加密儲存，金鑰放 `PATIENT_DATA_KEY`：
+
+```bash
+python3.11 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+本機留空會由 `SECRET_KEY` 衍生（重啟不影響解密）；正式環境必填，**金鑰一旦更換既有資料就無法解密**，請妥善備份。
 
 這個專案沒有獨立前端，LINE Login callback（`/api/v1/auth/line/callback`）直接用 Jinja render
 `app/templates/auth/callback.html` 顯示登入成功頁，並把 token 交給頁面上的 script 存進

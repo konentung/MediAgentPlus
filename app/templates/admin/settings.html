@@ -1,0 +1,206 @@
+{% extends "admin/base.html" %}
+{% block title %}院所設定{% endblock %}
+
+{% block content %}
+<h1 class="h4 mb-3">院所設定</h1>
+
+<div class="card border-0 shadow-sm mb-3" id="my-hospital-card">
+  <div class="card-body">
+    <h2 class="h6 fw-bold">本院資料</h2>
+    <p class="small text-secondary d-none" id="my-hospital-empty">你的帳號尚未指派院所。系統管理員可在下方「所有院所」新增院所後，到「人員與角色」把你指派到該院所。</p>
+    <form class="row g-3 d-none" id="my-hospital-form">
+      <div class="col-md-3"><label class="form-label" for="mh-id">院所代碼</label><input class="form-control" id="mh-id" disabled></div>
+      <div class="col-md-5"><label class="form-label" for="mh-name">名稱</label><input class="form-control" id="mh-name" name="name" maxlength="100" required></div>
+      <div class="col-md-4"><label class="form-label" for="mh-region">縣市 / 區域</label><input class="form-control" id="mh-region" name="region" maxlength="50"></div>
+      <div class="col-md-8"><label class="form-label" for="mh-address">地址</label><input class="form-control" id="mh-address" name="address" maxlength="200"></div>
+      <div class="col-md-4"><label class="form-label" for="mh-phone">聯絡電話</label><input class="form-control" id="mh-phone" name="contact_phone" maxlength="30"></div>
+      <div class="col-12 text-end"><button class="btn btn-brand" type="submit">儲存</button></div>
+    </form>
+  </div>
+</div>
+
+<div class="card border-0 shadow-sm mb-3" id="intake-link-card">
+  <div class="card-body">
+    <h2 class="h6 fw-bold">病人填表連結</h2>
+    <p class="small text-secondary">把這個連結做成 QR code 貼在櫃檯，病人在 LINE 內掃描後，表單會自動選好本院，送出的資料就會進到本院的「待核對」清單。</p>
+    <div class="input-group">
+      <select class="form-select flex-grow-0 w-auto" id="link-hospital"></select>
+      <input class="form-control" id="intake-link" readonly>
+      <button class="btn btn-outline-secondary" id="btn-copy">複製</button>
+    </div>
+  </div>
+</div>
+
+<div class="card border-0 shadow-sm mb-3 d-none" id="all-hospitals-card">
+  <div class="card-header bg-white d-flex justify-content-between align-items-center">
+    <span class="fw-bold">所有院所</span>
+    <div class="d-flex gap-2">
+      <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#import-modal">匯入 CSV</button>
+      <button class="btn btn-sm btn-brand" data-bs-toggle="collapse" data-bs-target="#create-hospital">新增院所</button>
+    </div>
+  </div>
+  <div class="collapse border-bottom" id="create-hospital">
+    <form class="row g-2 p-3 bg-light" id="create-form">
+      <div class="col-md-2"><input class="form-control form-control-sm" name="id" placeholder="代碼，例：H1" pattern="[A-Za-z0-9][A-Za-z0-9_-]{1,31}" required></div>
+      <div class="col-md-3"><input class="form-control form-control-sm" name="name" placeholder="院所名稱" required></div>
+      <div class="col-md-2"><input class="form-control form-control-sm" name="region" placeholder="縣市 / 區域"></div>
+      <div class="col-md-2"><input class="form-control form-control-sm" name="contact_phone" placeholder="電話"></div>
+      <div class="col-md-2">
+        <select class="form-select form-select-sm" name="capacity_tier">
+          <option value="">層級</option>
+          <option value="medical_center">醫學中心</option>
+          <option value="regional">區域醫院</option>
+          <option value="district">地區醫院</option>
+          <option value="clinic">診所</option>
+        </select>
+      </div>
+      <div class="col-md-1 d-grid"><button class="btn btn-sm btn-brand" type="submit">新增</button></div>
+      <div class="col-12 form-text">代碼建立後不能改，會出現在病人填表連結與所有資料的 hospital_id 欄位。</div>
+    </form>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="table-light"><tr><th>代碼</th><th>名稱</th><th>區域</th><th>電話</th><th>層級</th><th>狀態</th><th></th></tr></thead>
+      <tbody id="hospital-rows"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="modal fade" id="import-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog"><form class="modal-content" id="import-form">
+    <div class="modal-header"><h2 class="modal-title h6">匯入院所 CSV</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="關閉"></button></div>
+    <div class="modal-body">
+      <p class="small text-secondary mb-2">
+        支援兩種格式：<a href="/api/v1/admin/hospitals/import/template" id="template-link">自家範本</a>（欄位 id, name, region, address, contact_phone, capacity_tier），
+        或健保署「特約醫事機構」開放資料（醫事機構代碼、醫事機構名稱、醫事機構種類、電話、地址）。
+        代碼已存在的院所會被更新，不存在的會新增；藥局等非院所列會自動略過。
+      </p>
+      <div class="mb-3"><input class="form-control" type="file" name="file" accept=".csv,text/csv" required></div>
+      <div class="form-check">
+        <input class="form-check-input" type="checkbox" id="only-hospitals" name="only_hospitals">
+        <label class="form-check-label" for="only-hospitals">只匯入醫院（略過診所）</label>
+      </div>
+      <div class="alert alert-secondary small mt-3 mb-0 d-none" id="import-result"></div>
+    </div>
+    <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">關閉</button><button type="submit" class="btn btn-brand" id="import-submit">開始匯入</button></div>
+  </form></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+Admin.boot(async function (ctx) {
+  var TIER = { medical_center: "醫學中心", regional: "區域醫院", district: "地區醫院", clinic: "診所" };
+  var isSuper = ctx.me.role === "super_admin";
+  var cfg = await fetch("/api/v1/liff/config", { headers: { "ngrok-skip-browser-warning": "1" } }).then(function (r) { return r.json(); });
+  var liffId = cfg.data.liff_id;
+
+  var mine = ctx.me.hospital_id ? ctx.hospitals[ctx.me.hospital_id] : null;
+  if (mine) {
+    var form = document.getElementById("my-hospital-form");
+    form.classList.remove("d-none");
+    document.getElementById("mh-id").value = mine.id;
+    ["name", "region", "address", "contact_phone"].forEach(function (k) { form.elements[k].value = mine[k] || ""; });
+    if (!ctx.can("hospital:settings")) Array.prototype.forEach.call(form.elements, function (i) { i.disabled = true; });
+    form.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      try {
+        await ctx.api("/api/v1/admin/hospitals/" + mine.id, { method: "PATCH", body: Admin.formData(form) });
+        Admin.toast("已更新本院資料");
+      } catch (err) { Admin.toast(err.message, "danger"); }
+    });
+  } else if (!isSuper) {
+    document.getElementById("my-hospital-empty").classList.remove("d-none");
+  } else {
+    document.getElementById("my-hospital-card").classList.add("d-none");
+  }
+
+  var linkSelect = document.getElementById("link-hospital");
+  Admin.hospitalOptions(linkSelect, false);
+  if (ctx.me.hospital_id) { linkSelect.value = ctx.me.hospital_id; linkSelect.disabled = !isSuper; }
+  function renderLink() {
+    var hospital = linkSelect.value || "<院所代碼>";
+    var link = liffId
+      ? "https://liff.line.me/" + liffId + "/intake?hospital=" + hospital
+      : window.location.origin + "/liff/intake?hospital=" + hospital;
+    document.getElementById("intake-link").value = link;
+    return link;
+  }
+  renderLink();
+  linkSelect.addEventListener("change", renderLink);
+  document.getElementById("btn-copy").addEventListener("click", function () {
+    navigator.clipboard.writeText(renderLink()).then(function () { Admin.toast("已複製"); });
+  });
+  if (!Object.keys(ctx.hospitals).length) document.getElementById("intake-link-card").classList.add("d-none");
+
+  if (isSuper) {
+    document.getElementById("all-hospitals-card").classList.remove("d-none");
+    async function loadHospitals() {
+      var rows = await ctx.api("/api/v1/admin/hospitals?all=1");
+      var tbody = document.getElementById("hospital-rows");
+      if (!rows.length) { tbody.innerHTML = '<tr><td colspan="7" class="text-center text-secondary py-4">還沒有任何院所，請先新增</td></tr>'; return; }
+      tbody.innerHTML = rows.map(function (h) {
+        return "<tr class='" + (h.active ? "" : "text-secondary") + "'><td><code>" + Admin.esc(h.id) + "</code></td><td>" + Admin.esc(h.name) + "</td><td>" + Admin.esc(h.region || "—") + "</td>" +
+          "<td>" + Admin.esc(h.contact_phone || "—") + "</td><td>" + Admin.esc(TIER[h.capacity_tier] || "—") + "</td>" +
+          "<td><span class='badge " + (h.active ? "text-bg-success" : "text-bg-secondary") + "'>" + (h.active ? "啟用" : "停用") + "</span></td>" +
+          '<td class="text-end"><button class="btn btn-sm btn-outline-secondary" data-toggle="' + Admin.esc(h.id) + '" data-active="' + h.active + '">' + (h.active ? "停用" : "啟用") + "</button></td></tr>";
+      }).join("");
+      tbody.querySelectorAll("[data-toggle]").forEach(function (b) {
+        b.addEventListener("click", async function () {
+          try {
+            await ctx.api("/api/v1/admin/hospitals/" + b.getAttribute("data-toggle"), { method: "PATCH", body: { active: b.getAttribute("data-active") !== "true" } });
+            Admin.toast("已更新"); await loadHospitals();
+          } catch (err) { Admin.toast(err.message, "danger"); }
+        });
+      });
+    }
+    // 匯入 CSV：multipart 上傳，不走 JSON 的 ctx.api
+    document.getElementById("template-link").addEventListener("click", async function (e) {
+      e.preventDefault();
+      var resp = await fetch("/api/v1/admin/hospitals/import/template", { headers: { Authorization: "Bearer " + sessionStorage.getItem("access_token"), "ngrok-skip-browser-warning": "1" } });
+      var blob = await resp.blob();
+      var a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "hospitals_template.csv"; a.click();
+    });
+    document.getElementById("import-form").addEventListener("submit", async function (e) {
+      e.preventDefault();
+      var form = e.target, btn = document.getElementById("import-submit"), box = document.getElementById("import-result");
+      var data = new FormData(); data.append("file", form.elements.file.files[0]);
+      btn.disabled = true; box.classList.add("d-none");
+      try {
+        var resp = await fetch("/api/v1/admin/hospitals/import?only_hospitals=" + (form.elements.only_hospitals.checked ? "1" : "0"), {
+          method: "POST", body: data,
+          headers: { Authorization: "Bearer " + sessionStorage.getItem("access_token"), "ngrok-skip-browser-warning": "1" }
+        });
+        var body = await resp.json();
+        if (!resp.ok) throw new Error(body.error ? body.error.message : "匯入失敗");
+        var r = body.data;
+        box.className = "alert alert-" + (r.errors.length ? "warning" : "success") + " small mt-3 mb-0";
+        box.innerHTML = "新增 <b>" + r.created + "</b>、更新 <b>" + r.updated + "</b>、略過 " + r.skipped + "、錯誤 " + r.errors.length +
+          (r.errors.length ? "<ul class='mb-0 mt-1 ps-3'>" + r.errors.slice(0, 10).map(function (x) { return "<li>第 " + x.row + " 列：" + Admin.esc(x.message) + "</li>"; }).join("") + (r.errors.length > 10 ? "<li>…其餘 " + (r.errors.length - 10) + " 筆</li>" : "") + "</ul>" : "");
+        var list = await ctx.api("/api/v1/admin/hospitals?all=1");
+        list.forEach(function (h) { ctx.hospitals[h.id] = h; });
+        Admin.hospitalOptions(linkSelect, false); renderLink();
+        document.getElementById("intake-link-card").classList.remove("d-none");
+        await loadHospitals();
+      } catch (err) {
+        box.className = "alert alert-danger small mt-3 mb-0"; box.textContent = err.message;
+      } finally { btn.disabled = false; }
+    });
+    document.getElementById("create-form").addEventListener("submit", async function (e) {
+      e.preventDefault();
+      try {
+        var created = await ctx.api("/api/v1/admin/hospitals", { method: "POST", body: Admin.formData(e.target) });
+        ctx.hospitals[created.id] = created;
+        Admin.hospitalOptions(linkSelect, false); linkSelect.value = created.id; renderLink();
+        document.getElementById("intake-link-card").classList.remove("d-none");
+        e.target.reset();
+        Admin.toast("已新增院所 " + created.name);
+        await loadHospitals();
+      } catch (err) { Admin.toast(err.message, "danger"); }
+    });
+    await loadHospitals();
+  }
+
+});
+</script>
+{% endblock %}

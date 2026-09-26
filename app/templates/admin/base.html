@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}後台{% endblock %} - MediAgent+</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body { background: #f5f6f8; font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", "Microsoft JhengHei", sans-serif; }
+    .sidebar { background: #1f3d36; min-height: 100vh; }
+    .sidebar .nav-link { color: rgba(255,255,255,.75); border-radius: .5rem; }
+    .sidebar .nav-link:hover, .sidebar .nav-link.active { color: #fff; background: rgba(255,255,255,.12); }
+    .brand { color: #2f6f62; }
+    .btn-brand { background: #2f6f62; border-color: #2f6f62; color: #fff; }
+    .btn-brand:hover { background: #245648; border-color: #245648; color: #fff; }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body>
+<div id="gate" class="d-flex align-items-center justify-content-center" style="min-height: 100vh;">
+  <div class="text-center">
+    <div class="spinner-border text-secondary" role="status"></div>
+    <p class="mt-3 text-secondary">正在確認登入狀態…</p>
+  </div>
+</div>
+
+<div id="shell" class="container-fluid d-none">
+  <div class="row">
+    <nav class="col-md-3 col-lg-2 sidebar p-3 d-flex flex-column" aria-label="後台選單">
+      <a class="text-white text-decoration-none fw-bold fs-5 mb-3 d-block" href="{{ url_for('admin_pages.dashboard') }}">MediAgent+ 後台</a>
+      <ul class="nav nav-pills flex-column gap-1">
+        <li class="nav-item"><a class="nav-link {{ 'active' if active == 'dashboard' }}" href="{{ url_for('admin_pages.dashboard') }}">儀表板</a></li>
+        <li class="nav-item" data-perm="patient:read"><a class="nav-link {{ 'active' if active == 'patients' }}" href="{{ url_for('admin_pages.patients') }}">病人資料</a></li>
+        <li class="nav-item" data-perm="handoff:accept"><a class="nav-link {{ 'active' if active == 'handoffs' }}" href="{{ url_for('admin_pages.handoffs') }}">真人客服工單</a></li>
+        <li class="nav-item" data-perm="staff:manage"><a class="nav-link {{ 'active' if active == 'staff' }}" href="{{ url_for('admin_pages.staff') }}">人員與角色</a></li>
+        <li class="nav-item" data-perm="hospital:settings"><a class="nav-link {{ 'active' if active == 'settings' }}" href="{{ url_for('admin_pages.settings') }}">院所設定</a></li>
+        <li class="nav-item" data-perm="audit:read"><a class="nav-link {{ 'active' if active == 'audit' }}" href="{{ url_for('admin_pages.audit') }}">稽核紀錄</a></li>
+        <li class="nav-item"><a class="nav-link {{ 'active' if active == 'permissions' }}" href="{{ url_for('admin_pages.permissions') }}">權限矩陣</a></li>
+      </ul>
+      <div class="mt-auto pt-3 border-top border-light border-opacity-25 small text-white-50">
+        <div id="me-name" class="text-white"></div>
+        <div id="me-role"></div>
+        <div id="me-hospital"></div>
+        <a href="#" id="logout" class="text-white-50 d-inline-block mt-2">登出</a>
+      </div>
+    </nav>
+    <main class="col-md-9 col-lg-10 p-4">
+      <div id="toast-area" class="toast-container position-fixed top-0 end-0 p-3"></div>
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</div>
+
+<script id="admin-choices" type="application/json">{{ admin_choices_json | safe }}</script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+  // 後台共用：sessionStorage 內的 JWT → /api/v1/auth/me → 依權限顯示選單；資料請求都帶 Bearer。
+  window.Admin = (function () {
+    var CHOICES = JSON.parse(document.getElementById("admin-choices").textContent);
+    var tokens = { access: null, refresh: null };
+    var me = null;
+    var hospitals = {};  // id → 院所物件，boot 時載入
+
+    function readTokens() {
+      try {
+        tokens.access = sessionStorage.getItem("access_token");
+        tokens.refresh = sessionStorage.getItem("refresh_token");
+      } catch (err) { /* ignore */ }
+    }
+
+    // 導到後台登入頁：帶上目前頁面（登入後回來）與原因（顯示提示）
+    function toLogin(reason) {
+      // 主動登出時先撤銷伺服器端的 session（含 LINE token），再清本機
+      if (!reason && tokens.refresh) {
+        navigator.sendBeacon("/api/v1/auth/logout", new Blob([JSON.stringify({ refresh_token: tokens.refresh })], { type: "application/json" }));
+      }
+      try { sessionStorage.clear(); } catch (err) { /* ignore */ }
+      var next = window.location.pathname + window.location.search;
+      var url = "{{ url_for('admin_pages.login') }}?next=" + encodeURIComponent(next);
+      if (reason) url += "&error=" + reason;
+      window.location.replace(url);
+    }
+
+    async function refresh() {
+      if (!tokens.refresh) return false;
+      var resp = await fetch("/api/v1/auth/refresh", {
+        method: "POST", headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "1" },
+        body: JSON.stringify({ refresh_token: tokens.refresh })
+      });
+      if (!resp.ok) return false;
+      var pair = (await resp.json()).data;
+      tokens.access = pair.access_token; tokens.refresh = pair.refresh_token;
+      try {
+        sessionStorage.setItem("access_token", pair.access_token);
+        sessionStorage.setItem("refresh_token", pair.refresh_token);
+      } catch (err) { /* ignore */ }
+      return true;
+    }
+
+    async function api(path, options, retried) {
+      options = options || {};
+      var headers = Object.assign({ "Content-Type": "application/json", Accept: "application/json", "ngrok-skip-browser-warning": "1" }, options.headers || {});
+      if (tokens.access) headers.Authorization = "Bearer " + tokens.access;
+      var resp = await fetch(path, Object.assign({}, options, {
+        headers: headers,
+        body: options.body && typeof options.body !== "string" ? JSON.stringify(options.body) : options.body
+      }));
+      if (resp.status === 401) {
+        if (!retried && await refresh()) return api(path, options, true);
+        toLogin("expired");
+        return new Promise(function () {});
+      }
+      var body = await resp.json();
+      if (!resp.ok) {
+        var error = new Error(body.error ? body.error.message : "請求失敗");
+        error.details = body.error ? body.error.details : null;
+        error.status = resp.status;
+        throw error;
+      }
+      return body.data;
+    }
+
+    function can(permission) { return me && me.permissions.indexOf(permission) >= 0; }
+
+    function label(group, value) {
+      return (CHOICES[group] && CHOICES[group][value]) || value || "—";
+    }
+
+    function hospitalName(id) {
+      return id ? (hospitals[id] ? hospitals[id].name : id) : "—";
+    }
+
+    // 把院所清單塞進 <select>
+    function hospitalOptions(select, includeEmpty, emptyLabel) {
+      select.innerHTML = includeEmpty ? '<option value="">' + esc(emptyLabel || "請選擇院所") + "</option>" : "";
+      Object.keys(hospitals).forEach(function (id) {
+        var opt = document.createElement("option");
+        opt.value = id; opt.textContent = hospitals[id].name + "（" + id + "）";
+        select.appendChild(opt);
+      });
+    }
+
+    function esc(text) {
+      return String(text == null ? "" : text).replace(/[&<>"']/g, function (c) {
+        return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+      });
+    }
+
+    function fmtDate(value) {
+      if (!value) return "—";
+      var d = new Date(value);
+      return isNaN(d) ? value : d.toLocaleString("zh-TW", { hour12: false });
+    }
+
+    function toast(message, kind) {
+      var area = document.getElementById("toast-area");
+      var node = document.createElement("div");
+      node.className = "toast align-items-center text-bg-" + (kind || "success") + " border-0";
+      node.setAttribute("role", "status");
+      node.innerHTML = '<div class="d-flex"><div class="toast-body">' + esc(message) + '</div>' +
+        '<button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="關閉"></button></div>';
+      area.appendChild(node);
+      var t = new bootstrap.Toast(node, { delay: 3500 });
+      node.addEventListener("hidden.bs.toast", function () { node.remove(); });
+      t.show();
+    }
+
+    // 從 form 收集成物件：空字串 → null，checkbox → boolean
+    function formData(form) {
+      var out = {};
+      Array.prototype.forEach.call(form.elements, function (input) {
+        if (!input.name) return;
+        if (input.type === "checkbox") out[input.name] = input.checked;
+        else out[input.name] = input.value.trim() === "" ? null : input.value.trim();
+      });
+      return out;
+    }
+
+    function options(select, group, includeEmpty) {
+      select.innerHTML = includeEmpty ? '<option value="">請選擇</option>' : "";
+      Object.keys(CHOICES[group]).forEach(function (value) {
+        var opt = document.createElement("option");
+        opt.value = value; opt.textContent = CHOICES[group][value];
+        select.appendChild(opt);
+      });
+    }
+
+    async function boot(pageInit) {
+      readTokens();
+      if (!tokens.access) { toLogin("unauthorized"); return; }
+      try {
+        me = await api("/api/v1/auth/me");
+      } catch (err) { toLogin("expired"); return; }
+      var staffRoles = ["cs_agent", "medical_staff", "hospital_admin", "super_admin"];
+      if (staffRoles.indexOf(me.role) < 0) { toLogin("not_staff"); return; }
+      document.getElementById("gate").classList.add("d-none");
+      document.querySelectorAll("[data-perm]").forEach(function (item) {
+        if (!can(item.getAttribute("data-perm"))) item.classList.add("d-none");
+      });
+      try {
+        (await api("/api/v1/admin/hospitals" + (me.role === "super_admin" ? "?all=1" : ""))).forEach(function (h) { hospitals[h.id] = h; });
+      } catch (err) { /* 院所清單載不到不影響其他頁面 */ }
+      document.getElementById("me-name").textContent = me.display_name || me.user_id;
+      document.getElementById("me-role").textContent = label("roles", me.role);
+      document.getElementById("me-hospital").textContent = me.hospital_id ? "院所：" + hospitalName(me.hospital_id) : (me.role === "super_admin" ? "全部院所" : "尚未指派院所");
+      document.getElementById("logout").addEventListener("click", function (e) { e.preventDefault(); toLogin(); });
+      document.getElementById("shell").classList.remove("d-none");
+      try {
+        await pageInit({ me: me, api: api, can: can, hospitals: hospitals });
+      } catch (err) {
+        toast(err.message || "載入失敗", "danger");
+      }
+    }
+
+    return { boot: boot, api: api, can: can, label: label, esc: esc, fmtDate: fmtDate, toast: toast, formData: formData, options: options, choices: CHOICES, hospitalName: hospitalName, hospitalOptions: hospitalOptions };
+  })();
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

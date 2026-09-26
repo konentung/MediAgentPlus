@@ -1,0 +1,35 @@
+{% extends "admin/base.html" %}
+{% block title %}稽核紀錄{% endblock %}
+
+{% block content %}
+<h1 class="h4 mb-1">稽核紀錄</h1>
+<p class="text-secondary small mb-3">高敏感操作的紀錄：讀取身分證明碼、鎖定 / 解除鎖定帳號。最新 100 筆。</p>
+<div class="card border-0 shadow-sm">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="table-light"><tr><th>時間</th><th>操作</th><th>操作者</th><th>病人</th><th>院所</th><th>IP</th><th>備註</th></tr></thead>
+      <tbody id="rows"><tr><td colspan="7" class="text-center text-secondary py-4">載入中…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+Admin.boot(async function (ctx) {
+  var ACTION = { "patient.national_id.reveal": "讀取身分證明碼", "patient.lock": "鎖定帳號", "patient.unlock": "解除鎖定" };
+  var rows = await ctx.api("/api/v1/admin/audit");
+  var tbody = document.getElementById("rows");
+  if (!rows.length) { tbody.innerHTML = '<tr><td colspan="7" class="text-center text-secondary py-4">尚無紀錄</td></tr>'; return; }
+  tbody.innerHTML = rows.map(function (r) {
+    return "<tr><td class='small text-secondary text-nowrap'>" + Admin.fmtDate(r.created_at) + "</td>" +
+      "<td>" + Admin.esc(ACTION[r.action] || r.action) + "</td>" +
+      "<td class='small'>" + Admin.esc(r.actor_id) + "</td>" +
+      "<td class='small'>" + (r.target_user_id ? '<a href="/admin/patients/' + encodeURIComponent(r.target_user_id) + '">' + Admin.esc(r.target_user_id) + "</a>" : "—") + "</td>" +
+      "<td>" + Admin.esc(Admin.hospitalName(r.hospital_id)) + "</td>" +
+      "<td class='small text-secondary'>" + Admin.esc(r.ip_address || "—") + "</td>" +
+      "<td class='small'>" + Admin.esc(r.detail && r.detail.reason ? r.detail.reason : "") + "</td></tr>";
+  }).join("");
+});
+</script>
+{% endblock %}

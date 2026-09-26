@@ -37,35 +37,34 @@ STAFF_ROLES: frozenset[Role] = frozenset(
 class Permission(StrEnum):
     """細粒度權限，命名格式為 resource:action。"""
 
-    # ---- 不需基本資料即可使用（服務地圖 ①、③、找醫院、找真人） ----
     CONSULT_SYMPTOM = "consult:symptom"  # ① 病況諮詢
     CONSULT_HOSPITAL = "consult:hospital"  # 找醫院 / 院所查詢 + 壅塞燈號
     CONSULT_MEDICATION_ONCE = "consult:medication_once"  # ③ 藥物諮詢單次查詢
     CONSULT_EDUCATION_GENERIC = "consult:education_generic"  # ② 衛教諮詢通用版
     HANDOFF_REQUEST = "handoff:request"  # 轉真人客服（任何時候一鍵可按）
+    INTAKE_WRITE_OWN = "intake:write_own"  # 填寫 / 送出病人自填表（驗證前即可）
 
-    # ---- 已驗證使用者專屬 ----
     PROFILE_READ_OWN = "profile:read_own"
     PROFILE_WRITE_OWN = "profile:write_own"
     EDUCATION_PERSONAL = "education:personal"  # ② 衛教個人化版 / 每日任務推播
     REMINDER_MANAGE_OWN = "reminder:manage_own"  # ④ 服藥小幫手跨日排程提醒
 
-    # ---- 真人客服 ----
     HANDOFF_ACCEPT = "handoff:accept"
     HANDOFF_REPLY = "handoff:reply"
     CONVERSATION_READ = "conversation:read"
-    PATIENT_READ = "patient:read"
+    PATIENT_READ = "patient:read"  # 病人自填資料 + 本院紀錄（身分證遮罩）
 
-    # ---- 醫護 / 衛教 ----
     EDUCATION_CONTENT_MANAGE = "education:content_manage"
+    PATIENT_WRITE = "patient:write"  # 修正自填資料、風險警示、追蹤事項
+    PATIENT_VERIFY = "patient:verify"  # 核對身份 → 建檔 / 退回
+    ENCOUNTER_MANAGE = "encounter:manage"  # 就診 / 住院紀錄
 
-    # ---- 院所管理 ----
     STAFF_MANAGE = "staff:manage"
     HOSPITAL_SETTINGS = "hospital:settings"
     RICHMENU_MANAGE = "richmenu:manage"
     AUDIT_READ = "audit:read"
+    PATIENT_IDENTITY_READ = "patient:identity_read"  # 讀取身分證明碼
 
-    # ---- 系統 ----
     HOSPITAL_MANAGE = "hospital:manage"
     SYSTEM_MANAGE = "system:manage"
 

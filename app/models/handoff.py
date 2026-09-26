@@ -21,4 +21,6 @@ class HandoffTicketModel(db.Model, TimestampMixin):
     reason: Mapped[str] = mapped_column(String(500), nullable=False)
     status: Mapped[str] = mapped_column(String(16), default="open", nullable=False)
     assignee_id: Mapped[str | None] = mapped_column(String(32))
-    hospital_id: Mapped[str | None] = mapped_column(String(32), index=True)
+    hospital_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("hospitals.id", ondelete="SET NULL"), index=True
+    )

@@ -31,7 +31,7 @@ class DischargeHandler(IntentHandler):
                 {
                     "type": "uri",
                     "label": "想要個人化 → 填寫基本資料",
-                    "uri": ctx.liff_url("/binding"),
+                    "uri": ctx.liff_url("/intake"),
                 },
             ],
         )

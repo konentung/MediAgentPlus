@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Protocol
 
-from app.domain.enums import BindingStatus, Role
+from app.domain.enums import END_USER_ROLES, BindingStatus, Role
 from app.extensions import db
 from app.models.user import UserModel
 from app.repositories.base import InMemoryStore
@@ -39,6 +39,15 @@ class UserRepository(Protocol):
     def get_by_line_user_id(self, line_user_id: str) -> UserRecord | None: ...
     def save(self, user: UserRecord) -> UserRecord: ...
     def update(self, user_id: str, **changes) -> UserRecord: ...
+    def search(
+        self,
+        *,
+        roles: frozenset[Role] | None = None,
+        hospital_id: str | None = None,
+        include_unassigned: bool = False,
+        query: str | None = None,
+        limit: int = 100,
+    ) -> list[UserRecord]: ...
 
 
 class InMemoryUserRepository:
@@ -59,6 +68,28 @@ class InMemoryUserRepository:
         if current is None:
             raise KeyError(user_id)
         return self._store.save(replace(current, **changes))
+
+    def search(
+        self,
+        *,
+        roles: frozenset[Role] | None = None,
+        hospital_id: str | None = None,
+        include_unassigned: bool = False,
+        query: str | None = None,
+        limit: int = 100,
+    ) -> list[UserRecord]:
+        rows = [
+            u
+            for u in self._store
+            if (roles is None or u.role in roles)
+            and (
+                hospital_id is None
+                or u.hospital_id == hospital_id
+                or (include_unassigned and u.hospital_id is None and u.role.is_end_user)
+            )
+            and (not query or query.lower() in (u.display_name or "").lower() or query == u.id)
+        ]
+        return rows[:limit]
 
 
 def _to_record(row: UserModel) -> UserRecord:
@@ -111,3 +142,36 @@ class SqlAlchemyUserRepository:
             setattr(row, key, value)
         db.session.commit()
         return _to_record(row)
+
+    def search(
+        self,
+        *,
+        roles: frozenset[Role] | None = None,
+        hospital_id: str | None = None,
+        include_unassigned: bool = False,
+        query: str | None = None,
+        limit: int = 100,
+    ) -> list[UserRecord]:
+        """後台人員管理用：依角色 / 院所 / 顯示名稱（或 id）搜尋。
+
+        `include_unassigned=True` 時，院所範圍內另外包含「尚未指派院所的一般使用者」，
+        讓院所管理員能為剛登入的新同仁指派角色。
+        """
+        stmt = db.select(UserModel).order_by(UserModel.created_at.desc()).limit(limit)
+        if roles is not None:
+            stmt = stmt.where(UserModel.role.in_(list(roles)))
+        if hospital_id is not None:
+            scope = UserModel.hospital_id == hospital_id
+            if include_unassigned:
+                scope = db.or_(
+                    scope,
+                    db.and_(
+                        UserModel.hospital_id.is_(None), UserModel.role.in_(list(END_USER_ROLES))
+                    ),
+                )
+            stmt = stmt.where(scope)
+        if query:
+            stmt = stmt.where(
+                db.or_(UserModel.display_name.ilike(f"%{query}%"), UserModel.id == query)
+            )
+        return [_to_record(row) for row in db.session.execute(stmt).scalars()]

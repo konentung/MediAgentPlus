@@ -37,10 +37,11 @@ class JwtService:
         self._access_expires = access_expires
         self._refresh_expires = refresh_expires
 
-    def issue_pair(self, principal: Principal) -> TokenPair:
+    def issue_pair(self, principal: Principal, *, refresh_jti: str | None = None) -> TokenPair:
+        """`refresh_jti` 對應 auth_sessions.id，讓 refresh token 可以被輪替與撤銷。"""
         return TokenPair(
             access_token=self._issue(principal, "access", self._access_expires),
-            refresh_token=self._issue(principal, "refresh", self._refresh_expires),
+            refresh_token=self._issue(principal, "refresh", self._refresh_expires, jti=refresh_jti),
             expires_in=int(self._access_expires.total_seconds()),
         )
 
@@ -55,7 +56,9 @@ class JwtService:
             raise AuthenticationError("憑證類型錯誤")
         return claims
 
-    def _issue(self, principal: Principal, token_type: str, expires: timedelta) -> str:
+    def _issue(
+        self, principal: Principal, token_type: str, expires: timedelta, *, jti: str | None = None
+    ) -> str:
         now = datetime.now(UTC)
         # 只放識別資訊；角色 / 綁定狀態在每次請求時重新從資料庫載入，避免舊憑證帶著舊權限
         claims = {
@@ -66,4 +69,6 @@ class JwtService:
             "iat": now,
             "exp": now + expires,
         }
+        if jti:
+            claims["jti"] = jti
         return jwt.encode(claims, self._secret, algorithm=self._algorithm)
