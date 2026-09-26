@@ -23,3 +23,6 @@ instance/
 .DS_Store
 .idea/
 .vscode/
+
+# proposal / 設計文件
+proposal/
