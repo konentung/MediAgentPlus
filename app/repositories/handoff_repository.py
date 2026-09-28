@@ -1,9 +1,4 @@
-"""真人客服工單 Repository（找真人 → 轉真人客服）。
-
-`HandoffTicket` 是 Service 層使用的資料結構；`HandoffRepository` Protocol 定義介面，
-`InMemoryHandoffRepository` 與 `SqlAlchemyHandoffRepository`（對應 `HandoffTicketModel`）
-皆實作同一介面。
-"""
+"""真人客服工單 Repository（找真人 → 轉真人客服），對應 `HandoffTicketModel`。"""
 
 from __future__ import annotations
 
@@ -14,7 +9,6 @@ from typing import Protocol
 
 from app.extensions import db
 from app.models.handoff import HandoffTicketModel
-from app.repositories.base import InMemoryStore
 
 
 @dataclass
@@ -33,30 +27,6 @@ class HandoffRepository(Protocol):
     def get(self, ticket_id: str) -> HandoffTicket | None: ...
     def save(self, ticket: HandoffTicket) -> HandoffTicket: ...
     def list_open(self, hospital_id: str | None = None) -> list[HandoffTicket]: ...
-
-
-class InMemoryHandoffRepository:
-    def __init__(self) -> None:
-        self._store: InMemoryStore[HandoffTicket] = InMemoryStore(lambda t: t.id)
-
-    def create(self, user_id: str, reason: str, hospital_id: str | None) -> HandoffTicket:
-        ticket = HandoffTicket(
-            id=uuid.uuid4().hex, user_id=user_id, reason=reason, hospital_id=hospital_id
-        )
-        return self._store.save(ticket)
-
-    def get(self, ticket_id: str) -> HandoffTicket | None:
-        return self._store.get(ticket_id)
-
-    def save(self, ticket: HandoffTicket) -> HandoffTicket:
-        return self._store.save(ticket)
-
-    def list_open(self, hospital_id: str | None = None) -> list[HandoffTicket]:
-        return [
-            t
-            for t in self._store
-            if t.status == "open" and (hospital_id is None or t.hospital_id == hospital_id)
-        ]
 
 
 def _to_dataclass(row: HandoffTicketModel) -> HandoffTicket:

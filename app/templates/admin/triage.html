@@ -1,0 +1,197 @@
+{% extends "admin/base.html" %}
+{% block title %}急診動態分流{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4 mb-0">急診動態分流</h1>
+  <div class="d-flex align-items-center gap-2">
+    <span class="small text-secondary" id="stats">—</span>
+    <button class="btn btn-sm btn-brand d-none" id="btn-poll" data-perm="triage:subscriptions" type="button">立即抓取並評估</button>
+  </div>
+</div>
+
+<div class="card border-0 shadow-sm mb-3" id="advisory-card">
+  <div class="card-header bg-white d-flex justify-content-between align-items-center">
+    <span class="fw-bold">分流建議</span>
+    <div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" id="show-resolved"><label class="form-check-label small" for="show-resolved">含已解除</label></div>
+  </div>
+  <div class="card-body" id="advisories"><div class="text-secondary small">載入中…</div></div>
+</div>
+
+<div class="card border-0 shadow-sm mb-3">
+  <div class="card-header bg-white d-flex justify-content-between align-items-center">
+    <span class="fw-bold">急診即時看板（重度級急救責任醫院）</span>
+    <select class="form-select form-select-sm w-auto" id="area"></select>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0 small">
+      <thead class="table-light"><tr><th>燈號</th><th>縣市</th><th>醫院</th><th>層級</th><th class="text-end">等看診</th><th class="text-end">等住院</th><th class="text-end">等 ICU</th><th class="text-end">24h 均</th><th>119 滿床</th><th>回報</th></tr></thead>
+      <tbody id="board-rows"><tr><td colspan="10" class="text-center text-secondary py-4">載入中…</td></tr></tbody>
+    </table>
+  </div>
+  <div class="card-footer bg-white small text-secondary" id="board-note"></div>
+</div>
+
+<div class="card border-0 shadow-sm mb-3 d-none" id="subscription-card" data-perm="triage:subscriptions">
+  <div class="card-header bg-white d-flex justify-content-between align-items-center">
+    <span class="fw-bold">分流建議接收者</span>
+    <button class="btn btn-sm btn-brand" data-bs-toggle="collapse" data-bs-target="#create-sub" type="button">新增接收者</button>
+  </div>
+  <div class="collapse border-bottom" id="create-sub">
+    <form class="row g-2 p-3 bg-light" id="sub-form">
+      <div class="col-md-3">
+        <select class="form-select form-select-sm" name="kind" id="sub-kind">
+          <option value="line">LINE 推播（對方需加入官方帳號）</option>
+          <option value="webhook">Webhook（推到對方系統）</option>
+          <option value="api">API 拉取（給對方 API key）</option>
+        </select>
+      </div>
+      <div class="col-md-4"><input class="form-control form-control-sm" name="label" placeholder="接收單位，例：台北市消防局勤務指揮中心" maxlength="100" required></div>
+      <div class="col-md-5"><input class="form-control form-control-sm" name="area_codes" placeholder="縣市（逗號分隔，空白 = 全國），例：台北市,新北市"></div>
+      <div class="col-md-8" id="sub-line-field">
+        <div class="input-group input-group-sm">
+          <input class="form-control" id="user-query" placeholder="搜尋 LINE 使用者（顯示名稱）">
+          <button class="btn btn-outline-secondary" type="button" id="btn-user-search">搜尋</button>
+          <select class="form-select" name="user_id" id="user-select"><option value="">— 先搜尋 —</option></select>
+        </div>
+      </div>
+      <div class="col-md-8 d-none" id="sub-webhook-field"><input class="form-control form-control-sm" name="webhook_url" placeholder="https://…（POST JSON，帶 X-MediAgent-Signature HMAC 簽章）"></div>
+      <div class="col-md-4 text-end"><button class="btn btn-sm btn-brand" type="submit">建立</button></div>
+      <div class="col-12 form-text">接收者身份請先線下核對（119 勤指中心、基層診所醫師）。Webhook / API 的 secret 只在建立時顯示一次。</div>
+      <div class="col-12 d-none" id="secret-box"><div class="alert alert-warning small mb-0">請立即複製並交給對方，之後無法再查看：<code id="secret-text"></code></div></div>
+    </form>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0 small">
+      <thead class="table-light"><tr><th>類型</th><th>接收單位</th><th>縣市</th><th>目標</th><th>狀態</th><th>最近通知</th><th></th></tr></thead>
+      <tbody id="sub-rows"></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script id="triage-rules" type="application/json">{{ triage_rules_json | safe }}</script>
+<script>
+Admin.boot(async function (ctx) {
+  var RULES = JSON.parse(document.getElementById("triage-rules").textContent);
+  var EMOJI = { normal: "🟢", busy: "🟡", critical: "🔴" };
+  var KIND = { line: "LINE", webhook: "Webhook", api: "API 拉取" };
+  var areaSelect = document.getElementById("area");
+  areaSelect.innerHTML = '<option value="">全國</option>' + RULES.area_groups.map(function (g) {
+    return '<optgroup label="' + Admin.esc(g.label) + '">' + g.codes.map(function (c) { return '<option value="' + c + '">' + Admin.esc(RULES.areas[c]) + "</option>"; }).join("") + "</optgroup>";
+  }).join("");
+  document.getElementById("board-note").textContent = RULES.note;
+
+  async function loadStats() {
+    var s = await ctx.api("/api/v1/admin/triage/stats");
+    document.getElementById("stats").textContent = "快照 " + s.snapshots + " 筆・最新 " + Admin.fmtDate(s.reported_at) + (s.stale ? "（過舊）" : "") + "・進行中建議 " + s.open_advisories;
+  }
+
+  async function loadBoard() {
+    var board = await ctx.api("/api/v1/admin/triage/board" + (areaSelect.value ? "?area=" + areaSelect.value : ""));
+    var tbody = document.getElementById("board-rows");
+    if (!board.hospitals.length) { tbody.innerHTML = '<tr><td colspan="10" class="text-center text-secondary py-4">沒有資料，請先執行 flask triage poll 或按「立即抓取並評估」</td></tr>'; return; }
+    tbody.innerHTML = board.hospitals.map(function (h) {
+      return "<tr class='" + (h.level === "critical" ? "table-danger" : h.level === "busy" ? "table-warning" : "") + "'>" +
+        "<td>" + EMOJI[h.level] + " " + Admin.esc(h.level_label) + "</td><td>" + Admin.esc(h.area_name) + "</td>" +
+        "<td><a href='#' data-history='" + Admin.esc(h.nhi_hospital_id) + "' title='看 24 小時趨勢'>" + Admin.esc(h.hospital_name) + "</a>" + (h.worsening ? ' <span class="badge text-bg-warning text-dark">惡化</span>' : "") + "</td>" +
+        "<td>" + Admin.esc(h.tier_label) + "</td><td class='text-end'>" + h.wait_see + "</td><td class='text-end'>" + h.wait_admit + "</td><td class='text-end'>" + h.wait_icu + "</td>" +
+        "<td class='text-end'>" + (h.avg_admit_24h == null ? "—" : h.avg_admit_24h) + "</td><td>" + (h.full_119 ? '<span class="badge text-bg-danger">是</span>' : "—") + "</td><td>" + Admin.esc(h.reported_at_label) + "</td></tr>";
+    }).join("");
+    tbody.querySelectorAll("[data-history]").forEach(function (a) {
+      a.addEventListener("click", async function (e) {
+        e.preventDefault();
+        var rows = await ctx.api("/api/v1/admin/triage/hospitals/" + a.getAttribute("data-history") + "/history?hours=24");
+        var text = rows.slice(-16).map(function (r) { return new Date(r.reported_at).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false }) + " 住院 " + r.wait_admit + " / ICU " + r.wait_icu; }).join("\n");
+        alert(a.textContent + " 最近 24 小時（每列一筆回報）\n" + (text || "沒有歷史資料"));
+      });
+    });
+  }
+
+  async function loadAdvisories() {
+    var all = document.getElementById("show-resolved").checked;
+    var rows = await ctx.api("/api/v1/admin/triage/advisories?status=" + (all ? "all" : "open"));
+    var box = document.getElementById("advisories");
+    if (!rows.length) { box.innerHTML = '<div class="text-secondary small">目前沒有' + (all ? "" : "進行中的") + '分流建議（所有縣市的重度級醫院都未達壅塞門檻）</div>'; return; }
+    box.innerHTML = rows.map(function (a) {
+      var badge = a.status === "open" ? '<span class="badge text-bg-danger">進行中</span>' : '<span class="badge text-bg-secondary">已解除</span>';
+      return '<div class="border rounded p-3 mb-2"><div class="d-flex justify-content-between"><div class="fw-bold">' + badge + " " + Admin.esc(a.area_name) + '</div><div class="small text-secondary">開立 ' + Admin.fmtDate(a.opened_at) + (a.resolved_at ? "・解除 " + Admin.fmtDate(a.resolved_at) : "") + "・通知 " + a.notify_count + " 次</div></div>" +
+        '<pre class="small mb-0 mt-2" style="white-space: pre-wrap;">' + Admin.esc(a.report) + "</pre></div>";
+    }).join("");
+  }
+
+  areaSelect.addEventListener("change", loadBoard);
+  document.getElementById("show-resolved").addEventListener("change", loadAdvisories);
+  await Promise.all([loadStats(), loadBoard(), loadAdvisories()]);
+
+  if (ctx.can("triage:subscriptions")) {
+    document.getElementById("btn-poll").classList.remove("d-none");
+    document.getElementById("btn-poll").addEventListener("click", async function () {
+      var btn = this; btn.disabled = true;
+      try {
+        var r = await ctx.api("/api/v1/admin/triage/poll", { method: "POST" });
+        Admin.toast("抓到 " + r.fetched + " 家、新增 " + r.added + " 筆；建議 開立 " + r.opened + " / 更新 " + r.updated + " / 解除 " + r.resolved + "，通知 " + r.notified + " 則");
+        await Promise.all([loadStats(), loadBoard(), loadAdvisories()]);
+      } catch (err) { Admin.toast(err.message, "danger"); } finally { btn.disabled = false; }
+    });
+
+    document.getElementById("subscription-card").classList.remove("d-none");
+    var kindSelect = document.getElementById("sub-kind");
+    function syncKind() {
+      document.getElementById("sub-line-field").classList.toggle("d-none", kindSelect.value !== "line");
+      document.getElementById("sub-webhook-field").classList.toggle("d-none", kindSelect.value !== "webhook");
+    }
+    kindSelect.addEventListener("change", syncKind); syncKind();
+
+    document.getElementById("btn-user-search").addEventListener("click", async function () {
+      var q = document.getElementById("user-query").value.trim();
+      var users = await ctx.api("/api/v1/admin/users?staff=0&q=" + encodeURIComponent(q));
+      var select = document.getElementById("user-select");
+      select.innerHTML = users.length ? users.map(function (u) { return '<option value="' + Admin.esc(u.user_id) + '">' + Admin.esc(u.display_name || u.user_id) + "（" + Admin.label("roles", u.role) + "）</option>"; }).join("") : '<option value="">找不到使用者</option>';
+    });
+
+    async function loadSubscriptions() {
+      var rows = await ctx.api("/api/v1/admin/triage/subscriptions");
+      var tbody = document.getElementById("sub-rows");
+      if (!rows.length) { tbody.innerHTML = '<tr><td colspan="7" class="text-center text-secondary py-4">還沒有接收者。建立後，縣市出現壅塞醫院時會自動通知。</td></tr>'; return; }
+      tbody.innerHTML = rows.map(function (s) {
+        var target = s.kind === "line" ? Admin.esc(s.user_display_name || s.user_id) : s.kind === "webhook" ? "<code>" + Admin.esc(s.webhook_url) + "</code>" : "API key";
+        var status = (s.active ? '<span class="badge text-bg-success">啟用</span>' : '<span class="badge text-bg-secondary">停用</span>') + (s.last_error ? ' <span class="badge text-bg-danger" title="' + Admin.esc(s.last_error) + '">上次失敗</span>' : "");
+        return "<tr><td>" + KIND[s.kind] + "</td><td>" + Admin.esc(s.label) + "</td><td>" + (s.area_names.length ? Admin.esc(s.area_names.join("、")) : "全國") + "</td><td>" + target + "</td><td>" + status + "</td>" +
+          "<td>" + Admin.fmtDate(s.last_notified_at) + "（" + s.notify_count + " 次）</td>" +
+          '<td class="text-end text-nowrap"><button class="btn btn-sm btn-outline-secondary" data-test="' + s.id + '">測試</button> ' +
+          '<button class="btn btn-sm btn-outline-secondary" data-toggle="' + s.id + '" data-active="' + s.active + '">' + (s.active ? "停用" : "啟用") + "</button> " +
+          '<button class="btn btn-sm btn-outline-danger" data-delete="' + s.id + '">刪除</button></td></tr>';
+      }).join("");
+      tbody.querySelectorAll("[data-test]").forEach(function (b) { b.addEventListener("click", async function () {
+        try { var r = await ctx.api("/api/v1/admin/triage/subscriptions/" + b.getAttribute("data-test") + "/test", { method: "POST" }); Admin.toast(r.delivered ? "已送出測試通知" : "測試通知失敗，請看「上次失敗」原因", r.delivered ? "success" : "danger"); await loadSubscriptions(); }
+        catch (err) { Admin.toast(err.message, "danger"); }
+      }); });
+      tbody.querySelectorAll("[data-toggle]").forEach(function (b) { b.addEventListener("click", async function () {
+        try { await ctx.api("/api/v1/admin/triage/subscriptions/" + b.getAttribute("data-toggle"), { method: "PATCH", body: { active: b.getAttribute("data-active") !== "true" } }); await loadSubscriptions(); }
+        catch (err) { Admin.toast(err.message, "danger"); }
+      }); });
+      tbody.querySelectorAll("[data-delete]").forEach(function (b) { b.addEventListener("click", async function () {
+        if (!confirm("確定刪除這位接收者？")) return;
+        try { await ctx.api("/api/v1/admin/triage/subscriptions/" + b.getAttribute("data-delete"), { method: "DELETE" }); await loadSubscriptions(); }
+        catch (err) { Admin.toast(err.message, "danger"); }
+      }); });
+    }
+
+    document.getElementById("sub-form").addEventListener("submit", async function (e) {
+      e.preventDefault();
+      var body = Admin.formData(e.target);
+      try {
+        var created = await ctx.api("/api/v1/admin/triage/subscriptions", { method: "POST", body: body });
+        var box = document.getElementById("secret-box");
+        if (created.secret) { document.getElementById("secret-text").textContent = created.secret; box.classList.remove("d-none"); } else { box.classList.add("d-none"); e.target.reset(); syncKind(); }
+        Admin.toast("已新增接收者 " + created.label);
+        await loadSubscriptions();
+      } catch (err) { Admin.toast(err.message, "danger"); }
+    });
+    await loadSubscriptions();
+  }
+});
+</script>
+{% endblock %}

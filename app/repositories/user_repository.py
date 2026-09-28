@@ -1,21 +1,15 @@
-"""使用者 Repository。
-
-`UserRecord` 是 Service 層使用的資料結構；`UserRepository` Protocol 定義了介面，
-`InMemoryUserRepository` 與 `SqlAlchemyUserRepository`（對應 `app.models.user.UserModel`）
-皆實作同一介面，替換時 Service / API 層不需改動。
-"""
+"""使用者 Repository：`UserRecord` 是 Service 層用的資料結構，實作對應 `UserModel`。"""
 
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Protocol
 
 from app.domain.enums import END_USER_ROLES, BindingStatus, Role
 from app.extensions import db
 from app.models.user import UserModel
-from app.repositories.base import InMemoryStore
 
 
 @dataclass
@@ -27,6 +21,7 @@ class UserRecord:
     role: Role = Role.GUEST
     binding_status: BindingStatus = BindingStatus.UNBOUND
     hospital_id: str | None = None
+    push_enabled: bool = True
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @staticmethod
@@ -50,48 +45,6 @@ class UserRepository(Protocol):
     ) -> list[UserRecord]: ...
 
 
-class InMemoryUserRepository:
-    def __init__(self) -> None:
-        self._store: InMemoryStore[UserRecord] = InMemoryStore(lambda u: u.id)
-
-    def get_by_id(self, user_id: str) -> UserRecord | None:
-        return self._store.get(user_id)
-
-    def get_by_line_user_id(self, line_user_id: str) -> UserRecord | None:
-        return self._store.find_one(lambda u: u.line_user_id == line_user_id)
-
-    def save(self, user: UserRecord) -> UserRecord:
-        return self._store.save(user)
-
-    def update(self, user_id: str, **changes) -> UserRecord:
-        current = self._store.get(user_id)
-        if current is None:
-            raise KeyError(user_id)
-        return self._store.save(replace(current, **changes))
-
-    def search(
-        self,
-        *,
-        roles: frozenset[Role] | None = None,
-        hospital_id: str | None = None,
-        include_unassigned: bool = False,
-        query: str | None = None,
-        limit: int = 100,
-    ) -> list[UserRecord]:
-        rows = [
-            u
-            for u in self._store
-            if (roles is None or u.role in roles)
-            and (
-                hospital_id is None
-                or u.hospital_id == hospital_id
-                or (include_unassigned and u.hospital_id is None and u.role.is_end_user)
-            )
-            and (not query or query.lower() in (u.display_name or "").lower() or query == u.id)
-        ]
-        return rows[:limit]
-
-
 def _to_record(row: UserModel) -> UserRecord:
     return UserRecord(
         id=row.id,
@@ -101,6 +54,7 @@ def _to_record(row: UserModel) -> UserRecord:
         role=row.role,
         binding_status=row.binding_status,
         hospital_id=row.hospital_id,
+        push_enabled=row.push_enabled,
         created_at=row.created_at,
     )
 
@@ -112,6 +66,7 @@ def _apply(row: UserModel, user: UserRecord) -> None:
     row.role = user.role
     row.binding_status = user.binding_status
     row.hospital_id = user.hospital_id
+    row.push_enabled = user.push_enabled
 
 
 class SqlAlchemyUserRepository:

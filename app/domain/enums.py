@@ -43,16 +43,20 @@ class Permission(StrEnum):
     CONSULT_EDUCATION_GENERIC = "consult:education_generic"  # ② 衛教諮詢通用版
     HANDOFF_REQUEST = "handoff:request"  # 轉真人客服（任何時候一鍵可按）
     INTAKE_WRITE_OWN = "intake:write_own"  # 填寫 / 送出病人自填表（驗證前即可）
+    PRESCRIPTION_MANAGE_OWN = "prescription:manage_own"  # 處方箋拍照辨識 / 確認 / 修改（自己的）
+    REMINDER_MANAGE_OWN = "reminder:manage_own"  # ④ 服藥小幫手排程提醒（任何人都可用）
 
     PROFILE_READ_OWN = "profile:read_own"
     PROFILE_WRITE_OWN = "profile:write_own"
     EDUCATION_PERSONAL = "education:personal"  # ② 衛教個人化版 / 每日任務推播
-    REMINDER_MANAGE_OWN = "reminder:manage_own"  # ④ 服藥小幫手跨日排程提醒
 
     HANDOFF_ACCEPT = "handoff:accept"
     HANDOFF_REPLY = "handoff:reply"
     CONVERSATION_READ = "conversation:read"
     PATIENT_READ = "patient:read"  # 病人自填資料 + 本院紀錄（身分證遮罩）
+
+    TRIAGE_READ = "triage:read"  # 急診即時看板、分流建議（院方）
+    TRIAGE_SUBSCRIPTION_MANAGE = "triage:subscriptions"  # 管理分流建議接收者（119 / 診所）
 
     EDUCATION_CONTENT_MANAGE = "education:content_manage"
     PATIENT_WRITE = "patient:write"  # 修正自填資料、風險警示、追蹤事項
@@ -66,6 +70,7 @@ class Permission(StrEnum):
     PATIENT_IDENTITY_READ = "patient:identity_read"  # 讀取身分證明碼
 
     HOSPITAL_MANAGE = "hospital:manage"
+    REFERENCE_DATA_MANAGE = "reference_data:manage"  # 匯入藥局 / 藥品等開放資料（系統）
     SYSTEM_MANAGE = "system:manage"
 
 
@@ -92,3 +97,4 @@ class Intent(StrEnum):
     HUMAN = "human"  # 找真人
     SETTINGS = "settings"  # 設定頁
     EMERGENCY = "emergency"  # 紅旗命中 → 緊急畫面
+    ASSISTANT = "assistant"  # 自由文字 → AI（RAG）判斷事件後套用模組回應

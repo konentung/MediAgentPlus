@@ -33,6 +33,8 @@
         <li class="nav-item" data-perm="patient:read"><a class="nav-link {{ 'active' if active == 'patients' }}" href="{{ url_for('admin_pages.patients') }}">病人資料</a></li>
         <li class="nav-item" data-perm="handoff:accept"><a class="nav-link {{ 'active' if active == 'handoffs' }}" href="{{ url_for('admin_pages.handoffs') }}">真人客服工單</a></li>
         <li class="nav-item" data-perm="staff:manage"><a class="nav-link {{ 'active' if active == 'staff' }}" href="{{ url_for('admin_pages.staff') }}">人員與角色</a></li>
+        <li class="nav-item" data-perm="triage:read"><a class="nav-link {{ 'active' if active == 'triage' }}" href="{{ url_for('admin_pages.triage') }}">急診動態分流</a></li>
+        <li class="nav-item"><a class="nav-link {{ 'active' if active == 'knowledge' }}" href="{{ url_for('admin_pages.knowledge') }}">AI 知識庫</a></li>
         <li class="nav-item" data-perm="hospital:settings"><a class="nav-link {{ 'active' if active == 'settings' }}" href="{{ url_for('admin_pages.settings') }}">院所設定</a></li>
         <li class="nav-item" data-perm="audit:read"><a class="nav-link {{ 'active' if active == 'audit' }}" href="{{ url_for('admin_pages.audit') }}">稽核紀錄</a></li>
         <li class="nav-item"><a class="nav-link {{ 'active' if active == 'permissions' }}" href="{{ url_for('admin_pages.permissions') }}">權限矩陣</a></li>

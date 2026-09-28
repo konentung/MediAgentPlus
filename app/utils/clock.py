@@ -10,3 +10,7 @@ TAIPEI = ZoneInfo("Asia/Taipei")
 
 def today_tw() -> date:
     return datetime.now(TAIPEI).date()
+
+
+def now_tw() -> datetime:
+    return datetime.now(TAIPEI)

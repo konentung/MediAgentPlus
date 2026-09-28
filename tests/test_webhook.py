@@ -34,14 +34,16 @@ def test_follow_sends_onboarding(post_line_event, container):
     assert container.user_repo.get_by_line_user_id("U1") is not None
 
 
-def test_text_keyword_routes_to_intent(post_line_event, container):
+def test_text_goes_through_ai_then_module(post_line_event, container):
+    """文字一律先過 AI 助理（FakeLlmClient）判斷事件，再套用模組；關鍵字只剩 AI 失敗時的退路。"""
     post_line_event(
         _event(
-            "message", message={"type": "text", "id": "m1", "text": "我不舒服", "quoteToken": "q"}
+            "message", message={"type": "text", "id": "m1", "text": "我頭痛兩天", "quoteToken": "q"}
         )
     )
+    assert container.llm_client.calls
     _, messages = container.line_client.replies[-1]
-    assert "症狀" in messages[0].text
+    assert "家醫科" in messages[0].text
 
 
 def test_emergency_keyword(post_line_event, container):
@@ -52,11 +54,11 @@ def test_emergency_keyword(post_line_event, container):
     assert "119" in messages[0].text
 
 
-def test_reminder_requires_binding(post_line_event, container):
+def test_reminder_available_without_binding(post_line_event, container):
+    """服藥提醒開放給所有人，不需先填基本資料。"""
     post_line_event(_event("postback", postback={"data": postback_data(Intent.REMINDER)}))
     _, messages = container.line_client.replies[-1]
-    assert isinstance(messages[0], FlexMessage)
-    assert "綁定" in messages[0].alt_text
+    assert isinstance(messages[0], TextMessage) and "服藥小幫手" in messages[0].text
 
 
 def test_reminder_available_when_verified(post_line_event, container):
@@ -75,7 +77,8 @@ def test_human_handoff_creates_ticket(post_line_event, container):
     assert len(container.handoff_repo.list_open()) == 1
 
 
-def test_unknown_text_falls_back(post_line_event, container):
+def test_unknown_text_falls_back_when_ai_unavailable(post_line_event, container):
+    container.conversation.enabled = False
     post_line_event(
         _event("message", message={"type": "text", "id": "m1", "text": "哈囉", "quoteToken": "q"})
     )

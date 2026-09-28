@@ -1,0 +1,190 @@
+{% extends "admin/base.html" %}
+{% block title %}AI 知識庫{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4 mb-0">AI 知識庫</h1>
+  <div class="d-flex gap-2" data-perm="education:content_manage">
+    <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#import-modal" type="button">匯入 Markdown</button>
+    <button class="btn btn-sm btn-brand" id="btn-new" type="button">新增文件</button>
+  </div>
+</div>
+<p class="small text-secondary">
+  LINE 機器人的 AI 助理回答問題時，會先從這裡檢索相關片段（jieba 斷詞 + BM25），只依據檢索到的內容回答。
+  「通用」文件所有使用者都查得到（只有系統管理員能改）；院所文件只有常去院所是本院的病人會查到。
+</p>
+
+<div class="card border-0 shadow-sm mb-3">
+  <div class="card-body">
+    <form class="d-flex gap-2" id="search-form" role="search">
+      <input class="form-control" id="search-q" placeholder="試搜：輸入病人可能會問的話，看會檢索到哪些片段" required>
+      <button class="btn btn-outline-secondary text-nowrap" type="submit">試搜</button>
+    </form>
+    <div id="search-result" class="mt-3 d-none"></div>
+  </div>
+</div>
+
+<div class="card border-0 shadow-sm">
+  <div class="card-header bg-white d-flex justify-content-between align-items-center">
+    <span class="fw-bold">文件</span>
+    <select class="form-select form-select-sm w-auto" id="filter-category"><option value="">全部分類</option></select>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0 small">
+      <thead class="table-light"><tr><th>標題</th><th>分類</th><th>範圍</th><th>標籤</th><th>來源</th><th>狀態</th><th>更新</th><th></th></tr></thead>
+      <tbody id="rows"><tr><td colspan="8" class="text-center text-secondary py-4">載入中…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="modal fade" id="doc-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg"><form class="modal-content" id="doc-form">
+    <div class="modal-header"><h2 class="modal-title h6" id="doc-modal-title">新增文件</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="關閉"></button></div>
+    <div class="modal-body">
+      <input type="hidden" name="id">
+      <div class="row g-2">
+        <div class="col-md-8"><label class="form-label small">標題</label><input class="form-control form-control-sm" name="title" maxlength="200" required></div>
+        <div class="col-md-4"><label class="form-label small">分類</label><select class="form-select form-select-sm" name="category" id="doc-category"></select></div>
+        <div class="col-md-6"><label class="form-label small">範圍</label><select class="form-select form-select-sm" name="hospital_id" id="doc-hospital"></select></div>
+        <div class="col-md-6"><label class="form-label small">標籤（逗號分隔）</label><input class="form-control form-control-sm" name="tags"></div>
+        <div class="col-12"><label class="form-label small">內容（Markdown，會依段落切成檢索片段）</label><textarea class="form-control form-control-sm" name="content" rows="14" required></textarea></div>
+      </div>
+    </div>
+    <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button><button type="submit" class="btn btn-brand">儲存</button></div>
+  </form></div>
+</div>
+
+<div class="modal fade" id="import-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog"><form class="modal-content" id="import-form">
+    <div class="modal-header"><h2 class="modal-title h6">匯入 Markdown</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="關閉"></button></div>
+    <div class="modal-body">
+      <p class="small text-secondary">可一次選多個 .md。檔案開頭可放 front matter：<code>---<br>title: 標題<br>category: education<br>tags: 出院, 傷口<br>---</code>；沒有就用第一個 # 標題或檔名。同檔名重複上傳會更新同一份。</p>
+      <input class="form-control" type="file" name="files" accept=".md,text/markdown" multiple required>
+      <div class="alert alert-secondary small mt-3 mb-0 d-none" id="import-result"></div>
+    </div>
+    <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">關閉</button><button type="submit" class="btn btn-brand" id="import-submit">開始匯入</button></div>
+  </form></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script id="categories-json" type="application/json">{{ categories_json | safe }}</script>
+<script>
+Admin.boot(async function (ctx) {
+  var CATEGORIES = JSON.parse(document.getElementById("categories-json").textContent);
+  var canEdit = ctx.can("education:content_manage");
+  var isSuper = ctx.me.role === "super_admin";
+  var docs = [];
+  var modal = new bootstrap.Modal(document.getElementById("doc-modal"));
+
+  var filter = document.getElementById("filter-category");
+  var docCategory = document.getElementById("doc-category");
+  Object.keys(CATEGORIES).forEach(function (k) {
+    filter.innerHTML += '<option value="' + k + '">' + Admin.esc(CATEGORIES[k]) + "</option>";
+    docCategory.innerHTML += '<option value="' + k + '">' + Admin.esc(CATEGORIES[k]) + "</option>";
+  });
+  var docHospital = document.getElementById("doc-hospital");
+  if (isSuper) {
+    docHospital.innerHTML = '<option value="">通用（所有院所）</option>';
+    Object.keys(ctx.hospitals).forEach(function (id) { docHospital.innerHTML += '<option value="' + id + '">' + Admin.esc(ctx.hospitals[id].name) + "</option>"; });
+  } else {
+    docHospital.innerHTML = '<option value="' + Admin.esc(ctx.me.hospital_id || "") + '">' + Admin.esc(Admin.hospitalName(ctx.me.hospital_id)) + "（本院）</option>";
+  }
+
+  async function load() {
+    docs = await ctx.api("/api/v1/admin/knowledge");
+    render();
+  }
+  function render() {
+    var tbody = document.getElementById("rows");
+    var rows = docs.filter(function (d) { return !filter.value || d.category === filter.value; });
+    if (!rows.length) { tbody.innerHTML = '<tr><td colspan="8" class="text-center text-secondary py-4">還沒有文件。可用「匯入 Markdown」或 <code>flask knowledge import data/knowledge</code> 載入通用種子。</td></tr>'; return; }
+    tbody.innerHTML = rows.map(function (d) {
+      var editable = canEdit && (d.hospital_id ? true : isSuper);
+      return "<tr class='" + (d.active ? "" : "text-secondary") + "'><td>" + Admin.esc(d.title) + "</td><td>" + Admin.esc(d.category_label) + "</td>" +
+        "<td>" + (d.hospital_id ? Admin.esc(Admin.hospitalName(d.hospital_id)) : '<span class="badge text-bg-secondary">通用</span>') + "</td>" +
+        "<td>" + d.tags.map(function (t) { return '<span class="badge text-bg-light text-dark border me-1">' + Admin.esc(t) + "</span>"; }).join("") + "</td>" +
+        "<td class='text-secondary'>" + Admin.esc(d.source || "—") + "</td>" +
+        "<td>" + (d.active ? '<span class="badge text-bg-success">啟用</span>' : '<span class="badge text-bg-secondary">停用</span>') + "</td>" +
+        "<td class='text-nowrap'>" + Admin.fmtDate(d.updated_at) + "</td>" +
+        '<td class="text-end text-nowrap">' + (editable ?
+          '<button class="btn btn-sm btn-outline-secondary" data-edit="' + d.id + '">編輯</button> ' +
+          '<button class="btn btn-sm btn-outline-secondary" data-toggle="' + d.id + '" data-active="' + d.active + '">' + (d.active ? "停用" : "啟用") + "</button> " +
+          '<button class="btn btn-sm btn-outline-danger" data-delete="' + d.id + '">刪除</button>' :
+          '<button class="btn btn-sm btn-outline-secondary" data-view="' + d.id + '">檢視</button>') + "</td></tr>";
+    }).join("");
+    tbody.querySelectorAll("[data-edit],[data-view]").forEach(function (b) {
+      b.addEventListener("click", function () { openDoc(b.getAttribute("data-edit") || b.getAttribute("data-view"), !!b.getAttribute("data-view")); });
+    });
+    tbody.querySelectorAll("[data-toggle]").forEach(function (b) { b.addEventListener("click", async function () {
+      try { await ctx.api("/api/v1/admin/knowledge/" + b.getAttribute("data-toggle"), { method: "PATCH", body: { active: b.getAttribute("data-active") !== "true" } }); await load(); }
+      catch (err) { Admin.toast(err.message, "danger"); }
+    }); });
+    tbody.querySelectorAll("[data-delete]").forEach(function (b) { b.addEventListener("click", async function () {
+      if (!confirm("確定刪除這份文件？")) return;
+      try { await ctx.api("/api/v1/admin/knowledge/" + b.getAttribute("data-delete"), { method: "DELETE" }); Admin.toast("已刪除"); await load(); }
+      catch (err) { Admin.toast(err.message, "danger"); }
+    }); });
+  }
+  filter.addEventListener("change", render);
+
+  var form = document.getElementById("doc-form");
+  function openDoc(id, readOnly) {
+    var d = id ? docs.find(function (x) { return x.id === id; }) : null;
+    form.reset();
+    form.elements.id.value = d ? d.id : "";
+    document.getElementById("doc-modal-title").textContent = d ? (readOnly ? "檢視文件" : "編輯文件") : "新增文件";
+    if (d) {
+      form.elements.title.value = d.title; form.elements.category.value = d.category;
+      form.elements.hospital_id.value = d.hospital_id || ""; form.elements.tags.value = d.tags.join(", "); form.elements.content.value = d.content;
+    }
+    Array.prototype.forEach.call(form.elements, function (i) { if (i.name) i.disabled = !!readOnly; });
+    form.elements.hospital_id.disabled = !!readOnly || !!d;  // 範圍建立後不改
+    form.querySelector("button[type=submit]").classList.toggle("d-none", !!readOnly);
+    modal.show();
+  }
+  document.getElementById("btn-new").addEventListener("click", function () { openDoc(null, false); });
+  form.addEventListener("submit", async function (e) {
+    e.preventDefault();
+    var body = Admin.formData(form); var id = body.id; delete body.id;
+    try {
+      if (id) { delete body.hospital_id; await ctx.api("/api/v1/admin/knowledge/" + id, { method: "PATCH", body: body }); }
+      else await ctx.api("/api/v1/admin/knowledge", { method: "POST", body: body });
+      modal.hide(); Admin.toast("已儲存"); await load();
+    } catch (err) { Admin.toast(err.message, "danger"); }
+  });
+
+  document.getElementById("search-form").addEventListener("submit", async function (e) {
+    e.preventDefault();
+    var q = document.getElementById("search-q").value.trim();
+    var box = document.getElementById("search-result");
+    try {
+      var hits = await ctx.api("/api/v1/admin/knowledge/search?q=" + encodeURIComponent(q));
+      box.classList.remove("d-none");
+      box.innerHTML = hits.length ? hits.map(function (h, i) {
+        return '<div class="border rounded p-2 mb-2 small"><div class="fw-bold">K' + (i + 1) + "　" + Admin.esc(h.title) + ' <span class="text-secondary fw-normal">' + Admin.esc(h.category) + "・分數 " + h.score + "</span></div><div style='white-space: pre-wrap;'>" + Admin.esc(h.content) + "</div></div>";
+      }).join("") : '<div class="text-secondary small">沒有檢索到相關片段，AI 會回答「不確定」並建議找真人。</div>';
+    } catch (err) { Admin.toast(err.message, "danger"); }
+  });
+
+  document.getElementById("import-form").addEventListener("submit", async function (e) {
+    e.preventDefault();
+    var input = e.target.elements.files, btn = document.getElementById("import-submit"), box = document.getElementById("import-result");
+    var data = new FormData(); Array.prototype.forEach.call(input.files, function (f) { data.append("files", f); });
+    btn.disabled = true; box.classList.add("d-none");
+    try {
+      var resp = await fetch("/api/v1/admin/knowledge/import", { method: "POST", body: data, headers: { Authorization: "Bearer " + sessionStorage.getItem("access_token"), "ngrok-skip-browser-warning": "1" } });
+      var body = await resp.json();
+      if (!resp.ok) throw new Error(body.error ? body.error.message : "匯入失敗");
+      var r = body.data;
+      box.className = "alert alert-" + (r.errors.length ? "warning" : "success") + " small mt-3 mb-0";
+      box.innerHTML = "新增 <b>" + r.created + "</b>、更新 <b>" + r.updated + "</b>" + (r.errors.length ? "<ul class='mb-0 mt-1 ps-3'>" + r.errors.map(function (x) { return "<li>" + Admin.esc(x.file) + "：" + Admin.esc(x.message) + "</li>"; }).join("") + "</ul>" : "");
+      await load();
+    } catch (err) { box.className = "alert alert-danger small mt-3 mb-0"; box.textContent = err.message; }
+    finally { btn.disabled = false; }
+  });
+
+  await load();
+});
+</script>
+{% endblock %}

@@ -17,6 +17,8 @@ pytest                                   # 全部測試，不需要資料庫
 pytest tests/test_webhook.py -v          # 單一檔案
 pytest tests/test_rbac.py::test_hospital_scope   # 單一測試
 pytest tests/test_intake.py tests/test_patient_admin.py   # 病人表單 + 院方後台
+pytest tests/test_triage.py              # 急診動態分流
+pytest tests/test_assistant.py           # AI 對話助理（RAG + 事件判斷）
 pytest -p no:warnings                    # 隱藏 PyJWT 短金鑰警告（測試用金鑰刻意很短）
 
 ruff check . && ruff format .            # lint + 格式化，行長 100，tests/ 不檢查 E501
@@ -29,6 +31,20 @@ flask --app wsgi user set-role <user_id> <role> --hospital-id H1   # 以 SUPER_A
 flask --app wsgi hospital add H1 "第一醫院" --region 台北市          # 新增院所（初始化用，之後可在後台新增）
 flask --app wsgi hospital list
 flask --app wsgi hospital import data/pharmacy/A21030000I-D21005-001.csv --only-hospitals  # 健保署特約醫事機構 CSV
+flask --app wsgi pharmacy import data/pharmacy/A21030000I-D21005-001.csv   # 健保特約藥局（同一份 CSV，只取藥局列）
+flask --app wsgi pharmacy import data/pharmacy/35_2.csv                    # 衛福部藥局（只補非健保特約）
+flask --app wsgi drug import data/pharmacy/A21030000I-E41001-001.csv       # 健保用藥品項
+flask --app wsgi pharmacy find "台北市松山區"                               # 測試依地址找藥局
+flask --app wsgi reminder run-due [--now 2026-09-28T08:31:00+08:00]        # 推播到期服藥提醒（cron 每 5 分鐘）
+flask --app wsgi hospital import data/er_hospitals.csv   # 59 家重度級急救責任醫院 + 座標（找醫院依距離推薦用）
+flask --app wsgi triage poll [--loop --interval 900]   # 抓健保署急診即時資料 → 評估壅塞 → 通知（cron 每 15 分鐘）
+flask --app wsgi triage board [--area 台北市]          # 印出急診看板；triage advisories [--all] 列分流建議
+flask --app wsgi knowledge import data/knowledge       # 匯入 AI 知識庫種子（Markdown，同檔名重匯更新）
+flask --app wsgi knowledge import-health-education "data/衛教內文資料/health_education_content.jsonl"  # 全台醫院衛教內文（可重跑）
+flask --app wsgi knowledge embed [--batch 100]         # 替還沒有向量的片段算 OpenAI embedding（可中斷重跑）
+flask --app wsgi knowledge stats                       # 文件 / 片段 / 已有向量 數量
+flask --app wsgi knowledge search "慢箋可以領幾次"      # 試搜：關鍵字 + 語意混合排序後的片段
+flask --app wsgi assistant ask "我頭痛兩天" [--user-id]  # 本機直接問 AI 助理，印出脈絡與決策 JSON
 
 ./scripts/setup_db.sh                    # 本機建立 PostgreSQL 角色與資料庫（mediagent/mediagent）
 flask --app wsgi db migrate -m "..."     # 依模型變更產生 migration（需連得到 DATABASE_URL）
@@ -57,7 +73,7 @@ flask --app wsgi db upgrade              # 套用 migration
 
 ### 資料層：PostgreSQL（SQLAlchemy + Flask-Migrate）
 
-所有實體（`User`、`HandoffTicket`、`Hospital`、`Patient*`、`PatientRecord*`、`AuthSession`、`AuditLog`）都是 `app/models/` 下的 SQLAlchemy 模型（皆繼承 `db.Model, TimestampMixin`），`app/repositories/*.py` 裡的 `SqlAlchemy*Repository` 實作對應 Protocol，`ServiceContainer.build()` 組裝時直接用這些實作 —— Service / API 層完全不知道底層是 DB 還是記憶體。`InMemory*Repository` 只剩 User / Handoff 保留（未被使用）。`OAuthStateStore`（`app/auth/state_store.py`）與 rate limit 未設 `REDIS_URL` 時用單程序記憶體，設定後由容器改用 Redis 實作。
+所有實體（`User`、`HandoffTicket`、`Hospital`、`Patient*`、`PatientRecord*`、`AuthSession`、`AuditLog`）都是 `app/models/` 下的 SQLAlchemy 模型（皆繼承 `db.Model, TimestampMixin`），`app/repositories/*.py` 裡的 `SqlAlchemy*Repository` 實作對應 Protocol，`ServiceContainer.build()` 組裝時直接用這些實作 —— Service / API 層完全不知道底層是 DB 還是記憶體。沒有記憶體版 Repository；只有 OAuth state / 對話狀態 / rate limit 在未設 `REDIS_URL` 時用單程序記憶體實作。`OAuthStateStore`（`app/auth/state_store.py`）與 rate limit 未設 `REDIS_URL` 時用單程序記憶體，設定後由容器改用 Redis 實作。
 
 Enum 欄位（`Role`/`BindingStatus`）一律用 `sa.Enum(..., native_enum=False)` 存成 VARCHAR，不用原生 Postgres enum type —— 這樣新增列舉值（例如未來新角色）只要改 Python enum + migration 加欄位資料，不必下 `ALTER TYPE`。除了 `Role`（會持續變動，刻意不加 CHECK constraint）之外都保留 CHECK constraint。之後若有 JSON 欄位，用 `JSONB().with_variant(JSON(), "sqlite")` 讓測試環境的 SQLite 也能跑。`Hospital` 實體已存在（`app/models/hospital.py`，`hospitals.id` 就是人可讀的院所代碼，例如 `H1`），其他表的 `hospital_id` 都是指向它的外鍵，應用層另由 `HospitalService.require_active()` 在寫入時確認院所啟用中。初始化用 `flask hospital add` 或 `flask hospital import <csv>`（支援自家範本與健保署「特約醫事機構」開放資料欄位，對應表在 `HospitalService.IMPORT_COLUMN_ALIASES`，藥局等非院所列自動略過），之後 SUPER_ADMIN 可在後台「院所設定」新增或匯入；HOSPITAL_ADMIN 只能改自己院所的名稱 / 電話 / 地址。
 
@@ -75,7 +91,119 @@ Enum 欄位（`Role`/`BindingStatus`）一律用 `sa.Enum(..., native_enum=False
 - **登入工作階段**：`AuthSessionService`（`app/services/auth_session_service.py`）管理 refresh token：`start()` 建 `auth_sessions` 列並簽發 pair（refresh 的 `jti` = session id）、`refresh()` 輪替並偵測重用、`logout()` 撤銷 family。網頁版 LINE Login 的 LINE token 加密存在 session 內，refresh 時呼叫 `LineLoginService.refresh_tokens()`、登出呼叫 `revoke_token()`；LIFF 沒有 LINE refresh token，只做自家輪替。鎖定帳號會 `revoke_all()`。任何簽發 token 的地方都要走這個 Service，不要直接 `jwt.issue_pair()`。
 - **Redis**：設定 `REDIS_URL` 後容器改用 `RedisOAuthStateStore` 與 `RedisRateLimiter`（啟動時 ping，連不上直接失敗）；未設定用記憶體版，只適合單程序。
 - **外鍵**：`users` / `handoff_tickets` / `patient_profiles.preferred_hospital_id` / `audit_logs` 的 `hospital_id` 以 SET NULL 指向 `hospitals`，`patient_records.hospital_id` 為 RESTRICT。migration 會先為孤兒代碼建立停用的佔位院所再加外鍵。
-- 尚未做：藥袋照片上傳（`patient_media`）。
+### 藥物諮詢 / 服藥小幫手（Roadmap 第 4、5 項，已實作）
+
+設計文件 `docs/medication-design.md`。兩個功能共用「處方箋」資料，流程：Rich Menu「去哪拿藥」→ Quick Reply 用 LINE 內建
+`CameraAction` / `CameraRollAction` 拍處方箋 → 圖片訊息 → `MedicationHandler._action_image()` 先叫
+`line_client.show_loading_animation()`（不發「辨識中」訊息）→ 下載圖片 → `PrescriptionService.create_from_image()` →
+`container.vision_client` 辨識成 `PrescriptionExtraction`（pydantic v2）→ 存 `prescriptions`（`items` JSON、照片加密後存
+`MEDIA_ROOT`、完整保留）→ 回辨識結果 Flex（確認找藥局 / 建立提醒 / LIFF 修改）。
+
+- **辨識後端** `app/integrations/vision.py` 只放提示詞與 `PrescriptionExtraction`，呼叫走 `app/integrations/llm.py` 的
+  `OpenAiClient`（`OCR_MODEL`，預設 `gpt-4.1`）。提示詞固定為「只抄寫、不推測、不輸出病人姓名 / 身分證」。
+  辨識太久 reply token 過期時 handler 會改用 push。測試一律用 `tests/conftest.py` 的 `FakeVisionClient` 替換 `container.vision_client`。
+- **對話狀態** `app/line/state_store.py`（`container.conversation_state`，Redis 或記憶體，TTL 10 分鐘）：圖片與位置訊息沒有意圖，
+  `MessageHandler` 依狀態（`await_prescription_photo` / `await_location` / `await_drug_name`）決定交給誰；沒有狀態時先用 Quick Reply
+  問「這是處方箋嗎？」「要找藥局還是醫院？」，不會對隨手傳的圖片花模型呼叫。
+- **找藥局不用地圖服務**：LINE `LocationMessageContent.address` 自帶地址，`PharmacyService.parse_address()` 取縣市 / 鄉鎮市區
+  （臺 → 台）比對 `pharmacies.city / district`；該區沒有退到同縣市；「現在營業中」依 `opening_hours` JSON 與 `now_tw()`。
+  藥局 / 藥品是唯讀參考資料，由 SUPER_ADMIN 在後台「院所設定 → 參考資料」上傳 CSV（`POST /api/v1/admin/pharmacies/import`、
+  `/drugs/import`，權限 `REFERENCE_DATA_MANAGE`）或 CLI 匯入（`PharmacyService.import_pharmacies / import_drugs`，upsert 可重跑）；
+  `MAX_CONTENT_LENGTH` 因健保用藥 CSV 約 96MB 而設為 128MB。
+- **提醒規則單一來源** `app/domain/reminder_rules.py`：頻率代碼（qd/bid/tid/qid/q12h/q8h/q6h/qw/hs/prn/other）× 飯前後 → 預設時間；
+  LIFF `/liff/reminders` 也用 `public_rules()`。`REMINDER_MANAGE_OWN` 與 `PRESCRIPTION_MANAGE_OWN` 都在 `_PUBLIC`：
+  提醒**不需**先驗證基本資料（`ReminderHandler.requires_verified = False`）。
+- **推播** `ReminderService.run_due(now)`：由 `flask reminder run-due` + 外部 cron 每 5 分鐘執行；`reminder_deliveries`
+  的 `UNIQUE(schedule_id, scheduled_for)` 保證同一時段只送一次，`REMINDER_WINDOW_MINUTES` 容許 cron 延遲；同一人同一批合併成一則 Flex
+  （每顆藥有 已服用 / 30 分後 / 跳過 postback）；`users.push_enabled=False`（封鎖）略過，`FollowHandler` 重新加好友時恢復。
+  慢箋：確認處方時算 `refill_reminder_on = issued_on + days_supply × refill_seq − REFILL_REMINDER_DAYS_BEFORE`，同一輪 cron 推播一次。
+  所有 datetime 以 UTC 存，SQLite 讀回的 naive 值一律視為 UTC（`reminder_repository.as_utc`）。
+- 尚未做：後台檢視病人處方 / 服藥紀錄；「根據症狀」的提醒（屬病況諮詢延伸）；藥袋藥錠外觀比對（`42_2.csv`）。
+
+### AI 對話助理：RAG + 事件判斷 → 套用 LINE 模組（已實作，2026-09-27）
+
+設計文件 `docs/ai-assistant-design.md`。AI 只用 OpenAI API（`OPENAI_API_KEY`），沒有其他後端。**所有自由文字**（含「找醫院」這類關鍵字）都先交給 AI 判斷事件，再套用既有模組回應；
+程式裡不再寫規則式的意圖判斷。只有兩個例外不等模型：紅旗關鍵字 `EMERGENCY_KEYWORDS` 直接進緊急畫面（安全層），
+「等藥名」狀態的文字當藥名查詢。Rich Menu / 按鈕 postback、圖片、位置訊息仍直接走模組。
+
+- **LLM** `app/integrations/llm.py`：`OpenAiClient.complete_structured(prompt, response_model, system=, images=)`
+  用 OpenAI Chat Completions 的 structured outputs 直接回 pydantic 實例；對話 `AI_MODEL`（預設 `gpt-4.1-mini`）、
+  處方辨識 `OCR_MODEL`（預設 `gpt-4.1`），金鑰 `OPENAI_API_KEY`（正式環境必填，缺少啟動即失敗）。
+  測試以 `tests/conftest.py` 的 `FakeLlmClient`（依關鍵字回固定決策，`decisions` / `default` / `error` 可改）替換
+  `container.llm_client`。
+- **檢索（RAG 的 R）= 混合檢索**：關鍵字（`app/domain/retrieval.py` 的 jieba 搜尋模式 + 字元 bigram + `CUSTOM_WORDS`
+  → PostgreSQL tsvector 全文檢索，GIN 索引）+ 語意（`OpenAiClient.embed()`，`EMBEDDING_MODEL` 預設 `text-embedding-3-small`，
+  pgvector `vector(1536)` + HNSW 索引），各取 20 個候選後 `rrf_fuse()` 合併、同一份文件最多 2 個片段
+  （`KnowledgeService.retrieve()`、`SqlAlchemyKnowledgeRepository.search_keyword / search_vector`）。
+  SQLite（測試）用記憶體 `BM25Index` 與 Python 餘弦；沒有向量或查詢向量失敗時只用關鍵字。片段用 `chunk_text()` 切約 400 字，
+  `tokens` / `search_vector` / `embedding` 都存 DB；向量由 `flask knowledge embed` 補算（只算 NULL 的，可重跑）。
+  SQLite 的 `embedding` 用 `JSON(none_as_null=True)`，否則 None 會存成 `'null'` 字串、`IS NULL` 濾不掉。
+- **知識庫** `knowledge_documents` / `knowledge_chunks`（`app/models/knowledge.py`）：`hospital_id` 空 = 通用；院所文件只有
+  常去院所 / 所屬院所是它的使用者檢索得到。`source`（檔名或網址）與 `content_hash` 去重，`meta` 存出處
+  （`hospital_name` / `level` / `topics` / `forms`）。後台 `/admin/knowledge`（列表、編輯、Markdown 多檔匯入、試搜），
+  API `/api/v1/admin/knowledge*`：讀取 = 院方角色，寫入 = `EDUCATION_CONTENT_MANAGE`（綁自己院所），通用文件只有 SUPER_ADMIN。
+  種子 `data/knowledge/*.md`（front matter：title / category / tags / hospital_id），`flask knowledge import data/knowledge`。
+  分類在 `KnowledgeService.CATEGORIES`。
+- **衛教內文資料** `data/衛教內文資料/health_education_content.jsonl`（全台 129 家醫院官網衛教，35,784 篇，
+  說明見該目錄 README）：`KnowledgeService.import_health_education()` 只收內文 ≥ 200 字、中文比例 ≥ 0.4、有 `topics`
+  分類（`--all` 全收）、內文 SHA-1 不重複的文章，`clean_text()` 去掉 PDF 抽字的 NUL / 私有區符號，
+  批次 500 篇一次 commit；一律通用文件、出處在 `meta`。目前匯入 13,742 篇 / 41,737 片段。只有 SUPER_ADMIN 能匯入（CLI）。
+- **決策格式單一來源** `app/domain/assistant_schema.py`（`AssistantDecision`：event / risk / answer / slots / actions /
+  citations / needs_clarification / handoff_reason）。模型只回這個結構，**不決定訊息長相**。
+- **脈絡** `ConversationService.build_context()`：使用者狀態（綁定 / 住址）、最近對話（存 `conversation_state` store，
+  key `<line_user_id>:history`，TTL `AI_HISTORY_TTL_SECONDS`）、知識片段（K1…）、即時資料（提到縣市 → 急診看板摘要，
+  用既有快照不即時抓；像藥名的詞 → `PharmacyService.search_drugs`，只收名稱開頭相符的）。`SYSTEM_PROMPT` 規定：只能依片段
+  逐條對照寫答案、有依據必標 citations、沒有依據要明說並建議找真人、先結論再 2–4 個重點、不診斷不開藥。
+- **事件 → 模組** `AssistantHandler`（`intents/assistant.py`，`Intent.ASSISTANT`）：emergency → 緊急畫面；hospital →
+  `FindHospitalHandler`（slots.city 有值直接 `action=area`）；medication → 藥名查詢 / 選單；pharmacy → 找藥局；
+  reminder / discharge / human / intake → 對應模組；symptom / faq / smalltalk / unknown → answer + `actions` 變 Quick Reply
+  （對應表在 `app/line/messages/assistant.py`）。answer 有引用（`decision.citations` → `decision.attach_sources(hits)` →
+  `decision.sources`）時用 Flex：正文 + 免責 + 最多 3 個「參考來源」URI 按鈕（`hit_label()`：醫院《標題》，開原文網址）。模組回覆用 `BotContext.capture()` 收集後與 answer 合併成一次 reply。
+  先顯示 loading animation（60 秒），reply token 過期改 push。AI 失敗（未啟用 / 逾時 / 格式錯）→ `TEXT_KEYWORDS` 關鍵字退路
+  → 再不行回失敗訊息 + 找真人。
+- **病況諮詢 / 衛教諮詢（Roadmap 第 2、3 項，2026-09-28 以最簡方式實作）**：都只是 `SYSTEM_PROMPT` 規則 + 脈絡，
+  沒有新 Service。symptom：模型填 `slots.department` 與 `risk`（none / watch / urgent），watch 時 handler 補
+  `find_clinic`（→ 找醫院模組 `action=clinics`）、urgent 補 119 + 找醫院。discharge：已驗證病人的 prompt 多一段
+  【病人資料】（`patient_record_repo.latest_encounter()` 的科別 / 診斷 / 出院代碼 + 自填慢性病），問到照護時檢索補上診斷；
+  模型有 answer 就直接回個人化衛教，answer 留空 → `DischargeHandler` 通用版；Rich Menu「我剛出院」已驗證也走
+  `conversation.decide()`（`DischargeHandler.PERSONAL_QUESTION`），AI 失敗退回通用版。
+  新增事件或動作：改 `assistant_schema.py` 的 Literal + `AssistantHandler._compose()` /
+  `messages/assistant.py`，`tests/test_assistant.py` 對每種事件都有對應測試。
+
+### 急診動態分流 / 找醫院（Roadmap 第 1 項，已實作）
+
+設計文件 `docs/triage-design.md`。資料來源是健保署「急診即時訊息」API（`app/integrations/nhi_er.py`，公開、免金鑰，
+全國 59 家重度級急救責任醫院，每 15 分鐘更新），**不做人工回報**。`flask triage poll` 由 cron 每 15 分鐘執行
+（無 cron 可 `--loop`）：抓取 → `er_snapshots`（UNIQUE(醫院, 回報時間)，重跑不重複）→ 清除超過 `TRIAGE_RETENTION_DAYS` 的快照
+→ `TriageService.evaluate()` 逐縣市判斷 → `triage_advisories` 開立 / 更新 / 解除 → 通知 `triage_subscriptions`。
+
+- **規則單一來源** `app/domain/triage_rules.py`：地區代碼 `AREA_NAMES`（臺 → 台）、鄰近縣市 `ADJACENT_AREAS`、
+  依層級的等住院門檻、等 ICU / 等看診門檻、`congestion_level()` / `congestion_score()` / `decorate()`。
+  **推床數（`wait_bed`）不列入判斷**。119 滿床通報一律「壅塞」。`public_rules()` 供 LIFF / 後台顯示門檻。
+- **分流建議以縣市為單位**：該縣市任一家「壅塞」→ 一筆 open advisory（同縣市同時只有一筆），`alternatives` 依
+  同縣市有餘裕 → 同縣市偏忙 → 鄰近縣市有餘裕排序；`report` 是純文字報告。再通知條件：新增壅塞醫院或距上次通知超過
+  `TRIAGE_RENOTIFY_MINUTES`；解除時也通知。醫院停止回報超過 2 × `TRIAGE_STALE_MINUTES` 的舊快照不當現況。
+- **接收者（訂閱）** 三種：`line`（推播給已加好友的 LINE 使用者）、`webhook`（POST JSON + `X-MediAgent-Signature`
+  HMAC-SHA256）、`api`（用 `X-Api-Key` 主動拉 `GET /api/v1/triage/advisories`，不推送）。secret 用 `FieldCipher` 加密存、
+  另存 fingerprint 供查找，只在建立時回一次。權限 `TRIAGE_SUBSCRIPTION_MANAGE`（HOSPITAL_ADMIN / SUPER_ADMIN），
+  訂閱的 `hospital_id` = 建立者院所，`AccessPolicy.hospital_scope()` 隔離；身份由建立者線下核對，不新增角色。
+  `TRIAGE_READ`（所有院方角色）看後台 `/admin/triage`（看板、建議、接收者、「立即抓取並評估」）。
+- **一般使用者**：`FindHospitalHandler`（`intents/hospital.py`）。**以使用者位置為準**：LINE 位置訊息自帶經緯度
+  （`MessageHandler` 依 `AWAIT_LOCATION` `for=hospital` 轉來，params 帶 `address` / `lat` / `lng`；`PENDING_LOCATION` 也存座標）
+  → `TriageService.board_for_location(lat, lng)` 純依距離列最近 8 家（`distance_km`）、`recommended` = 最近且未壅塞的一家，
+  回 Flex + 該醫院的 `LocationMessage`（可導航）；院所主檔沒座標時退回縣市看板 `board(area)`（選縣市 4 張 Flex / 基本資料住址也走這條）。
+  「非急症：找附近診所」`nearby_clinics(city, district, lat, lng)`：有座標 → 10 km 內依距離，否則 `hospitals` 主檔
+  （`capacity_tier` clinic / district / regional）依縣市 + 鄉鎮市區（`HospitalRepository.search_nearby()`）。
+  `emergency=1`（紅旗）改急救文案並加撥打 119。距離用 `app/utils/geo.py` 的 Haversine，不用地圖服務。
+- **院所座標** `hospitals.lat / lng`：種子檔 `data/er_hospitals.csv`（59 家重度級醫院，OSM Nominatim 一次性查詢 + 人工校對），
+  `flask hospital import data/er_hospitals.csv` 匯入；匯入 CSV / 後台 PATCH 都接受 `lat,lng`（`parse_coords` 驗證）。
+  分流建議的 `alternatives` 在壅塞醫院有座標時改依「離壅塞醫院最近」（50 km 內）排序並在報告標示距離。
+  LIFF `/liff/er?area=01`（或 `?lat=&lng=`）是**不需登入**的完整看板，「用我的位置」用瀏覽器定位，
+  打公開的 `GET /api/v1/triage/board[?lat=&lng=]`（rate limit）。
+- 查詢時快照超過 `TRIAGE_STALE_MINUTES` 會即時 `ingest()` 一次，但不評估、不通知（只在 cron 內做）。
+  API 的 `hosP_ID` 就是健保醫事機構代碼，`hospitals.id` 相同時看板帶出地址 / 電話。
+- 測試以 `tests/conftest.py` 的 `FakeErClient`（`payload` 可改）/ `FakeWebhookClient` 替換
+  `container.er_client` / `container.webhook_client`。
 
 ### LINE 層慣例
 
@@ -90,9 +218,13 @@ Enum 欄位（`Role`/`BindingStatus`）一律用 `sa.Enum(..., native_enum=False
 
 ## 規劃中功能（Roadmap）— 技術設計
 
-以下 6 項功能是下一階段要擴充的範圍。**第 6 項（病人表單）與第 1 項的 `Hospital` 實體已實作**，其餘尚未實作，先寫成技術設計文件讓使用者確認方向是否正確，確認後再逐項排入開發。每項的格式一致：功能敘述 → 現況對應 → 資料模型設計 → 服務/API 設計 → 與既有架構整合點 → 外部依賴 → 待確認問題。
+以下 6 項功能是下一階段要擴充的範圍。**第 6 項（病人表單）、第 4、5 項（藥物諮詢 / 服藥小幫手，見 `docs/medication-design.md`）與第 1 項的 `Hospital` 實體已實作**，其餘尚未實作，先寫成技術設計文件讓使用者確認方向是否正確，確認後再逐項排入開發。每項的格式一致：功能敘述 → 現況對應 → 資料模型設計 → 服務/API 設計 → 與既有架構整合點 → 外部依賴 → 待確認問題。
 
-### 1. 急診動態分流
+### 1. 急診動態分流（已實作，2026-09-26）
+
+實作內容見上方「急診動態分流 / 找醫院」與 `docs/triage-design.md`；以下為原始規劃，保留供對照。
+主要差異：壅塞資料改用健保署急診即時 API（不做人工回報 / HIS）、不新增 `DISPATCH_OPERATOR` 角色（改為後台管理的訂閱名單）、
+分流建議以縣市為單位。
 
 **功能敘述**：當偵測到某區一家醫院陷入壅塞狀態，自動生成分流建議報告，透過 API（或 LINE）發送給該區 119 勤務指揮中心或基層診所醫師，建議暫時將病患轉往仍有餘裕的中大型醫院。
 
@@ -113,7 +245,10 @@ Enum 欄位（`Role`/`BindingStatus`）一律用 `sa.Enum(..., native_enum=False
 
 **待確認問題**：壅塞資料來源（HIS API？人工回報？兩者都要？）；119/診所帳號的訂閱名單怎麼建立與驗證身份；觸發分流建議的閾值怎麼定義（單一醫院層級？區域層級？）。
 
-### 2. 病況諮詢
+### 2. 病況諮詢（已實作最簡版，2026-09-28）
+
+實作內容見上方「AI 對話助理」的病況諮詢段落；未做 `HospitalDepartment`（科別等候 / 掛號連結），科別只由模型依知識庫判斷、
+就醫地點用既有找醫院 / 附近診所模組。以下為原始規劃。
 
 **功能敘述**：意圖分類 → RAG 查院內 FAQ、症狀說明，判斷可能需要掛的科別後，透過醫院與診所的資料決定要去哪裡掛號最快能解決問題。
 
@@ -133,7 +268,10 @@ Enum 欄位（`Role`/`BindingStatus`）一律用 `sa.Enum(..., native_enum=False
 
 **待確認問題**：LLM/embedding 供應商選型；症狀/科別對應內容由誰審核把關醫療正確性；掛號連結格式（各診所自有系統 API 還是純連結/電話）。
 
-### 3. 衛教諮詢
+### 3. 衛教諮詢（已實作最簡版，2026-09-28）
+
+實作內容見上方「AI 對話助理」的衛教諮詢段落；未做 `EducationContent` / `PatientEducationAssignment` 與每日任務推播，
+個人化衛教由模型依「最近就診診斷 + 慢性病」對照衛教知識庫即時生成。以下為原始規劃。
 
 **功能敘述**：針對不同醫院及不同病因出院的患者，提供 Agentic AI 的衛教資訊，讓病人可以即時知道自己需要做什麼樣的動作。
 
@@ -156,7 +294,7 @@ Enum 欄位（`Role`/`BindingStatus`）一律用 `sa.Enum(..., native_enum=False
 
 ### 4. 藥物諮詢
 
-**功能敘述**：根據醫生開的處方簽給予夠買藥物的地點資訊。
+**功能敘述**：根據醫生開的處方箋給予購買藥物的地點資訊。
 
 **現況對應**：延伸既有 `Intent.MEDICATION` / `app/line/handlers/intents/medication.py`（stub）。呼應 `app/line/handlers/message.py` 的兩個既有 TODO：「圖片（藥袋辨識）」與「位置訊息（找醫院）」— 這個功能會同時用到兩者。
 
@@ -174,7 +312,9 @@ Enum 欄位（`Role`/`BindingStatus`）一律用 `sa.Enum(..., native_enum=False
 
 **待確認問題**：處方資料來源；藥局資料來源；是否需要即時庫存查詢。
 
-### 5. 服藥小幫手
+### 5. 服藥小幫手（已實作，2026-09-26）
+
+實作內容見上方「藥物諮詢 / 服藥小幫手」；以下為原始規劃，保留供對照。
 
 **功能敘述**：根據病人的處方簽或者是症狀，依據藥物的種類提醒該病人需要何時服用藥物。
 
@@ -227,3 +367,6 @@ Enum 欄位（`Role`/`BindingStatus`）一律用 `sa.Enum(..., native_enum=False
 - `docs/local-operations.md`：本機安裝（pgAdmin 為主）、LINE Developers Console 設定、ngrok、curl 手動測試、常見問題。
 - `docs/architecture.md`：服務地圖節點與程式位置對照、狀態機圖、擴充點。
 - `docs/patient-form-design.md`：病人自填表 / 院方紀錄表的欄位、資料模型、API 與後台設計（Roadmap 第 6 項，已實作）。
+- `docs/medication-design.md`：藥物諮詢（處方箋拍照辨識 → 找藥局）與服藥小幫手（排程提醒推播）的設計與實作決策（Roadmap 第 4、5 項，已實作）。
+- `docs/ai-assistant-design.md`：AI 對話助理（jieba + BM25 檢索、OpenAI 判斷事件、套用 LINE 模組）的設計與決策（已實作）。
+- `docs/triage-design.md`：急診動態分流（健保署急診即時 API 定時抓取 → 壅塞評估 → 分流建議通知 119 / 診所；LINE 找醫院看板）（Roadmap 第 1 項，已實作）。

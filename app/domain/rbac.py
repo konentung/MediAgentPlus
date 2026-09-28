@@ -18,6 +18,8 @@ _PUBLIC: frozenset[P] = frozenset(
         P.CONSULT_EDUCATION_GENERIC,
         P.HANDOFF_REQUEST,
         P.INTAKE_WRITE_OWN,
+        P.PRESCRIPTION_MANAGE_OWN,
+        P.REMINDER_MANAGE_OWN,
     }
 )
 
@@ -25,7 +27,6 @@ _BOUND_USER: frozenset[P] = _PUBLIC | {
     P.PROFILE_READ_OWN,
     P.PROFILE_WRITE_OWN,
     P.EDUCATION_PERSONAL,
-    P.REMINDER_MANAGE_OWN,
 }
 
 # 院方人員同時也是 LINE 使用者：一般諮詢、找醫院等公開功能照樣可用
@@ -35,6 +36,7 @@ _CS_AGENT: frozenset[P] = _PUBLIC | frozenset(
         P.HANDOFF_REPLY,
         P.CONVERSATION_READ,
         P.PATIENT_READ,
+        P.TRIAGE_READ,
     }
 )
 
@@ -46,6 +48,7 @@ _MEDICAL_STAFF: frozenset[P] = _PUBLIC | frozenset(
         P.PATIENT_WRITE,
         P.PATIENT_VERIFY,
         P.ENCOUNTER_MANAGE,
+        P.TRIAGE_READ,
     }
 )
 
@@ -58,6 +61,7 @@ _HOSPITAL_ADMIN: frozenset[P] = (
         P.RICHMENU_MANAGE,
         P.AUDIT_READ,
         P.PATIENT_IDENTITY_READ,
+        P.TRIAGE_SUBSCRIPTION_MANAGE,
     }
 )
 

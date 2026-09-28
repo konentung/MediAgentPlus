@@ -66,6 +66,39 @@
   </div>
 </div>
 
+<div class="card border-0 shadow-sm mb-3 d-none" id="reference-card">
+  <div class="card-header bg-white d-flex justify-content-between align-items-center">
+    <span class="fw-bold">參考資料（藥局 / 藥品）</span>
+    <span class="small text-secondary" id="reference-stats">—</span>
+  </div>
+  <div class="card-body">
+    <p class="small text-secondary">
+      「去哪拿藥」找藥局與藥名查詢用的開放資料，匯入一次即可，重新上傳會以代碼更新既有資料。
+      來源：健保署「特約醫事機構」（只取藥局列）、衛福部「藥局基本資料」（只補非健保特約）、健保署「健保用藥品項」（約 96MB，上傳需等候約 1 分鐘）。
+    </p>
+    <div class="row g-3">
+      <div class="col-md-6">
+        <form class="border rounded p-3 h-100" data-import="pharmacies">
+          <label class="form-label fw-bold small">藥局 CSV</label>
+          <input class="form-control form-control-sm" type="file" name="file" accept=".csv,text/csv" required>
+          <div class="form-text">健保署特約醫事機構檔（醫事機構代碼、醫事機構種類…）或衛福部藥局檔（機構名稱、是否為健保特約藥局…）</div>
+          <button class="btn btn-sm btn-brand mt-2" type="submit">匯入藥局</button>
+          <div class="alert small mt-2 mb-0 d-none" data-result></div>
+        </form>
+      </div>
+      <div class="col-md-6">
+        <form class="border rounded p-3 h-100" data-import="drugs">
+          <label class="form-label fw-bold small">健保用藥 CSV</label>
+          <input class="form-control form-control-sm" type="file" name="file" accept=".csv,text/csv" required>
+          <div class="form-text">健保用藥品項檔（藥品代號、藥品英文名稱、藥品中文名稱、成分、劑型、ATC代碼、有效迄日）</div>
+          <button class="btn btn-sm btn-brand mt-2" type="submit">匯入藥品</button>
+          <div class="alert small mt-2 mb-0 d-none" data-result></div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal fade" id="import-modal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog"><form class="modal-content" id="import-form">
     <div class="modal-header"><h2 class="modal-title h6">匯入院所 CSV</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="關閉"></button></div>
@@ -199,6 +232,39 @@ Admin.boot(async function (ctx) {
       } catch (err) { Admin.toast(err.message, "danger"); }
     });
     await loadHospitals();
+  }
+
+  // 參考資料（藥局 / 藥品）匯入：multipart 上傳，只有 reference_data:manage（系統管理員）看得到
+  if (ctx.can("reference_data:manage")) {
+    var refCard = document.getElementById("reference-card");
+    refCard.classList.remove("d-none");
+    async function loadStats() {
+      var s = await ctx.api("/api/v1/admin/reference-data");
+      document.getElementById("reference-stats").textContent = "藥局 " + s.pharmacies + " 筆、藥品 " + s.drugs + " 筆";
+    }
+    refCard.querySelectorAll("form[data-import]").forEach(function (form) {
+      form.addEventListener("submit", async function (e) {
+        e.preventDefault();
+        var btn = form.querySelector("button[type=submit]"), box = form.querySelector("[data-result]");
+        var data = new FormData(); data.append("file", form.elements.file.files[0]);
+        btn.disabled = true; btn.textContent = "匯入中…"; box.classList.add("d-none");
+        try {
+          var resp = await fetch("/api/v1/admin/" + form.getAttribute("data-import") + "/import", {
+            method: "POST", body: data,
+            headers: { Authorization: "Bearer " + sessionStorage.getItem("access_token"), "ngrok-skip-browser-warning": "1" }
+          });
+          var body = await resp.json();
+          if (!resp.ok) throw new Error(body.error ? body.error.message : "匯入失敗");
+          box.className = "alert alert-success small mt-2 mb-0";
+          box.textContent = "新增 " + body.data.created + "、更新 " + body.data.updated + "、略過 " + body.data.skipped;
+          form.reset();
+          await loadStats();
+        } catch (err) {
+          box.className = "alert alert-danger small mt-2 mb-0"; box.textContent = err.message;
+        } finally { btn.disabled = false; btn.textContent = form.getAttribute("data-import") === "drugs" ? "匯入藥品" : "匯入藥局"; }
+      });
+    });
+    await loadStats();
   }
 
 });

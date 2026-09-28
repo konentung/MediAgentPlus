@@ -11,7 +11,17 @@ from app.repositories.base import row_to_dict
 
 class HospitalRepository(Protocol):
     def get(self, hospital_id: str) -> dict[str, Any] | None: ...
+    def get_many(self, hospital_ids: list[str]) -> dict[str, dict[str, Any]]: ...
     def list(self, *, active_only: bool = True) -> list[dict[str, Any]]: ...
+    def search_nearby(
+        self,
+        *,
+        city: str,
+        district: str | None,
+        tiers: tuple[str, ...],
+        limit: int = 10,
+    ) -> list[dict[str, Any]]: ...
+    def list_with_coords(self, *, tiers: tuple[str, ...] | None = None) -> list[dict[str, Any]]: ...
     def create(self, **values: Any) -> dict[str, Any]: ...
     def update(self, hospital_id: str, **changes: Any) -> dict[str, Any]: ...
     def upsert_many(self, rows: list[dict[str, Any]]) -> tuple[int, int]: ...
@@ -22,10 +32,56 @@ class SqlAlchemyHospitalRepository:
         row = db.session.get(HospitalModel, hospital_id)
         return row_to_dict(row) if row else None
 
+    def get_many(self, hospital_ids: list[str]) -> dict[str, dict[str, Any]]:
+        if not hospital_ids:
+            return {}
+        rows = db.session.execute(
+            db.select(HospitalModel).where(HospitalModel.id.in_(hospital_ids))
+        ).scalars()
+        return {row.id: row_to_dict(row) for row in rows}
+
     def list(self, *, active_only: bool = True) -> list[dict[str, Any]]:
         stmt = db.select(HospitalModel).order_by(HospitalModel.name)
         if active_only:
             stmt = stmt.where(HospitalModel.active.is_(True))
+        return [row_to_dict(r) for r in db.session.execute(stmt).scalars()]
+
+    def list_with_coords(self, *, tiers: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
+        """所有有座標的啟用院所（依距離排序時用，交給呼叫端算距離）。"""
+        stmt = db.select(HospitalModel).where(
+            HospitalModel.active.is_(True),
+            HospitalModel.lat.is_not(None),
+            HospitalModel.lng.is_not(None),
+        )
+        if tiers:
+            stmt = stmt.where(HospitalModel.capacity_tier.in_(list(tiers)))
+        return [row_to_dict(r) for r in db.session.execute(stmt).scalars()]
+
+    def search_nearby(
+        self,
+        *,
+        city: str,
+        district: str | None,
+        tiers: tuple[str, ...],
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """依縣市（region 或地址開頭，臺 / 台皆可）與鄉鎮市區（地址包含）找啟用中的院所。"""
+        variants = {city, city.replace("台", "臺"), city.replace("臺", "台")}
+        stmt = (
+            db.select(HospitalModel)
+            .where(
+                HospitalModel.active.is_(True),
+                HospitalModel.capacity_tier.in_(list(tiers)),
+                db.or_(
+                    HospitalModel.region.in_(list(variants)),
+                    *[HospitalModel.address.like(f"{v}%") for v in variants],
+                ),
+            )
+            .order_by(HospitalModel.name)
+            .limit(limit)
+        )
+        if district:
+            stmt = stmt.where(HospitalModel.address.like(f"%{district}%"))
         return [row_to_dict(r) for r in db.session.execute(stmt).scalars()]
 
     def create(self, **values: Any) -> dict[str, Any]:

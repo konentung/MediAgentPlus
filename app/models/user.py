@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import ForeignKey, String
+from sqlalchemy import Boolean, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.domain.enums import BindingStatus, Role
@@ -40,3 +40,5 @@ class UserModel(db.Model, TimestampMixin):
     hospital_id: Mapped[str | None] = mapped_column(
         String(32), ForeignKey("hospitals.id", ondelete="SET NULL"), index=True
     )
+    # 使用者封鎖官方帳號後設為 False，所有主動推播（服藥提醒等）都要略過
+    push_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

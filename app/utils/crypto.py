@@ -40,5 +40,16 @@ class FieldCipher:
             logger.error("Field decryption failed; PATIENT_DATA_KEY may have changed")
             raise AppError("資料解密失敗", status_code=500, error_code="decrypt_failed") from exc
 
+    def encrypt_bytes(self, data: bytes) -> bytes:
+        """二進位內容（處方箋照片）落地前加密。"""
+        return self._fernet.encrypt(data)
+
+    def decrypt_bytes(self, token: bytes) -> bytes:
+        try:
+            return self._fernet.decrypt(token)
+        except InvalidToken as exc:
+            logger.error("Blob decryption failed; PATIENT_DATA_KEY may have changed")
+            raise AppError("資料解密失敗", status_code=500, error_code="decrypt_failed") from exc
+
     def fingerprint(self, plaintext: str) -> str:
         return hmac.new(self._hmac_key, plaintext.upper().encode(), hashlib.sha256).hexdigest()

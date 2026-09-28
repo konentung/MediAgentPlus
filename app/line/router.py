@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.domain.enums import Intent
 from app.line.context import BotContext
+from app.line.handlers.intents.assistant import AssistantHandler
 from app.line.handlers.intents.base import IntentHandler
 from app.line.handlers.intents.discharge import DischargeHandler
 from app.line.handlers.intents.hospital import FindHospitalHandler
@@ -23,6 +24,9 @@ class IntentRouter:
     def register(self, handler: IntentHandler) -> IntentRouter:
         self._handlers[handler.intent] = handler
         return self
+
+    def handler_for(self, intent: Intent) -> IntentHandler | None:
+        return self._handlers.get(intent)
 
     def route(self, ctx: BotContext, request: IntentRequest | None) -> None:
         handler = self._handlers.get(request.intent) if request else None
@@ -45,4 +49,5 @@ class IntentRouter:
             SettingsHandler(),
         ):
             router.register(handler)
+        router.register(AssistantHandler(router))  # 自由文字 → AI 判斷 → 套用上面的模組
         return router

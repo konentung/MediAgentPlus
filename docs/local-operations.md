@@ -184,6 +184,23 @@ python3.11 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key
 
 本機留空會由 `SECRET_KEY` 衍生（重啟不影響解密）；正式環境必填，**金鑰一旦更換既有資料就無法解密**，請妥善備份。
 
+### 4.6 藥局 / 藥品開放資料與處方箋辨識
+
+「去哪拿藥」與「服藥小幫手」需要藥局與健保用藥資料，匯入一次即可（可重跑）。系統管理員登入後台
+`/admin/settings`，在「參考資料（藥局 / 藥品）」直接上傳 CSV；或用 CLI 從 `data/pharmacy/` 匯入：
+
+```bash
+flask --app wsgi pharmacy import data/pharmacy/A21030000I-D21005-001.csv   # 健保署特約藥局（約 1 萬筆）
+flask --app wsgi pharmacy import data/pharmacy/35_2.csv                    # 衛福部藥局，補非特約（約 1.5 千筆）
+flask --app wsgi drug import data/pharmacy/A21030000I-E41001-001.csv       # 健保用藥（約 4.5 萬筆）
+flask --app wsgi pharmacy stats
+flask --app wsgi pharmacy find "台北市松山區"                               # 測試找藥局
+```
+
+處方箋照片辨識與 AI 對話都用 OpenAI API：在 `.env` 填 `OPENAI_API_KEY` 即可，模型留空時辨識用 `gpt-4.1`
+（一張約 5–15 秒）、對話用 `gpt-4.1-mini`。辨識期間 LINE 端顯示「處理中」動畫，不另發訊息。
+照片以 `PATIENT_DATA_KEY` 加密後完整保留在 `MEDIA_ROOT`（預設 `var/media/`，已在 .gitignore）。
+
 這個專案沒有獨立前端，LINE Login callback（`/api/v1/auth/line/callback`）直接用 Jinja render
 `app/templates/auth/callback.html` 顯示登入成功頁，並把 token 交給頁面上的 script 存進
 `sessionStorage`；若 `/api/v1/auth/line/login?redirect_to=...` 有帶 `redirect_to`，該頁會在存好
@@ -214,7 +231,50 @@ FLASK_ENV=production ./scripts/run_prod.sh
 ```
 
 正式模式啟動時會檢查必要環境變數，缺少會直接報錯並列出缺哪些。
-可用 `PORT`、`WORKERS`、`THREADS` 環境變數調整。
+可用 `PORT`、`WORKERS`、`THREADS`、`TIMEOUT`（預設 120 秒，處方辨識需要）環境變數調整。
+
+### 服藥提醒排程（cron）
+
+提醒推播不是常駐程序，由外部 cron 每 5 分鐘呼叫一次 CLI（可重複執行、不會重複推播）：
+
+```cron
+*/5 * * * * cd /path/to/MediAgentPlus && FLASK_ENV=production flask --app wsgi reminder run-due >> var/reminder.log 2>&1
+```
+
+本機測試可以指定時間：`flask --app wsgi reminder run-due --now 2026-09-28T08:31:00+08:00`。
+注意 LINE 官方帳號免費方案每月只有 200 則推播，一位病人一天三次一個月就 90 則，正式上線前請升級方案。
+
+### AI 對話助理（OpenAI）
+
+自由文字由 AI 助理判斷事件（`docs/ai-assistant-design.md`）。在 `.env` 填 `OPENAI_API_KEY` 即可（對話模型留空為 `gpt-4.1-mini`）。初始化：
+
+```bash
+flask --app wsgi knowledge import data/knowledge      # 匯入通用知識種子
+flask --app wsgi knowledge import-health-education "data/衛教內文資料/health_education_content.jsonl"  # 全台醫院衛教（約 20 秒）
+flask --app wsgi knowledge embed                      # 算向量（41,737 片段約 7 分鐘、US$0.25；可中斷重跑）
+flask --app wsgi knowledge stats
+flask --app wsgi knowledge search "糖尿病腳有傷口怎麼照顧"   # 確認檢索（關鍵字 + 語意）
+flask --app wsgi assistant ask "我頭痛兩天了"          # 實際呼叫模型，看脈絡與決策 JSON
+```
+
+OpenAI 一次約 2–6 秒；`AI_TIMEOUT_SECONDS` 預設 60，gunicorn `TIMEOUT` 預設 120。
+`AI_ENABLED=false` 時文字退回關鍵字比對。院所自己的衛教 / FAQ 在後台「AI 知識庫」上傳 Markdown 即可，不需改程式。
+語意檢索需要 PostgreSQL 的 pgvector 擴充套件（Homebrew：`brew install pgvector`；migration 會自動 `CREATE EXTENSION vector`）。
+沒有 pgvector 或 `EMBEDDING_MODEL` 留空時只用關鍵字檢索，功能仍可用。
+
+### 急診動態分流排程（cron）
+
+健保署急診即時訊息約每 15 分鐘更新一次，同樣用 cron 呼叫 CLI（同一輪回報不會重複寫入、不會重複通知）：
+
+```cron
+*/15 * * * * cd /path/to/MediAgentPlus && FLASK_ENV=production flask --app wsgi triage poll >> var/triage.log 2>&1
+```
+
+沒有 cron 的環境（例如 Docker 單一容器）可以用常駐模式：`flask --app wsgi triage poll --loop --interval 900`。
+初始化時先匯入 59 家重度級急救責任醫院的座標種子檔：`flask --app wsgi hospital import data/er_hospitals.csv`，
+「找醫院」才能依使用者位置算距離、推薦最近未壅塞的醫院（沒匯入會退回縣市看板）。
+本機檢查：`flask --app wsgi triage board --area 台北市`、`flask --app wsgi triage advisories --all`。
+接收者（119 勤務指揮中心 / 診所）在後台「急診動態分流」建立：LINE 推播需要對方先加官方帳號；Webhook 與 API 拉取會產生一次性顯示的 secret。
 
 ---
 
@@ -263,6 +323,14 @@ flask --app wsgi richmenu setup --image ./assets/richmenu.png
 | `flask --app wsgi routes` | 列出所有 API 路由 |
 | `flask --app wsgi rbac show` | 輸出角色權限矩陣 |
 | `flask --app wsgi user set-role <user_id> super_admin` | 以系統身分指派角色 |
+| `flask --app wsgi pharmacy import <csv>` / `drug import <csv>` | 匯入藥局 / 健保用藥開放資料 |
+| `flask --app wsgi pharmacy find "台北市松山區"` | 測試依地址找藥局 |
+| `flask --app wsgi reminder run-due [--now <iso>]` | 推播到期的服藥提醒（cron 用） |
+| `flask --app wsgi triage poll [--loop --interval 900]` | 抓健保署急診即時資料、評估壅塞、通知接收者（cron 用） |
+| `flask --app wsgi triage board [--area 台北市]` / `triage advisories [--all]` | 印出急診看板 / 分流建議 |
+| `flask --app wsgi knowledge import <dir 或 .md>` / `knowledge search "<q>"` / `knowledge list` | AI 知識庫匯入 / 試搜 / 列表 |
+| `flask --app wsgi knowledge import-health-education <jsonl>` / `knowledge embed` / `knowledge stats` | 衛教內文匯入 / 算向量 / 統計 |
+| `flask --app wsgi assistant ask "<text>" [--user-id]` | 本機直接問 AI 助理 |
 | `flask --app wsgi shell` | 進入有 app context 的 Python shell |
 
 ---

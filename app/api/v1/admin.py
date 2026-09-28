@@ -67,7 +67,8 @@ def hospital_import_template():
     from app.services.hospital_service import IMPORT_TEMPLATE_HEADER
 
     body = (
-        IMPORT_TEMPLATE_HEADER + "\nH1,第一醫院,台北市,台北市中正區xx路1號,02-12345678,regional\n"
+        IMPORT_TEMPLATE_HEADER
+        + "\nH1,第一醫院,台北市,台北市中正區xx路1號,02-12345678,regional,25.0410,121.5185\n"
     )
     return Response(
         "\ufeff" + body,
@@ -85,6 +86,14 @@ def import_hospitals():
     支援自家範本與健保署「特約醫事機構」開放資料格式。
     """
     only_hospitals = request.args.get("only_hospitals") == "1"
+    result = get_container().hospitals.import_rows(
+        current_principal(), _csv_rows_from_request(), only_hospitals=only_hospitals
+    )
+    return ok(result)
+
+
+def _csv_rows_from_request() -> list[dict]:
+    """匯入共用：multipart 欄位 file 的 CSV，或 JSON {"rows": [...]}。"""
     upload = request.files.get("file")
     if upload is not None:
         raw = upload.read()
@@ -100,10 +109,32 @@ def import_hospitals():
             raise ValidationError("請上傳 CSV 檔（欄位 file）或提供 rows 陣列")
     if not rows:
         raise ValidationError("檔案沒有資料列")
-    result = get_container().hospitals.import_rows(
-        current_principal(), rows, only_hospitals=only_hospitals
-    )
-    return ok(result)
+    return rows
+
+
+# ---- 參考資料：藥局 / 藥品開放資料（SUPER_ADMIN）----
+
+
+@admin_bp.get("/reference-data")
+@require_permission(Permission.REFERENCE_DATA_MANAGE)
+def reference_data_stats():
+    return ok(get_container().pharmacies.stats())
+
+
+@admin_bp.post("/pharmacies/import")
+@require_permission(Permission.REFERENCE_DATA_MANAGE)
+@rate_limit("pharmacy_import", limit=10, per_seconds=600, by="user")
+def import_pharmacies():
+    """健保署「特約醫事機構」（只取藥局列）或衛福部「藥局基本資料」CSV；同代碼更新、否則新增。"""
+    return ok(get_container().pharmacies.import_pharmacies(_csv_rows_from_request()))
+
+
+@admin_bp.post("/drugs/import")
+@require_permission(Permission.REFERENCE_DATA_MANAGE)
+@rate_limit("drug_import", limit=10, per_seconds=600, by="user")
+def import_drugs():
+    """健保署「健保用藥品項」CSV；同藥品代號只保留有效迄日最新的一列。"""
+    return ok(get_container().pharmacies.import_drugs(_csv_rows_from_request()))
 
 
 @admin_bp.patch("/hospitals/<hospital_id>")

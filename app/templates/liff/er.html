@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>急診即時看板 - MediAgent+</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body { background: #f5f6f8; font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", "Microsoft JhengHei", sans-serif; }
+    .brand { color: #2f6f62; }
+    .level-normal { border-left: 5px solid #2e7d32; }
+    .level-busy { border-left: 5px solid #f9a825; }
+    .level-critical { border-left: 5px solid #c62828; }
+    .metric { font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+<main class="container py-3" style="max-width: 640px;">
+  <header class="d-flex align-items-center justify-content-between mb-2">
+    <h1 class="h5 brand mb-0">🏥 急診即時看板</h1>
+    <button class="btn btn-sm btn-outline-secondary" id="btn-refresh" type="button">重新整理</button>
+  </header>
+  <p class="small text-secondary mb-2" id="meta">載入中…</p>
+  <div class="alert alert-danger small py-2 d-none" id="emergency-hint">🚨 有生命危險請直接撥打 <a href="tel:119" class="alert-link">119</a>，救護車會依現場狀況送到最適合的醫院。</div>
+
+  <div class="d-flex gap-2 mb-3">
+    <select class="form-select" id="area"></select>
+    <button class="btn btn-brand text-nowrap" id="btn-locate" type="button">📍 用我的位置</button>
+  </div>
+  <div class="alert alert-success small py-2 d-none" id="recommend"></div>
+
+  <div id="list" class="d-grid gap-2"></div>
+  <p class="small text-secondary mt-3" id="note"></p>
+  <details class="small text-secondary">
+    <summary>燈號怎麼判斷？</summary>
+    <div id="rules" class="mt-2"></div>
+  </details>
+</main>
+
+<script id="rules-json" type="application/json">{{ rules_json | safe }}</script>
+<script>
+(function () {
+  var RULES = JSON.parse(document.getElementById("rules-json").textContent);
+  var EMOJI = { normal: "🟢", busy: "🟡", critical: "🔴" };
+  var HEADERS = { Accept: "application/json", "ngrok-skip-browser-warning": "1" };
+  var areaSelect = document.getElementById("area");
+  var initial = {{ area_code | tojson }};
+  var origin = null;  // {lat, lng}：用使用者位置依距離排序
+  var initLat = parseFloat({{ lat | tojson }}), initLng = parseFloat({{ lng | tojson }});
+  if (!isNaN(initLat) && !isNaN(initLng)) origin = { lat: initLat, lng: initLng };
+
+  function esc(t) { return String(t == null ? "" : t).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+
+  var opt = document.createElement("option"); opt.value = ""; opt.textContent = "全國（依縣市）"; areaSelect.appendChild(opt);
+  RULES.area_groups.forEach(function (g) {
+    var group = document.createElement("optgroup"); group.label = g.label;
+    g.codes.forEach(function (code) { var o = document.createElement("option"); o.value = code; o.textContent = RULES.areas[code]; group.appendChild(o); });
+    areaSelect.appendChild(group);
+  });
+  if (initial && RULES.areas[initial]) areaSelect.value = initial;
+  document.getElementById("emergency-hint").classList.remove("d-none");
+
+  var thresholds = Object.keys(RULES.wait_admit_thresholds).map(function (t) {
+    var v = RULES.wait_admit_thresholds[t]; return RULES.tiers[t] + "：等住院 ≥ " + v[0] + " 偏忙、≥ " + v[1] + " 壅塞";
+  });
+  document.getElementById("rules").innerHTML = "<ul class='mb-0 ps-3'>" + thresholds.map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("") +
+    "<li>等 ICU ≥ " + RULES.wait_icu_thresholds[0] + " 偏忙、≥ " + RULES.wait_icu_thresholds[1] + " 壅塞；等看診 ≥ " + RULES.wait_see_thresholds[0] + " 偏忙、≥ " + RULES.wait_see_thresholds[1] + " 壅塞</li>" +
+    "<li>醫院已向 119 通報滿床一律顯示壅塞</li></ul>";
+  document.getElementById("note").textContent = RULES.note;
+
+  function fmtKm(km) { return km == null ? "" : (km < 1 ? Math.round(km * 1000) + " m" : km.toFixed(1) + " km"); }
+
+  async function load() {
+    var meta = document.getElementById("meta"), list = document.getElementById("list"), rec = document.getElementById("recommend");
+    meta.textContent = "載入中…";
+    try {
+      var query = origin ? "?lat=" + origin.lat + "&lng=" + origin.lng : (areaSelect.value ? "?area=" + areaSelect.value : "");
+      var resp = await fetch("/api/v1/triage/board" + query, { headers: HEADERS });
+      var body = await resp.json();
+      if (!resp.ok) throw new Error(body.error ? body.error.message : "載入失敗");
+      var board = body.data;
+      var byDistance = board.mode === "distance";
+      meta.textContent = board.reported_at_label ? "更新 " + board.reported_at_label + (board.stale ? "（資料可能延遲）" : "") + (byDistance ? "，離你最近的醫院優先" : "，依餘裕排序") : "目前沒有資料";
+      rec.classList.add("d-none");
+      if (byDistance) {
+        if (board.recommended) { rec.textContent = "✅ 建議前往：" + board.recommended.hospital_name + "（" + fmtKm(board.recommended.distance_km) + "，" + board.recommended.level_label + "）"; rec.className = "alert alert-success small py-2"; }
+        else { rec.textContent = "⚠ 附近的急救責任醫院目前都壅塞，請撥打 119 由救護車調度。"; rec.className = "alert alert-warning small py-2"; }
+      }
+      if (!board.hospitals.length) { list.innerHTML = '<div class="text-center text-secondary py-4">這個地區沒有重度級急救責任醫院的即時資料</div>'; return; }
+      list.innerHTML = board.hospitals.map(function (h) {
+        var flag = h.full_119 ? '<span class="badge text-bg-danger ms-1">119 滿床</span>' : "";
+        var dist = h.distance_km != null ? '<span class="badge text-bg-light text-dark border me-1">' + fmtKm(h.distance_km) + "</span>" : "";
+        var worse = h.worsening ? '<span class="badge text-bg-warning text-dark ms-1">較 24h 平均惡化</span>' : "";
+        var phone = h.phone ? '<a class="small" href="tel:' + esc(h.phone.replace(/[^\d+]/g, "")) + '">📞 ' + esc(h.phone) + "</a>" : "";
+        return '<div class="card border-0 shadow-sm level-' + h.level + '"><div class="card-body py-2">' +
+          '<div class="d-flex justify-content-between align-items-start">' +
+          '<div><div class="fw-bold">' + EMOJI[h.level] + " " + dist + esc(h.hospital_name) + ' <span class="text-secondary small fw-normal">' + esc(h.tier_label) + (areaSelect.value && !byDistance ? "" : "・" + esc(h.area_name)) + "</span>" + flag + worse + "</div>" +
+          '<div class="small text-secondary metric">等看診 ' + h.wait_see + "・等住院 " + h.wait_admit + "・等 ICU " + h.wait_icu + (h.avg_admit_24h != null ? "・24h 平均等住院 " + h.avg_admit_24h : "") + "</div>" +
+          (h.address ? '<div class="small text-secondary">' + esc(h.address) + "</div>" : "") + phone + "</div>" +
+          '<span class="badge ' + (h.level === "critical" ? "text-bg-danger" : h.level === "busy" ? "text-bg-warning text-dark" : "text-bg-success") + '">' + esc(h.level_label) + "</span></div></div></div>";
+      }).join("");
+    } catch (err) {
+      meta.textContent = err.message;
+    }
+  }
+  areaSelect.addEventListener("change", function () { origin = null; load(); });
+  document.getElementById("btn-refresh").addEventListener("click", load);
+  document.getElementById("btn-locate").addEventListener("click", function () {
+    if (!navigator.geolocation) { document.getElementById("meta").textContent = "這個瀏覽器不支援定位"; return; }
+    document.getElementById("meta").textContent = "取得位置中…";
+    navigator.geolocation.getCurrentPosition(function (pos) {
+      origin = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      load();
+    }, function () { document.getElementById("meta").textContent = "無法取得位置，請允許定位或改選縣市"; }, { enableHighAccuracy: true, timeout: 10000 });
+  });
+  load();
+  setInterval(load, 5 * 60 * 1000);
+})();
+</script>
+</body>
+</html>

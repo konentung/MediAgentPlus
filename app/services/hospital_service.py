@@ -13,6 +13,7 @@ from app.domain.enums import Role
 from app.domain.principal import Principal
 from app.domain.rbac import AccessPolicy
 from app.repositories.hospital_repository import HospitalRepository
+from app.utils.geo import parse_coords
 
 HOSPITAL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{1,31}$")
 CAPACITY_TIERS = ("medical_center", "regional", "district", "clinic")
@@ -24,6 +25,8 @@ IMPORT_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "address": ("address", "地址"),
     "contact_phone": ("contact_phone", "phone", "電話", "聯絡電話"),
     "capacity_tier": ("capacity_tier", "層級", "醫事機構種類"),
+    "lat": ("lat", "latitude", "緯度"),
+    "lng": ("lng", "lon", "longitude", "經度"),
 }
 # 醫事機構種類 → capacity_tier；藥局等不屬於院所的種類整列略過
 TIER_KEYWORDS: tuple[tuple[str, str], ...] = (
@@ -43,7 +46,7 @@ SKIP_KIND_KEYWORDS = (
     "居家",
     "精神復健",
 )
-IMPORT_TEMPLATE_HEADER = "id,name,region,address,contact_phone,capacity_tier"
+IMPORT_TEMPLATE_HEADER = "id,name,region,address,contact_phone,capacity_tier,lat,lng"
 
 EDITABLE_FIELDS: dict[str, int] = {
     "name": 100,
@@ -126,6 +129,15 @@ class HospitalService:
                     "capacity_tier 不合法", details={"allowed": list(CAPACITY_TIERS)}
                 )
             values["capacity_tier"] = tier
+        if "lat" in body or "lng" in body:
+            lat, lng = body.get("lat"), body.get("lng")
+            if lat in (None, "") and lng in (None, ""):
+                values["lat"] = values["lng"] = None
+            else:
+                coords = parse_coords(lat, lng)
+                if coords is None:
+                    raise ValidationError("lat / lng 必須同時提供且為合法座標")
+                values["lat"], values["lng"] = coords
         return values
 
     def import_rows(

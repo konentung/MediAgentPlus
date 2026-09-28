@@ -15,6 +15,9 @@ htmlcov/
 .env.*
 !.env.example
 
+# 處方箋照片等上傳檔案
+var/
+
 # 資料庫 / 遷移暫存
 *.sqlite3
 instance/
@@ -26,3 +29,6 @@ instance/
 
 # proposal / 設計文件
 proposal/
+# 衛教內文原始抓取紀錄（程式只用 health_education_content.jsonl）
+data/衛教內文資料/content/
+data/衛教內文資料/content_index.json

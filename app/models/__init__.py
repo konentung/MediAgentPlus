@@ -28,6 +28,14 @@ from app.models.audit import AuditLogModel  # noqa: E402
 from app.models.auth_session import AuthSessionModel  # noqa: E402
 from app.models.handoff import HandoffTicketModel  # noqa: E402
 from app.models.hospital import HospitalModel  # noqa: E402
+from app.models.knowledge import KnowledgeChunkModel, KnowledgeDocumentModel  # noqa: E402
+from app.models.medication import (  # noqa: E402
+    DrugModel,
+    MedicationScheduleModel,
+    PharmacyModel,
+    PrescriptionModel,
+    ReminderDeliveryModel,
+)
 from app.models.patient import (  # noqa: E402
     PatientAllergyModel,
     PatientConditionModel,
@@ -45,6 +53,11 @@ from app.models.patient_record import (  # noqa: E402
     PatientRecordReviewModel,
     PatientRiskFlagModel,
 )
+from app.models.triage import (  # noqa: E402
+    ErSnapshotModel,
+    TriageAdvisoryModel,
+    TriageSubscriptionModel,
+)
 from app.models.user import UserModel  # noqa: E402
 
 __all__ = [
@@ -54,6 +67,11 @@ __all__ = [
     "UserModel",
     "HandoffTicketModel",
     "HospitalModel",
+    "PrescriptionModel",
+    "PharmacyModel",
+    "DrugModel",
+    "MedicationScheduleModel",
+    "ReminderDeliveryModel",
     "PatientProfileModel",
     "PatientEmergencyContactModel",
     "PatientAllergyModel",
@@ -67,4 +85,9 @@ __all__ = [
     "PatientRiskFlagModel",
     "PatientFollowUpModel",
     "PatientRecordNoteModel",
+    "KnowledgeDocumentModel",
+    "KnowledgeChunkModel",
+    "ErSnapshotModel",
+    "TriageAdvisoryModel",
+    "TriageSubscriptionModel",
 ]

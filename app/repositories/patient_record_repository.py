@@ -41,6 +41,7 @@ class PatientRecordRepository(Protocol):
     ) -> dict[str, Any] | None: ...
     def list_children(self, collection: str, record_id: str) -> list[dict[str, Any]]: ...
     def latest_discharge_code(self, user_id: str) -> str | None: ...
+    def latest_encounter(self, user_id: str) -> dict[str, Any] | None: ...
     def count_due_follow_ups(self, hospital_id: str | None, on: date) -> int: ...
 
 
@@ -128,6 +129,19 @@ class SqlAlchemyPatientRecordRepository:
             .order_by(PatientEncounterModel.discharged_at.desc().nulls_last())
             .limit(1)
         ).scalar_one_or_none()
+
+    def latest_encounter(self, user_id: str) -> dict[str, Any] | None:
+        """最近一次就診 / 住院紀錄（科別、診斷、出院代碼），AI 衛教諮詢的個人化脈絡用。"""
+        row = db.session.execute(
+            db.select(PatientEncounterModel)
+            .join(PatientRecordModel, PatientRecordModel.id == PatientEncounterModel.record_id)
+            .where(PatientRecordModel.user_id == user_id)
+            .order_by(
+                PatientEncounterModel.visit_date.desc(), PatientEncounterModel.created_at.desc()
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        return row_to_dict(row) if row else None
 
     def count_due_follow_ups(self, hospital_id: str | None, on: date) -> int:
         stmt = (

@@ -17,6 +17,7 @@ TEXT_KEYWORDS: dict[str, Intent] = {
     "找醫院": Intent.FIND_HOSPITAL,
     "我剛出院": Intent.DISCHARGE,
     "去哪拿藥": Intent.MEDICATION,
+    "找藥局": Intent.MEDICATION,
     "服藥提醒": Intent.REMINDER,
     "找真人": Intent.HUMAN,
     "真人客服": Intent.HUMAN,

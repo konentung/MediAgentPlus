@@ -1,0 +1,222 @@
+{% extends "liff/base.html" %}
+
+{% block title %}服藥提醒 - MediAgent+{% endblock %}
+
+{% block content %}
+<header class="d-flex align-items-center justify-content-between mb-3">
+  <h1 class="h5 brand mb-0">服藥提醒</h1>
+  <button type="button" class="btn btn-sm btn-brand" id="btn-new">＋ 新增</button>
+</header>
+
+<div class="card shadow-sm border-0 mb-3 d-none" id="proposal-card">
+  <div class="card-body">
+    <h2 class="h6 fw-bold">依處方建立提醒</h2>
+    <p class="small text-secondary">已依處方頻率算好建議時間，可逐項調整後一次儲存。</p>
+    <div id="proposal-items"></div>
+    <div class="d-grid gap-2 mt-2">
+      <button type="button" class="btn btn-brand" id="btn-save-proposal">建立這些提醒</button>
+      <button type="button" class="btn btn-outline-secondary btn-sm" id="btn-cancel-proposal">略過</button>
+    </div>
+  </div>
+</div>
+
+<div id="list"></div>
+<p class="text-secondary small text-center py-4 d-none" id="empty">還沒有提醒。拍下處方箋或按右上角「新增」。</p>
+
+<div class="card shadow-sm border-0 mt-3">
+  <div class="card-body">
+    <h2 class="h6 fw-bold">近 7 天紀錄</h2>
+    <ul class="list-unstyled small mb-0" id="history"></ul>
+  </div>
+</div>
+
+<!-- 新增 / 編輯 -->
+<div class="modal fade" id="editor" tabindex="-1">
+  <div class="modal-dialog modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header"><h5 class="modal-title" id="editor-title">新增提醒</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <div class="mb-2"><label class="form-label small mb-1">藥名</label><input class="form-control" id="e-drug" maxlength="150"></div>
+        <div class="row g-2">
+          <div class="col-6"><label class="form-label small mb-1">每次用量</label><input class="form-control" id="e-dose" maxlength="50" placeholder="1 顆"></div>
+          <div class="col-6"><label class="form-label small mb-1">頻率</label><select class="form-select" id="e-freq"></select></div>
+          <div class="col-6"><label class="form-label small mb-1">時機</label><select class="form-select" id="e-timing"><option value="">—</option></select></div>
+          <div class="col-6"><label class="form-label small mb-1">開始日</label><input class="form-control" type="date" id="e-start"></div>
+          <div class="col-6"><label class="form-label small mb-1">結束日（可空）</label><input class="form-control" type="date" id="e-end"></div>
+        </div>
+        <label class="form-label small mt-2 mb-1">提醒時間</label>
+        <div id="e-times" class="d-flex flex-wrap gap-2"></div>
+        <button type="button" class="btn btn-sm btn-outline-secondary mt-2" id="e-add-time">＋ 時間</button>
+        <button type="button" class="btn btn-sm btn-link mt-2" id="e-default-times">用預設時間</button>
+      </div>
+      <div class="modal-footer"><button type="button" class="btn btn-brand" id="e-save">儲存</button></div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var RULES = {{ rules_json | safe }};
+  var PRESCRIPTION_ID = {{ prescription_id | tojson }};
+  var STATUS = { active: ["進行中", "text-bg-success"], paused: ["暫停中", "text-bg-warning"], finished: ["已結束", "text-bg-secondary"], stopped: ["已停用", "text-bg-secondary"] };
+  var DELIVERY = { pending: "待送", sent: "已提醒", taken: "✅ 已服用", snoozed: "⏰ 稍後", skipped: "已跳過", failed: "推播失敗" };
+  var api, editing = null, modal;
+
+  function q(sel, root) { return (root || document).querySelector(sel); }
+  function el(tag, cls, text) { var n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; }
+  function label(list, code) { var hit = list.filter(function (o) { return o.code === code; })[0]; return hit ? hit.label : ""; }
+  function fillSelect(select, options) { options.forEach(function (o) { var opt = el("option", null, o.label); opt.value = o.code; select.appendChild(opt); }); }
+
+  // ---- 提醒時間 chips ----
+  function timeInputs(container, times) {
+    container.innerHTML = "";
+    (times || []).forEach(function (t) { addTimeInput(container, t); });
+  }
+  function addTimeInput(container, value) {
+    var wrap = el("div", "input-group input-group-sm w-auto");
+    var input = el("input", "form-control"); input.type = "time"; input.value = value || "";
+    var btn = el("button", "btn btn-outline-secondary", "×"); btn.type = "button";
+    btn.addEventListener("click", function () { wrap.remove(); });
+    wrap.appendChild(input); wrap.appendChild(btn); container.appendChild(wrap);
+  }
+  function readTimes(container) {
+    return Array.prototype.map.call(container.querySelectorAll('input[type="time"]'), function (i) { return i.value; }).filter(Boolean);
+  }
+  function defaultTimes(freq, timing) {
+    var d = RULES.defaults;
+    function shift(hhmm, min) { var p = hhmm.split(":"); var t = (+p[0]) * 60 + (+p[1]) + min; t = (t + 1440) % 1440; return ("0" + Math.floor(t / 60)).slice(-2) + ":" + ("0" + (t % 60)).slice(-2); }
+    if (freq === "hs" || timing === "hs") return [d.bedtime];
+    var slots = { qd: [d.breakfast], bid: [d.breakfast, d.dinner], tid: [d.breakfast, d.lunch, d.dinner], qid: [d.breakfast, d.lunch, d.dinner, d.bedtime], qw: [d.breakfast] }[freq];
+    if (freq === "q12h") return [d.breakfast, shift(d.breakfast, 720)];
+    if (freq === "q8h") return [d.breakfast, shift(d.breakfast, 480), shift(d.breakfast, 960)];
+    if (freq === "q6h") return [d.breakfast, shift(d.breakfast, 360), shift(d.breakfast, 720), shift(d.breakfast, 1080)];
+    if (!slots) return [];
+    if (timing === "ac") return slots.map(function (t) { return shift(t, -30); });
+    if (timing === "pc") return slots.map(function (t) { return shift(t, 30); });
+    return slots;
+  }
+
+  // ---- 列表 ----
+  function renderList(data) {
+    var list = q("#list"); list.innerHTML = "";
+    q("#empty").classList.toggle("d-none", data.schedules.length > 0);
+    data.schedules.forEach(function (s) {
+      var card = el("div", "card shadow-sm border-0 mb-2");
+      var body = el("div", "card-body py-2"); card.appendChild(body);
+      var head = el("div", "d-flex justify-content-between align-items-start");
+      var title = el("div"); title.appendChild(el("div", "fw-bold", s.drug_name + (s.dose_text ? "　" + s.dose_text : "")));
+      title.appendChild(el("div", "small text-secondary", (s.times || []).join("、") + "　" + label(RULES.frequencies, s.frequency_code) + " " + label(RULES.timings, s.timing) + (s.end_date ? "　至 " + s.end_date : "")));
+      head.appendChild(title);
+      var st = STATUS[s.status] || [s.status, "text-bg-secondary"];
+      head.appendChild(el("span", "badge " + st[1], st[0]));
+      body.appendChild(head);
+      if (s.today && s.today.length) {
+        var today = el("div", "small mt-1");
+        today.textContent = "今日：" + s.today.map(function (d) { return d.time_label + " " + (DELIVERY[d.status] || d.status); }).join("　");
+        body.appendChild(today);
+      }
+      var actions = el("div", "d-flex gap-3 mt-1 small");
+      actions.appendChild(link("編輯", function () { openEditor(s); }));
+      if (s.status === "paused") actions.appendChild(link("恢復", function () { patch(s.id, { paused_until: null, active: true }); }));
+      else if (s.status === "active") actions.appendChild(link("暫停 7 天", function () { patch(s.id, { paused_until: plusDays(7) }); }));
+      actions.appendChild(link("刪除", async function () {
+        if (!confirm("刪除「" + s.drug_name + "」的提醒？")) return;
+        try { await api("/api/v1/liff/reminders/" + s.id, { method: "DELETE" }); await reload(); } catch (err) { LiffApp.toast(err.message, "danger"); }
+      }, "text-danger"));
+      body.appendChild(actions);
+      list.appendChild(card);
+    });
+  }
+  function link(text, fn, cls) { var a = el("a", "text-decoration-none " + (cls || ""), text); a.href = "#"; a.addEventListener("click", function (e) { e.preventDefault(); fn(); }); return a; }
+  function plusDays(n) { var d = new Date(); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); }
+  async function patch(id, body) {
+    try { await api("/api/v1/liff/reminders/" + id, { method: "PATCH", body: body }); await reload(); }
+    catch (err) { LiffApp.toast(err.message, "danger"); }
+  }
+  async function renderHistory() {
+    var rows = await api("/api/v1/liff/reminders/history?days=7");
+    var ul = q("#history"); ul.innerHTML = "";
+    if (!rows.length) ul.appendChild(el("li", "text-secondary", "尚無紀錄"));
+    rows.slice(0, 30).forEach(function (r) {
+      ul.appendChild(el("li", null, r.scheduled_for.slice(5, 16).replace("T", " ") + "　" + r.drug_name + "　" + (DELIVERY[r.status] || r.status)));
+    });
+  }
+  async function reload() { renderList(await api("/api/v1/liff/reminders")); renderHistory(); }
+
+  // ---- 編輯器 ----
+  function openEditor(s) {
+    editing = s || null;
+    q("#editor-title").textContent = s ? "編輯提醒" : "新增提醒";
+    q("#e-drug").value = s ? s.drug_name : ""; q("#e-drug").disabled = !!s;
+    q("#e-dose").value = s ? (s.dose_text || "") : "";
+    q("#e-freq").value = s ? s.frequency_code : "qd"; q("#e-freq").disabled = !!s;
+    q("#e-timing").value = s ? (s.timing || "") : ""; q("#e-timing").disabled = !!s;
+    q("#e-start").value = s ? s.start_date : plusDays(0); q("#e-start").disabled = !!s;
+    q("#e-end").value = s ? (s.end_date || "") : "";
+    timeInputs(q("#e-times"), s ? s.times : defaultTimes("qd", ""));
+    modal.show();
+  }
+  async function saveEditor() {
+    var times = readTimes(q("#e-times"));
+    try {
+      if (editing) {
+        await api("/api/v1/liff/reminders/" + editing.id, { method: "PATCH", body: { times: times, end_date: q("#e-end").value || null, dose_text: q("#e-dose").value, frequency_code: editing.frequency_code } });
+      } else {
+        await api("/api/v1/liff/reminders", { method: "POST", body: { schedules: [{
+          drug_name: q("#e-drug").value, dose_text: q("#e-dose").value, frequency_code: q("#e-freq").value,
+          timing: q("#e-timing").value || null, times: times, start_date: q("#e-start").value, end_date: q("#e-end").value || null }] } });
+      }
+      modal.hide(); LiffApp.toast("已儲存", "success"); await reload();
+    } catch (err) { LiffApp.toast(err.message, "danger"); }
+  }
+
+  // ---- 從處方帶入 ----
+  async function loadProposal() {
+    var data;
+    try { data = await api("/api/v1/liff/prescriptions/" + PRESCRIPTION_ID + "/schedules/propose", { method: "POST" }); }
+    catch (err) { LiffApp.toast(err.message, "danger"); return; }
+    if (!data.drafts.length) return;
+    var box = q("#proposal-items"); box.innerHTML = "";
+    data.drafts.forEach(function (d) {
+      var card = el("div", "border rounded p-2 mb-2"); card._draft = d;
+      card.appendChild(el("div", "fw-bold small", d.drug_name + (d.dose_text ? "　" + d.dose_text : "") + (d.category ? "（" + d.category + "）" : "")));
+      card.appendChild(el("div", "text-secondary small", label(RULES.frequencies, d.frequency_code) + " " + label(RULES.timings, d.timing) + (d.end_date ? "　至 " + d.end_date : "")));
+      var times = el("div", "d-flex flex-wrap gap-2 mt-1"); timeInputs(times, d.times); card.appendChild(times);
+      var add = el("button", "btn btn-sm btn-link p-0 mt-1", "＋ 時間"); add.type = "button"; add.addEventListener("click", function () { addTimeInput(times, ""); }); card.appendChild(add);
+      if (!d.times.length) card.appendChild(el("div", "small text-warning", "「需要時」或「其他」不排定時提醒，需要的話自行加時間。"));
+      card._times = times;
+      box.appendChild(card);
+    });
+    q("#proposal-card").classList.remove("d-none");
+  }
+  async function saveProposal() {
+    var schedules = Array.prototype.map.call(document.querySelectorAll("#proposal-items > div"), function (card) {
+      return Object.assign({}, card._draft, { times: readTimes(card._times) });
+    }).filter(function (s) { return s.times.length; });
+    if (!schedules.length) { LiffApp.toast("沒有可建立的提醒（請至少設定一個時間）", "warning"); return; }
+    try {
+      await api("/api/v1/liff/reminders", { method: "POST", body: { schedules: schedules } });
+      q("#proposal-card").classList.add("d-none"); LiffApp.toast("已建立 " + schedules.length + " 筆提醒", "success"); await reload();
+    } catch (err) { LiffApp.toast(err.message, "danger"); }
+  }
+
+  LiffApp.boot(async function (ctx) {
+    api = ctx.api;
+    fillSelect(q("#e-freq"), RULES.frequencies); fillSelect(q("#e-timing"), RULES.timings);
+    modal = new bootstrap.Modal(q("#editor"));
+    q("#btn-new").addEventListener("click", function () { openEditor(null); });
+    q("#e-add-time").addEventListener("click", function () { addTimeInput(q("#e-times"), ""); });
+    q("#e-default-times").addEventListener("click", function () { timeInputs(q("#e-times"), defaultTimes(q("#e-freq").value, q("#e-timing").value)); });
+    q("#e-freq").addEventListener("change", function () { if (!editing) timeInputs(q("#e-times"), defaultTimes(q("#e-freq").value, q("#e-timing").value)); });
+    q("#e-timing").addEventListener("change", function () { if (!editing) timeInputs(q("#e-times"), defaultTimes(q("#e-freq").value, q("#e-timing").value)); });
+    q("#e-save").addEventListener("click", saveEditor);
+    q("#btn-save-proposal").addEventListener("click", saveProposal);
+    q("#btn-cancel-proposal").addEventListener("click", function () { q("#proposal-card").classList.add("d-none"); });
+    await reload();
+    if (PRESCRIPTION_ID) await loadProposal();
+  });
+})();
+</script>
+{% endblock %}

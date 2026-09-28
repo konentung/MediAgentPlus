@@ -7,6 +7,8 @@
     /admin/handoffs           真人客服工單
     /admin/staff              人員與角色
     /admin/settings           院所設定（本院資料、填表連結、所有院所）
+    /admin/triage             急診動態分流：急診即時看板、分流建議、接收者（訂閱）管理
+    /admin/knowledge          知識庫（AI 助理 RAG 的檢索來源）：文件維護、Markdown 匯入、試搜
     /admin/permissions        權限矩陣（查閱）
     /admin/audit              稽核紀錄（讀取身分證明碼、鎖定 / 解鎖）
 
@@ -23,6 +25,7 @@ from flask import Blueprint, render_template, request, url_for
 from app.api.v1.auth import _safe_redirect_to
 from app.domain.enums import Permission
 from app.domain.intake_schema import public_schema
+from app.domain.triage_rules import public_rules as triage_rules
 from app.services import patient_record_service as prs
 
 admin_pages_bp = Blueprint("admin_pages", __name__, url_prefix="/admin")
@@ -35,15 +38,18 @@ PERMISSION_DESCRIPTIONS: dict[Permission, str] = {
     Permission.CONSULT_EDUCATION_GENERIC: "通用版衛教內容",
     Permission.HANDOFF_REQUEST: "轉接真人客服",
     Permission.INTAKE_WRITE_OWN: "填寫 / 送出自己的基本資料表（驗證前即可）",
+    Permission.PRESCRIPTION_MANAGE_OWN: "拍處方箋辨識、檢視 / 修改自己的處方",
     Permission.PROFILE_READ_OWN: "查看自己的基本資料",
     Permission.PROFILE_WRITE_OWN: "修改自己的基本資料",
     Permission.EDUCATION_PERSONAL: "個人化衛教與每日任務推播",
-    Permission.REMINDER_MANAGE_OWN: "管理自己的服藥提醒",
+    Permission.REMINDER_MANAGE_OWN: "管理自己的服藥提醒（不需先驗證基本資料）",
     Permission.HANDOFF_ACCEPT: "接手真人客服工單",
     Permission.HANDOFF_REPLY: "回覆真人客服工單",
     Permission.CONVERSATION_READ: "查看使用者對話紀錄",
     Permission.PATIENT_READ: "查看病人自填資料與本院紀錄（身分證遮罩）、新增備註",
-    Permission.EDUCATION_CONTENT_MANAGE: "管理衛教內容",
+    Permission.TRIAGE_READ: "查看急診即時看板與分流建議",
+    Permission.TRIAGE_SUBSCRIPTION_MANAGE: "管理分流建議接收者（119 勤指中心 / 診所）",
+    Permission.EDUCATION_CONTENT_MANAGE: "管理衛教內容與 AI 知識庫（本院文件）",
     Permission.PATIENT_WRITE: "修正病人自填資料、風險警示、追蹤事項",
     Permission.PATIENT_VERIFY: "核對病人身份、建檔或退回",
     Permission.ENCOUNTER_MANAGE: "新增 / 修改就診與住院紀錄、出院代碼",
@@ -53,6 +59,7 @@ PERMISSION_DESCRIPTIONS: dict[Permission, str] = {
     Permission.AUDIT_READ: "查看稽核紀錄",
     Permission.PATIENT_IDENTITY_READ: "查看病人身分證字號明碼",
     Permission.HOSPITAL_MANAGE: "管理所有院所（系統）",
+    Permission.REFERENCE_DATA_MANAGE: "匯入藥局 / 藥品開放資料（系統）",
     Permission.SYSTEM_MANAGE: "系統管理",
 }
 
@@ -155,6 +162,26 @@ def staff():
 @admin_pages_bp.get("/settings")
 def settings():
     return render_template("admin/settings.html", active="settings")
+
+
+@admin_pages_bp.get("/triage")
+def triage():
+    return render_template(
+        "admin/triage.html",
+        active="triage",
+        triage_rules_json=json.dumps(triage_rules(), ensure_ascii=False),
+    )
+
+
+@admin_pages_bp.get("/knowledge")
+def knowledge():
+    from app.services.knowledge_service import CATEGORIES
+
+    return render_template(
+        "admin/knowledge.html",
+        active="knowledge",
+        categories_json=json.dumps(CATEGORIES, ensure_ascii=False),
+    )
 
 
 @admin_pages_bp.get("/permissions")
