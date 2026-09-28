@@ -29,6 +29,6 @@ instance/
 
 # proposal / 設計文件
 proposal/
-# 衛教內文原始抓取紀錄（程式只用 health_education_content.jsonl）
-data/衛教內文資料/content/
-data/衛教內文資料/content_index.json
+
+# 開放資料 / 知識庫原始檔（本機自行下載，不進版控）
+data/
