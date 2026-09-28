@@ -14,6 +14,7 @@ from typing import Any
 from app.core.exceptions import (
     AuthorizationError,
     ConflictError,
+    ExternalServiceError,
     NotFoundError,
     ValidationError,
 )
@@ -22,6 +23,7 @@ from app.domain.intake_schema import ALL_FIELDS, validate_step
 from app.domain.principal import Principal
 from app.domain.rbac import AccessPolicy
 from app.line.client import LineMessagingClient
+from app.line.messages import common
 from app.line.messages.builder import MessageBuilder as M
 from app.repositories.audit_repository import AuditRepository
 from app.repositories.patient_record_repository import CHILD_MODELS, PatientRecordRepository
@@ -34,7 +36,6 @@ from app.repositories.user_repository import UserRecord, UserRepository
 from app.services.hospital_service import HospitalService
 from app.services.intake_service import IntakeService
 from app.utils.clock import today_tw
-from app.utils.crypto import FieldCipher
 
 logger = logging.getLogger(__name__)
 
@@ -71,17 +72,13 @@ class PatientRecordService:
         users: UserRepository,
         hospitals: HospitalService,
         audit: AuditRepository,
-        cipher: FieldCipher,
         line_client: Callable[[], LineMessagingClient],
-        revoke_sessions: Callable[[str], int] | None = None,
     ) -> None:
-        self._revoke_sessions = revoke_sessions
         self._patients = patients
         self._records = records
         self._users = users
         self._hospitals = hospitals
         self._audit = audit
-        self._cipher = cipher
         self._line = line_client
 
     def list_patients(
@@ -119,21 +116,6 @@ class PatientRecordService:
                 self._records.list_children(collection, record["id"]) if record else []
             )
         return detail
-
-    def reveal_national_id(
-        self, actor: Principal, user_id: str, *, ip_address: str | None = None
-    ) -> str:
-        profile, _ = self._load_accessible(actor, user_id)
-        if not profile.get("national_id_encrypted"):
-            raise NotFoundError("尚未填寫身分證字號")
-        self._audit.record(
-            actor_id=actor.user_id or "",
-            action="patient.national_id.reveal",
-            target_user_id=user_id,
-            hospital_id=actor.hospital_id,
-            ip_address=ip_address,
-        )
-        return self._cipher.decrypt(profile["national_id_encrypted"])
 
     def list_audit(self, actor: Principal, *, limit: int = 100) -> list[dict[str, Any]]:
         return self._audit.list(hospital_id=self._scope(actor), limit=limit)
@@ -175,6 +157,13 @@ class PatientRecordService:
         latest = self._patients.latest_submission(user_id)
         if not profile.get("submitted_at") or latest is None or latest["status"] != "submitted":
             raise ValidationError("病人尚未送出（或已被退回）表單，無法核對")
+        if profile.get("preferred_hospital_id") != hospital or not profile.get(
+            "hospital_confirmed_at"
+        ):
+            raise ConflictError(
+                "病人尚未確認在本院就醫。請先按「請病人確認」，病人在 LINE 上確認後才能核對建檔",
+                details={"hospital_confirmation_required": True},
+            )
 
         record = self._records.create(
             user_id=user_id,
@@ -212,6 +201,60 @@ class PatientRecordService:
         )
         return result
 
+    def find_unclaimed(
+        self,
+        actor: Principal,
+        *,
+        phone: str | None = None,
+        name: str | None = None,
+        last4: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """「新增病人」的第一步：用手機或「姓名 + 身分證末四碼」精準找出還沒被任何院所新增的病人。
+
+        不做模糊搜尋，避免院所瀏覽不屬於自己的病人資料；找到後由 `request_hospital_confirmation()`
+        把病人加進本院並推播請病人確認。
+        """
+        self._scope(actor)  # 院方帳號必須有所屬院所（SUPER_ADMIN 不限）
+        phone = self._text(phone, 20)
+        name = self._text(name, 50)
+        last4 = self._text(last4, 4)
+        if not phone and not (name and last4):
+            raise ValidationError("請輸入手機號碼，或姓名加身分證末四碼")
+        return self._patients.find_unclaimed(phone=phone, name=name, last4=last4)
+
+    def request_hospital_confirmation(
+        self, actor: Principal, user_id: str, *, hospital_id: str | None = None
+    ) -> dict[str, Any]:
+        """把病人加進本院（`preferred_hospital_id` = 本院、尚未確認）並推播 LINE 請病人自己按
+        「是，我在這家院所就醫」；病人確認後本院才能核對建檔。已由其他院所新增的病人不能碰。"""
+        hospital = self._resolve_hospital(actor, hospital_id)
+        profile = self._patients.get_profile(user_id)
+        user = self._users.get_by_id(user_id)
+        if profile is None or user is None:
+            raise NotFoundError("找不到病人資料")
+        if not profile.get("submitted_at"):
+            raise ValidationError("病人尚未送出表單")
+        if user.binding_status is BindingStatus.LOCKED:
+            raise ConflictError("帳號已鎖定，請先解除鎖定")
+        if self._records.get(user_id, hospital) is not None:
+            raise ConflictError("病人已在本院建檔，不需要再確認")
+        current = profile.get("preferred_hospital_id")
+        if current and current != hospital:
+            raise ConflictError("這位病人已由其他院所新增，處理中")
+        if current == hospital and profile.get("hospital_confirmed_at"):
+            raise ConflictError("病人已確認在本院就醫，可以直接核對建檔")
+        if not user.line_user_id:
+            raise ValidationError("這位使用者沒有 LINE 帳號，無法推播")
+        if current != hospital:
+            self._patients.set_hospital(user_id, hospital, confirmed=False)
+        name = self._hospitals.get(hospital)["name"]
+        try:
+            self._line().push(user.line_user_id, common.hospital_confirm_messages(name, hospital))
+        except Exception as exc:  # noqa: BLE001 - 推播失敗要讓院方知道，而不是默默成功
+            logger.warning("Hospital confirmation push failed for %s: %s", user_id, exc)
+            raise ExternalServiceError("LINE 推播失敗，請稍後再試") from exc
+        return {"requested": True, "hospital_id": hospital, "hospital_name": name}
+
     def set_locked(
         self, actor: Principal, user_id: str, *, locked: bool, reason: str | None = None
     ) -> dict[str, str]:
@@ -223,8 +266,6 @@ class PatientRecordService:
             raise ConflictError("帳號並未鎖定")
         new_status = BindingStatus.LOCKED if locked else BindingStatus.UNBOUND
         self._users.update(user_id, binding_status=new_status)
-        if locked and self._revoke_sessions is not None:
-            self._revoke_sessions(user_id)
         self._audit.record(
             actor_id=actor.user_id or "",
             action="patient.lock" if locked else "patient.unlock",
@@ -234,7 +275,7 @@ class PatientRecordService:
         )
         self._notify(
             user,
-            "您的帳號已由院所鎖定，請聯絡真人客服協助處理。"
+            "您的帳號已由院所鎖定，請於就診時向院所人員說明。"
             if locked
             else "您的帳號已解除鎖定，可以重新填寫基本資料。",
         )
@@ -370,7 +411,8 @@ class PatientRecordService:
             raise NotFoundError("找不到病人資料")
         if actor.role is not Role.SUPER_ADMIN:
             scope = self._scope(actor)
-            # 尚未建檔的病人：只有「已送出」或「被鎖定」且指定本院才對院所可見，草稿不給看
+            # 尚未建檔的病人：只有本院「新增」過（preferred_hospital_id 是本院）且已送出或被鎖定
+            # 才對院所可見；別家新增的、還沒人新增的都看不到（SUPER_ADMIN 不受限）
             submitted_or_locked = bool(profile.get("submitted_at")) or (
                 user.binding_status is BindingStatus.LOCKED
             )

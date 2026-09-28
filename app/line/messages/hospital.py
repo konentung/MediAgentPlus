@@ -1,4 +1,4 @@
-"""找醫院訊息：入口、選縣市、急診即時看板、附近診所、分流建議推播（給 119 / 診所訂閱者）。"""
+"""找醫院訊息：入口（請分享位置）、依距離排序的急診即時看板、附近診所。"""
 
 from __future__ import annotations
 
@@ -17,87 +17,56 @@ ALERT = "#B42318"
 MAX_ROWS = 10
 EMERGENCY_HINT = "🚨 有生命危險請直接撥打 119，救護車會依現場狀況送到最適合的醫院。"
 BOARD_HINT = "燈號依「等住院 / 等 ICU / 等看診 / 119 滿床通報」判斷，供就醫前參考。"
-EVENT_TITLES = {
-    "opened": "🔴 急診分流建議",
-    "updated": "🟠 急診分流建議（更新）",
-    "resolved": "🟢 急診壅塞解除",
-    "test": "🧪 測試通知：急診分流建議",
-}
 
 
-def menu_messages(*, has_profile_address: bool, emergency: bool) -> list[Message]:
+def menu_messages(*, emergency: bool) -> list[Message]:
+    """入口：只認使用者位置，請對方分享位置（紅旗時先給 119）。"""
     lead = (
-        "正在為你查詢最近的急救責任醫院。請分享你的位置，或選擇縣市，我會列出各醫院目前的急診壅塞狀況。"
+        "正在為你找最近、目前不壅塞的急救責任醫院。請分享位置，我會依距離與急診即時狀況推薦。"
         if emergency
-        else "找醫院：分享位置或選擇縣市，我會列出該縣市急救責任醫院的急診即時狀況，"
-        "並幫你找非急症可去的附近診所。"
+        else "找醫院：請分享位置，我會列出離你最近的急救責任醫院與目前急診壅塞狀況，"
+        "並推薦最適合前往的一家；非急症也可以改找附近診所。"
     )
     items = [M.location_item("📍 分享位置")]
-    if has_profile_address:
-        items.append(M.postback_item("🏠 用基本資料住址", Intent.FIND_HOSPITAL, source="profile"))
-    items.append(M.postback_item("🗺 選縣市", Intent.FIND_HOSPITAL, action="areas"))
     if emergency:
         items.insert(0, M.uri_item("🚨 撥打 119", "tel:119"))
-    else:
-        items.append(M.postback_item("找真人", Intent.HUMAN, reason="hospital"))
     text = f"{EMERGENCY_HINT}\n{lead}" if emergency else lead
     return [M.text(text, quick_replies=items)]
 
 
-def area_picker_messages(*, emergency: bool) -> list[Message]:
-    bubbles = []
-    for label, codes in rules.AREA_GROUPS:
-        buttons = [
-            {
-                "type": "button",
-                "style": "secondary",
-                "height": "sm",
-                "action": {
-                    "type": "postback",
-                    "label": rules.AREA_NAMES[code],
-                    "data": postback_data(
-                        Intent.FIND_HOSPITAL,
-                        action="area",
-                        area=code,
-                        **({"emergency": "1"} if emergency else {}),
-                    ),
-                    "displayText": f"看 {rules.AREA_NAMES[code]} 的急診狀況",
-                },
-            }
-            for code in codes
-        ]
-        bubbles.append(
-            {
-                "type": "bubble",
-                "size": "kilo",
-                "header": {
-                    "type": "box",
-                    "layout": "vertical",
-                    "backgroundColor": BRAND,
-                    "contents": [
-                        {
-                            "type": "text",
-                            "text": label,
-                            "weight": "bold",
-                            "color": "#FFFFFF",
-                            "size": "sm",
-                        }
-                    ],
-                },
-                "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": buttons},
-            }
-        )
-    return [M.flex("選擇縣市", {"type": "carousel", "contents": bubbles})]
-
-
-def unknown_location_messages() -> list[Message]:
+def no_coordinates_messages() -> list[Message]:
+    """院所主檔還沒有座標（尚未匯入 data/er_hospitals.csv）時的提示。"""
     return [
         M.text(
-            "我無法從這個位置判斷縣市，請再分享一次位置，或直接選擇縣市。",
-            quick_replies=[
-                M.location_item("📍 重新分享位置"),
-                M.postback_item("🗺 選縣市", Intent.FIND_HOSPITAL, action="areas"),
-            ],
+            "目前還無法依距離推薦醫院（院所座標尚未建置）。有生命危險請直接撥打 119。",
+            quick_replies=[M.uri_item("🚨 撥打 119", "tel:119")],
+        )
+    ]
+
+
+def er_unavailable_messages(board: dict[str, Any], *, emergency: bool) -> list[Message]:
+    """健保署急診即時資料暫時抓不到（快照是空的）：不能依壅塞推薦，但仍可找附近診所。"""
+    items = [M.uri_item("🚨 撥打 119", "tel:119")]
+    city, district = board.get("area_name"), board.get("district")
+    if city and not emergency:
+        origin = board.get("origin") or {}
+        items.append(
+            M.postback_item(
+                "🩺 找附近診所",
+                Intent.FIND_HOSPITAL,
+                action="clinics",
+                city=city,
+                district=district or "",
+                lat=str(origin.get("lat", "")),
+                lng=str(origin.get("lng", "")),
+            )
+        )
+    items.append(M.location_item("📍 再試一次"))
+    return [
+        M.text(
+            "健保署急診即時資料暫時無法取得，現在沒辦法依壅塞狀況推薦醫院，請稍後再試。"
+            "有生命危險請直接撥打 119。",
+            quick_replies=items,
         )
     ]
 
@@ -280,10 +249,7 @@ def clinics_messages(result: dict[str, Any], liff_url: str) -> list[Message]:
             M.text(
                 f"{area} 目前沒有院所主檔資料可推薦。"
                 "輕症可先到住家附近的診所，或撥打 1922 / 各縣市衛生局詢問。",
-                quick_replies=[
-                    M.uri_item("急診看板", liff_url),
-                    M.postback_item("找真人", Intent.HUMAN),
-                ],
+                quick_replies=[M.uri_item("急診看板", liff_url)],
             )
         ]
     scope = {"district": "同區", "distance": "離你最近"}.get(result.get("scope"), "同縣市")
@@ -344,23 +310,6 @@ def clinics_messages(result: dict[str, Any], liff_url: str) -> list[Message]:
         "body": {"type": "box", "layout": "vertical", "contents": contents},
     }
     return [M.flex("附近診所", bubble)]
-
-
-def advisory_messages(advisory: dict[str, Any], event: str, liff_url: str) -> list[Message]:
-    """推播給訂閱者（119 勤指中心 / 診所）的分流建議。"""
-    title = EVENT_TITLES.get(event, EVENT_TITLES["opened"])
-    area = advisory.get("area_name") or advisory.get("area_code")
-    if event == "resolved":
-        body = f"{area} 重度級急救責任醫院的壅塞狀況已解除，恢復正常調度。"
-    else:
-        body = advisory.get("report") or ""
-    bubble = M.button_bubble(
-        title=f"{title}｜{area}",
-        body=body[:1800],
-        buttons=[{"type": "uri", "label": "開啟急診即時看板", "uri": liff_url}],
-        color="#2F6F62" if event == "resolved" else ALERT,
-    )
-    return [M.flex(f"{title} {area}", bubble)]
 
 
 def _distance_prefix(h: dict[str, Any]) -> str:

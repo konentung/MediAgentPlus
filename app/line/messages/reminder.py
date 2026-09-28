@@ -23,7 +23,6 @@ def menu_messages(liff_url: str) -> list[Message]:
                 M.postback_item("查看提醒", Intent.REMINDER, action="list"),
                 M.uri_item("新增 / 編輯提醒", liff_url),
                 M.postback_item("拍處方箋建立提醒", Intent.MEDICATION, action="photo"),
-                M.postback_item("回報副作用", Intent.HUMAN, reason="side_effect"),
             ],
         )
     ]

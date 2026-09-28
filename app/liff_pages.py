@@ -30,13 +30,18 @@ def settings():
 
 @liff_pages_bp.get("/intake")
 def intake():
-    """病人自填表（6 步）。`?hospital=<院所代碼>` 由院所提供的 QR / 連結帶入。"""
+    """病人自填表（6 步）。不帶院所：院所在後台勾選病人、病人在 LINE 上確認後才綁定。"""
     return render_template(
         "liff/intake.html",
         schema_json=json.dumps(public_schema(), ensure_ascii=False),
-        hospital_id=request.args.get("hospital", ""),
         consent_version=CONSENT_VERSION,
     )
+
+
+@liff_pages_bp.get("/feedback")
+def feedback():
+    """意見回饋表單：任何加過好友的人都能填，不需先填病人表單。"""
+    return render_template("liff/feedback.html")
 
 
 @liff_pages_bp.get("/prescriptions/<prescription_id>")

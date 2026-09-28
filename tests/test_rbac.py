@@ -9,7 +9,7 @@ def test_every_role_has_permissions_defined():
 def test_guest_only_has_public_permissions(principal_factory):
     guest = principal_factory(Role.GUEST)
     assert AccessPolicy.has_permission(guest, Permission.CONSULT_SYMPTOM)
-    assert AccessPolicy.has_permission(guest, Permission.HANDOFF_REQUEST)
+    assert AccessPolicy.has_permission(guest, Permission.FEEDBACK_SUBMIT)
     # 服藥提醒與處方辨識刻意開放給所有人（不需先填基本資料）
     assert AccessPolicy.has_permission(guest, Permission.REMINDER_MANAGE_OWN)
     assert AccessPolicy.has_permission(guest, Permission.PRESCRIPTION_MANAGE_OWN)
@@ -23,14 +23,14 @@ def test_patient_and_family_share_bound_user_permissions():
 
 
 def test_staff_cannot_use_end_user_personal_features():
-    assert Permission.EDUCATION_PERSONAL not in permissions_for(Role.CS_AGENT)
-    assert Permission.STAFF_MANAGE not in permissions_for(Role.CS_AGENT)
-    assert Permission.HANDOFF_ACCEPT in permissions_for(Role.CS_AGENT)
+    assert Permission.EDUCATION_PERSONAL not in permissions_for(Role.HOSPITAL_STAFF)
+    assert Permission.STAFF_MANAGE not in permissions_for(Role.HOSPITAL_STAFF)
+    assert Permission.FEEDBACK_MANAGE in permissions_for(Role.HOSPITAL_STAFF)
 
 
 def test_hospital_admin_is_superset_of_cs_and_medical():
     admin = permissions_for(Role.HOSPITAL_ADMIN)
-    assert permissions_for(Role.CS_AGENT) <= admin
+    assert permissions_for(Role.HOSPITAL_STAFF) <= admin
     assert permissions_for(Role.MEDICAL_STAFF) <= admin
     assert Permission.SYSTEM_MANAGE not in admin
 
@@ -48,9 +48,11 @@ def test_hospital_scope(principal_factory):
 
 def test_role_assignment_limits(principal_factory):
     hospital_admin = principal_factory(Role.HOSPITAL_ADMIN, hospital_id="H1")
-    assert AccessPolicy.can_assign_role(hospital_admin, Role.CS_AGENT)
+    assert AccessPolicy.can_assign_role(hospital_admin, Role.HOSPITAL_STAFF)
     assert not AccessPolicy.can_assign_role(hospital_admin, Role.SUPER_ADMIN)
-    assert not AccessPolicy.can_assign_role(principal_factory(Role.CS_AGENT), Role.CS_AGENT)
+    assert not AccessPolicy.can_assign_role(
+        principal_factory(Role.HOSPITAL_STAFF), Role.HOSPITAL_STAFF
+    )
 
 
 # ---- 透過 API 驗證裝飾器 ----
@@ -64,15 +66,15 @@ def test_admin_endpoint_rejects_end_user(client, make_user, auth_header):
 
 
 def test_admin_endpoint_allows_staff(client, make_user, auth_header):
-    agent = make_user(Role.CS_AGENT, hospital_id="H1")
+    agent = make_user(Role.HOSPITAL_STAFF, hospital_id="H1")
     resp = client.get("/api/v1/admin/permissions", headers=auth_header(agent))
     assert resp.status_code == 200
-    assert "cs_agent" in resp.get_json()["data"]
+    assert "hospital_staff" in resp.get_json()["data"]
 
 
 def test_set_role_respects_hospital_boundary(client, make_user, auth_header):
     admin = make_user(Role.HOSPITAL_ADMIN, hospital_id="H1")
-    other_staff = make_user(Role.CS_AGENT, hospital_id="H2")
+    other_staff = make_user(Role.HOSPITAL_STAFF, hospital_id="H2")
     resp = client.put(
         f"/api/v1/admin/users/{other_staff.id}/role",
         json={"role": "medical_staff"},
@@ -83,11 +85,11 @@ def test_set_role_respects_hospital_boundary(client, make_user, auth_header):
     guest = make_user(Role.GUEST)
     resp = client.put(
         f"/api/v1/admin/users/{guest.id}/role",
-        json={"role": "cs_agent"},
+        json={"role": "hospital_staff"},
         headers=auth_header(admin),
     )
     assert resp.status_code == 200
-    assert resp.get_json()["data"]["role"] == "cs_agent"
+    assert resp.get_json()["data"]["role"] == "hospital_staff"
     assert resp.get_json()["data"]["hospital_id"] == "H1"
 
 

@@ -30,23 +30,17 @@
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <script>
     // LIFF 共用：liff.init → id_token 換 JWT。只有本機開發（沒設 LIFF_ID）才退回網頁版 LINE Login。
+    // 沒有 refresh token：access token 到期時再跑一次 login()（LIFF 內會自動換新 id_token）。
     window.LiffApp = (function () {
-      var tokens = { access: null, refresh: null };
+      var tokens = { access: null };
 
       function readStored() {
-        try {
-          tokens.access = sessionStorage.getItem("access_token");
-          tokens.refresh = sessionStorage.getItem("refresh_token");
-        } catch (err) { /* 私密瀏覽等情境無法讀取 */ }
+        try { tokens.access = sessionStorage.getItem("access_token"); } catch (err) { /* 私密瀏覽等情境無法讀取 */ }
       }
 
       function store(pair) {
         tokens.access = pair.access_token;
-        tokens.refresh = pair.refresh_token;
-        try {
-          sessionStorage.setItem("access_token", pair.access_token);
-          sessionStorage.setItem("refresh_token", pair.refresh_token);
-        } catch (err) { /* ignore */ }
+        try { sessionStorage.setItem("access_token", pair.access_token); } catch (err) { /* ignore */ }
       }
 
       // ngrok 免費版會對瀏覽器請求插入警告頁，帶這個 header 可略過；正式環境無害
@@ -146,18 +140,6 @@
         return new Promise(function () {});
       }
 
-      async function refresh() {
-        if (!tokens.refresh) return false;
-        var resp = await fetch("/api/v1/auth/refresh", {
-          method: "POST",
-          headers: BASE_HEADERS,
-          body: JSON.stringify({ refresh_token: tokens.refresh })
-        });
-        if (!resp.ok) return false;
-        store((await resp.json()).data);
-        return true;
-      }
-
       async function api(path, options, retried) {
         options = options || {};
         var headers = Object.assign({}, BASE_HEADERS, options.headers || {});
@@ -166,7 +148,13 @@
           headers: headers,
           body: options.body && typeof options.body !== "string" ? JSON.stringify(options.body) : options.body
         }));
-        if (resp.status === 401 && !retried && await refresh()) return api(path, options, true);
+        if (resp.status === 401 && !retried) {
+          // 登入過期：重新走一次 LIFF 登入換新 token，再重送這個請求
+          try { sessionStorage.removeItem("access_token"); } catch (err) { /* ignore */ }
+          tokens.access = null;
+          await login();
+          return api(path, options, true);
+        }
         var body = await resp.json();
         if (!resp.ok) {
           var error = new Error(body.error ? body.error.message : "請求失敗");

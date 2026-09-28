@@ -2,7 +2,7 @@
 
 `ConversationService.decide()` 回 `AssistantDecision`；這裡只做「事件 → 模組」的對應：
   emergency  → 緊急畫面（撥 119 + 最近急救責任醫院）
-  hospital   → FindHospitalHandler（有縣市就直接看板；否則請分享位置）
+  hospital   → FindHospitalHandler（請分享位置，依距離推薦）
   medication → MedicationHandler（有藥名就查藥；否則選單）
   pharmacy   → 找附近藥局；reminder / human / intake → 對應模組
   discharge  → 已驗證且模型依「病人資料」寫出個人化衛教 → 直接回答；否則 DischargeHandler 通用版
@@ -18,7 +18,6 @@ import logging
 from typing import TYPE_CHECKING
 
 from app.core.exceptions import ExternalServiceError
-from app.domain import triage_rules
 from app.domain.assistant_schema import AssistantDecision
 from app.domain.enums import Intent
 from app.line.context import BotContext
@@ -75,12 +74,8 @@ class AssistantHandler(IntentHandler):
         slots = decision.slots
         module: list = []
         if event == "hospital":
-            city = (slots.city or "").replace("臺", "台")
-            code = triage_rules.AREA_CODES.get(city)
-            params = {"emergency": "1"} if urgent else {}
-            if code:
-                params.update(action="area", area=code)
-            module = self._run(ctx, Intent.FIND_HOSPITAL, params)
+            # 找醫院只認使用者位置：不論有沒有提到縣市，都請對方分享位置
+            module = self._run(ctx, Intent.FIND_HOSPITAL, {"emergency": "1"} if urgent else {})
         elif event == "medication":
             if slots.drug_name:
                 module = self._run(
@@ -98,13 +93,11 @@ class AssistantHandler(IntentHandler):
         elif event == "discharge":
             if decision.answer and ctx.principal.is_verified:
                 # 衛教諮詢：模型已依病人的診斷 / 慢性病與知識庫寫出「現在該做什麼」
-                actions = decision.actions or ["discharge_menu", "human"]
+                actions = decision.actions or ["discharge_menu", "feedback"]
                 return msg.answer_messages(decision.answer, actions, liff_intake, decision.sources)
             module = self._run(ctx, Intent.DISCHARGE, {})
-        elif event == "human":
-            module = self._run(
-                ctx, Intent.HUMAN, {"reason": (decision.handoff_reason or "assistant")[:100]}
-            )
+        elif event == "feedback":
+            module = self._run(ctx, Intent.FEEDBACK, {})
         elif event == "intake":
             bubble = M.button_bubble(
                 title="基本資料",

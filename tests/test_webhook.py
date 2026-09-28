@@ -72,18 +72,13 @@ def test_reminder_available_when_verified(post_line_event, container):
     assert isinstance(messages[0], TextMessage) and "服藥小幫手" in messages[0].text
 
 
-def test_human_handoff_creates_ticket(post_line_event, container):
-    post_line_event(_event("postback", postback={"data": postback_data(Intent.HUMAN, reason="x")}))
-    assert len(container.handoff_repo.list_open()) == 1
-
-
 def test_unknown_text_falls_back_when_ai_unavailable(post_line_event, container):
     container.conversation.enabled = False
     post_line_event(
         _event("message", message={"type": "text", "id": "m1", "text": "哈囉", "quoteToken": "q"})
     )
     _, messages = container.line_client.replies[-1]
-    assert "找真人" in messages[0].text
+    assert "選單" in messages[0].text
 
 
 def test_intent_request_parsing():

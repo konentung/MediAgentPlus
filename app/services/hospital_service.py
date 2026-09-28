@@ -9,6 +9,7 @@ import re
 from typing import Any
 
 from app.core.exceptions import AuthorizationError, ConflictError, NotFoundError, ValidationError
+from app.core.pagination import PAGE_SIZE, page_payload
 from app.domain.enums import Role
 from app.domain.principal import Principal
 from app.domain.rbac import AccessPolicy
@@ -60,15 +61,49 @@ class HospitalService:
     def __init__(self, hospitals: HospitalRepository) -> None:
         self._hospitals = hospitals
 
-    def list(self, *, active_only: bool = True) -> list[dict[str, Any]]:
-        return self._hospitals.list(active_only=active_only)
+    def options(self) -> list[dict[str, Any]]:
+        """後台下拉選單（指派人員 / 病人建檔 / 知識庫）用的院所：只有醫院層級，不含診所。"""
+        return [
+            {
+                "id": h["id"],
+                "name": h["name"],
+                "region": h["region"],
+                "capacity_tier": h["capacity_tier"],
+                "address": h["address"],
+                "contact_phone": h["contact_phone"],
+            }
+            for h in self._hospitals.list(active_only=True, exclude_clinics=True)
+        ]
 
     def public_list(self) -> list[dict[str, Any]]:
-        """給 LIFF 表單的院所選單：只回公開欄位。"""
+        """給 LIFF 的院所選單：只回公開欄位、只有醫院層級。"""
         return [
             {"id": h["id"], "name": h["name"], "region": h["region"]}
-            for h in self._hospitals.list(active_only=True)
+            for h in self._hospitals.list(active_only=True, exclude_clinics=True)
         ]
+
+    def paginate(
+        self,
+        *,
+        query: str | None = None,
+        region: str | None = None,
+        tier: str | None = None,
+        include_inactive: bool = False,
+        page: int = 1,
+    ) -> dict[str, Any]:
+        """後台「所有院所」表格（每頁 15 筆）。"""
+        tier = (tier or "").strip() or None
+        if tier is not None and tier not in CAPACITY_TIERS:
+            raise ValidationError("capacity_tier 不合法", details={"allowed": list(CAPACITY_TIERS)})
+        rows, total = self._hospitals.paginate(
+            query=(query or "").strip() or None,
+            region=(region or "").strip() or None,
+            tier=tier,
+            active_only=not include_inactive,
+            page=page,
+            per_page=PAGE_SIZE,
+        )
+        return page_payload(rows, total, page)
 
     def get(self, hospital_id: str) -> dict[str, Any]:
         hospital = self._hospitals.get(hospital_id)

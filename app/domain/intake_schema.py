@@ -401,14 +401,6 @@ INTAKE_STEPS: tuple[Step, ...] = (
         "最後確認就醫相關資訊，並閱讀個人資料使用說明。",
         (
             Field(
-                "preferred_hospital_id",
-                "常去的醫院 / 診所",
-                "select",
-                options_source="hospitals",
-                max_length=32,
-                help="院所會依此把你的資料排入待核對清單；從院所 QR code 開啟時會自動帶入",
-            ),
-            Field(
                 "nhi_status",
                 "健保身份",
                 "select",

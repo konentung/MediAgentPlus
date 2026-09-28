@@ -7,12 +7,17 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from datetime import date, datetime
 from typing import Any
 
+from app.core.pagination import PAGE_SIZE, page_payload
 from app.repositories.pharmacy_repository import DrugRepository, PharmacyRepository
 from app.utils.clock import now_tw, today_tw
+from app.utils.geo import nearest_district
+
+logger = logging.getLogger(__name__)
 
 CITY_PATTERN = re.compile(
     r"(台北市|新北市|桃園市|台中市|台南市|高雄市|基隆市|新竹市|嘉義市|"
@@ -99,11 +104,41 @@ class PharmacyService:
 
     # ---- 找藥局 ----
 
-    def find_by_address(self, address: str | None, *, limit: int = 5) -> dict[str, Any]:
-        """依地址找同鄉鎮市區的健保特約藥局；該區沒有就退到同縣市。"""
+    def find_nearby(
+        self,
+        *,
+        address: str | None = None,
+        lat: float | None = None,
+        lng: float | None = None,
+        limit: int = 5,
+    ) -> dict[str, Any]:
+        """依位置找同鄉鎮市區的健保特約藥局；該區沒有就退到同縣市。
+
+        先從地址字串抓縣市 / 鄉鎮市區；LINE 的地址是選填、且會依手機語系變成英文，
+        抓不到時改用經緯度找最近的鄉鎮市區中心點（`nearest_district`，離線資料）。
+        `resolved_by` 記錄用了哪一種，方便追查。
+        """
         city, district = parse_address(address)
+        resolved_by = "address" if city else None
+        if city is None and lat is not None and lng is not None:
+            area = nearest_district(lat, lng)
+            if area:
+                city, district = area
+                resolved_by = "coords"
         if city is None:
-            return {"city": None, "district": None, "pharmacies": [], "scope": None}
+            logger.warning(
+                "Cannot resolve area for pharmacy search: address=%r lat=%r lng=%r",
+                address,
+                lat,
+                lng,
+            )
+            return {
+                "city": None,
+                "district": None,
+                "pharmacies": [],
+                "scope": None,
+                "resolved_by": None,
+            }
         rows = self._pharmacies.search(city=city, district=district, limit=limit * 4)
         scope = "district" if rows and district else "city"
         if not rows:
@@ -112,7 +147,48 @@ class PharmacyService:
         results = [self._decorate(row, weekday, slot) for row in rows]
         # 現在營業中的排前面，其餘維持名稱排序
         results.sort(key=lambda r: (not r["open_now"], r["name"]))
-        return {"city": city, "district": district, "scope": scope, "pharmacies": results[:limit]}
+        return {
+            "city": city,
+            "district": district,
+            "scope": scope,
+            "resolved_by": resolved_by,
+            "pharmacies": results[:limit],
+        }
+
+    def list_pharmacies(
+        self,
+        *,
+        city: str | None = None,
+        district: str | None = None,
+        query: str | None = None,
+        page: int = 1,
+    ) -> dict[str, Any]:
+        """後台「藥局」頁：表格分頁（每頁 15 筆），可用縣市 / 鄉鎮市區 / 關鍵字篩選。"""
+        rows, total = self._pharmacies.paginate(
+            city=normalize_city(city),
+            district=(district or "").replace("臺", "台").strip() or None,
+            query=(query or "").strip() or None,
+            page=page,
+            per_page=PAGE_SIZE,
+        )
+        weekday, slot = current_slot()
+        items = [
+            {
+                **self._decorate(row, weekday, slot),
+                "city": row.get("city"),
+                "district": row.get("district"),
+                "active": row.get("active", True),
+            }
+            for row in rows
+        ]
+        return page_payload(items, total, page)
+
+    def list_drugs(self, *, query: str | None = None, page: int = 1) -> dict[str, Any]:
+        """後台「藥品」頁：表格分頁，可用代號 / 名稱 / 成分篩選。"""
+        rows, total = self._drugs.paginate(
+            query=(query or "").strip() or None, page=page, per_page=PAGE_SIZE
+        )
+        return page_payload([self._drug_public(r) for r in rows], total, page)
 
     @staticmethod
     def _decorate(row: dict[str, Any], weekday: str, slot: str) -> dict[str, Any]:

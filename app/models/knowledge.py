@@ -12,7 +12,7 @@ from __future__ import annotations
 import uuid
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import JSON, Boolean, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -51,6 +51,16 @@ class KnowledgeDocumentModel(db.Model, TimestampMixin):
 
 class KnowledgeChunkModel(db.Model, TimestampMixin):
     __tablename__ = "knowledge_chunks"
+    __table_args__ = (
+        # PostgreSQL：全文檢索 GIN、向量 HNSW（cosine）；SQLite 會建成普通索引，無害
+        Index("ix_knowledge_chunks_search_vector", "search_vector", postgresql_using="gin"),
+        Index(
+            "ix_knowledge_chunks_embedding",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     document_id: Mapped[str] = mapped_column(
@@ -64,3 +74,22 @@ class KnowledgeChunkModel(db.Model, TimestampMixin):
     tokens: Mapped[list | None] = mapped_column(JsonColumn)
     search_vector: Mapped[object | None] = mapped_column(SearchVectorColumn)
     embedding: Mapped[object | None] = mapped_column(EmbeddingColumn)
+
+
+class KnowledgeJobModel(db.Model, TimestampMixin):
+    """後台觸發的長時間維護工作（衛教 JSONL 匯入、向量計算），在背景執行緒跑，這裡存進度與結果。"""
+
+    __tablename__ = "knowledge_jobs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)  # health_education / embed
+    status: Mapped[str] = mapped_column(
+        String(16), default="queued", nullable=False
+    )  # queued / running / succeeded / failed
+    params: Mapped[dict | None] = mapped_column(JsonColumn)  # 篩選條件、批次大小、原檔名
+    progress: Mapped[dict | None] = mapped_column(JsonColumn)  # 執行中的計數（可重複更新）
+    result: Mapped[dict | None] = mapped_column(JsonColumn)  # 完成後的摘要
+    error: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(String(32))
+    started_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))

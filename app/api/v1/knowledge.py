@@ -3,6 +3,7 @@
 - 讀取：任何院方角色（看得到通用 + 自己院所的文件）
 - 新增 / 修改 / 刪除 / 匯入：EDUCATION_CONTENT_MANAGE；通用文件只有 SUPER_ADMIN 能改
 - search：試搜，看某個問題會檢索到哪些片段
+- jobs：系統資料匯入（衛教 JSONL）與向量計算，背景執行；只有 SUPER_ADMIN（REFERENCE_DATA_MANAGE）
 """
 
 from __future__ import annotations
@@ -41,6 +42,63 @@ def search_documents():
     if not query:
         raise ValidationError("請提供 q")
     return ok(get_container().knowledge.search_preview(current_principal(), query))
+
+
+# ---- 系統維護工作（衛教 JSONL 匯入 / 向量計算）----
+# 放在 /<document_id> 之前只是為了閱讀順序；Flask 的靜態路徑本來就優先於變數路徑
+
+
+@admin_knowledge_bp.get("/jobs")
+@require_permission(Permission.REFERENCE_DATA_MANAGE)
+def job_overview():
+    """統計（文件 / 片段 / 已有向量）+ 進行中的工作 + 最近幾筆，頁面每幾秒輪詢一次。"""
+    return ok(get_container().knowledge_jobs.overview(current_principal()))
+
+
+@admin_knowledge_bp.get("/jobs/<job_id>")
+@require_permission(Permission.REFERENCE_DATA_MANAGE)
+def get_job(job_id: str):
+    return ok(get_container().knowledge_jobs.get(current_principal(), job_id))
+
+
+@admin_knowledge_bp.post("/jobs/health-education")
+@require_permission(Permission.REFERENCE_DATA_MANAGE)
+@rate_limit("knowledge_health_education_import", limit=5, per_seconds=600, by="user")
+def start_health_education_import():
+    """上傳衛教內文 JSONL（multipart 欄位 file；一行一篇），背景匯入為通用文件。"""
+    upload = request.files.get("file")
+    if upload is None or not upload.filename:
+        raise ValidationError("請上傳 .jsonl 檔（欄位 file）")
+    form = request.form
+    try:
+        min_chars = int(form.get("min_chars") or 200)
+        limit = int(form["limit"]) if form.get("limit") else None
+    except ValueError as exc:
+        raise ValidationError("min_chars / limit 需為整數") from exc
+    include_all = (form.get("include_all") or "").lower() in ("1", "true", "on")
+    job = get_container().knowledge_jobs.start_health_education(
+        current_principal(),
+        upload.stream,
+        upload.filename,
+        min_chars=min_chars,
+        include_all=include_all,
+        limit=limit,
+    )
+    return ok(job, status=202)
+
+
+@admin_knowledge_bp.post("/jobs/embed")
+@require_permission(Permission.REFERENCE_DATA_MANAGE)
+@rate_limit("knowledge_embed", limit=5, per_seconds=600, by="user")
+def start_embed():
+    """替還沒有向量的片段計算 embedding（背景執行、可中斷重跑）。"""
+    body = request.get_json(silent=True) or {}
+    try:
+        batch = int(body.get("batch") or 200)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("batch 需為整數") from exc
+    job = get_container().knowledge_jobs.start_embed(current_principal(), batch=batch)
+    return ok(job, status=202)
 
 
 @admin_knowledge_bp.get("/<document_id>")

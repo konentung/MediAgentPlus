@@ -10,7 +10,7 @@ from app.api.v1.health import health_bp
 from app.api.v1.knowledge import admin_knowledge_bp
 from app.api.v1.liff import liff_bp
 from app.api.v1.liff_medication import liff_medication_bp
-from app.api.v1.triage import admin_triage_bp, triage_bp
+from app.api.v1.triage import triage_bp
 
 api_v1_bp = Blueprint("api_v1", __name__, url_prefix="/api/v1")
 for bp in (
@@ -20,7 +20,6 @@ for bp in (
     liff_medication_bp,
     admin_bp,
     triage_bp,
-    admin_triage_bp,
     admin_knowledge_bp,
 ):
     api_v1_bp.register_blueprint(bp)

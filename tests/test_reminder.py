@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from linebot.v3.messaging import FlexMessage, TextMessage
 
@@ -201,7 +201,10 @@ def test_respond_via_postback(container, post_line_event):
     assert isinstance(messages[0], TextMessage) and "30 分鐘" in messages[0].text
     assert container.delivery_repo.get(delivery["id"])["status"] == "snoozed"
 
-    # 30 分鐘後 run-due 會再送一次
+    # respond() 以真實時間算 snooze_until，測試改回固定的 now + 30 分鐘；之後 run-due 會再送一次
+    container.delivery_repo.update(
+        delivery["id"], snooze_until=(now + timedelta(minutes=30)).astimezone(UTC)
+    )
     assert container.reminders.run_due(now + timedelta(minutes=31))["sent"] == 1
     assert len(container.line_client.pushes) == 2
 

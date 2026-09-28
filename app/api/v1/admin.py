@@ -1,14 +1,13 @@
-"""院方後台 API（真人客服 / 醫護 / 院所管理員 / 系統管理員）。
+"""院方後台 API（院內人員 / 醫護 / 院所管理員 / 系統管理員）。
 
 對應的網頁後台在 /admin/*（app/admin_pages.py），頁面內以 fetch() 呼叫這裡的端點。
-院所隔離由 PatientRecordService / HandoffService / UserService 內的 AccessPolicy 判斷。
+院所隔離由 PatientRecordService / FeedbackService / UserService 內的 AccessPolicy 判斷。
 """
 
 from __future__ import annotations
 
 import csv
 import io
-from dataclasses import asdict
 
 from flask import Blueprint, Response, request
 
@@ -21,6 +20,13 @@ from app.domain.enums import STAFF_ROLES, Permission, Role
 from app.domain.rbac import AccessPolicy
 
 admin_bp = Blueprint("admin", __name__, url_prefix="/admin")
+
+
+def _page_arg() -> int:
+    try:
+        return max(int(request.args.get("page") or 1), 1)
+    except ValueError as exc:
+        raise ValidationError("page 需為整數") from exc
 
 
 def _json_body() -> dict:
@@ -42,17 +48,32 @@ def dashboard():
     actor = current_principal()
     container = get_container()
     stats = container.patient_records.dashboard(actor)
-    stats["open_handoffs"] = len(container.handoff.list_open(actor))
+    stats["open_feedback"] = container.feedback.count_open(actor)
     return ok(stats)
+
+
+@admin_bp.get("/hospitals/options")
+@require_role(*[r for r in Role if r.is_staff])
+def hospital_options():
+    """後台每頁載入一次的院所下拉選單：只有醫院層級（診所有上萬家，不放進選單）。"""
+    return ok(get_container().hospitals.options())
 
 
 @admin_bp.get("/hospitals")
 @require_role(*[r for r in Role if r.is_staff])
 def list_hospitals():
-    include_inactive = (
-        request.args.get("all") == "1" and current_principal().role is Role.SUPER_ADMIN
+    """後台「所有院所」表格：分頁（每頁 15 筆）、q / region / tier 篩選；all=1 含停用。"""
+    args = request.args
+    include_inactive = args.get("all") == "1" and current_principal().role is Role.SUPER_ADMIN
+    return ok(
+        get_container().hospitals.paginate(
+            query=args.get("q"),
+            region=args.get("region"),
+            tier=args.get("tier"),
+            include_inactive=include_inactive,
+            page=_page_arg(),
+        )
     )
-    return ok(get_container().hospitals.list(active_only=not include_inactive))
 
 
 @admin_bp.post("/hospitals")
@@ -115,10 +136,19 @@ def _csv_rows_from_request() -> list[dict]:
 # ---- 參考資料：藥局 / 藥品開放資料（SUPER_ADMIN）----
 
 
-@admin_bp.get("/reference-data")
-@require_permission(Permission.REFERENCE_DATA_MANAGE)
-def reference_data_stats():
-    return ok(get_container().pharmacies.stats())
+@admin_bp.get("/pharmacies")
+@require_role(*STAFF_ROLES)
+def list_pharmacies():
+    """後台「藥局」頁：表格分頁（每頁 15 筆），可用 city / district / q（名稱或地址）篩選。"""
+    args = request.args
+    return ok(
+        get_container().pharmacies.list_pharmacies(
+            city=args.get("city"),
+            district=args.get("district"),
+            query=args.get("q"),
+            page=_page_arg(),
+        )
+    )
 
 
 @admin_bp.post("/pharmacies/import")
@@ -129,11 +159,18 @@ def import_pharmacies():
     return ok(get_container().pharmacies.import_pharmacies(_csv_rows_from_request()))
 
 
+@admin_bp.get("/drugs")
+@require_role(*STAFF_ROLES)
+def list_drugs():
+    """後台「藥品」頁：表格分頁（每頁 15 筆），可用 q（代號 / 名稱 / 成分）篩選。"""
+    return ok(get_container().pharmacies.list_drugs(query=request.args.get("q"), page=_page_arg()))
+
+
 @admin_bp.post("/drugs/import")
 @require_permission(Permission.REFERENCE_DATA_MANAGE)
 @rate_limit("drug_import", limit=10, per_seconds=600, by="user")
 def import_drugs():
-    """健保署「健保用藥品項」CSV；同藥品代號只保留有效迄日最新的一列。"""
+    """健保署「健保用藥品項」CSV（約 96MB）；同藥品代號只保留有效迄日最新的一列。"""
     return ok(get_container().pharmacies.import_drugs(_csv_rows_from_request()))
 
 
@@ -177,18 +214,24 @@ def set_role(user_id: str):
     return ok(get_container().users.to_principal(user).to_dict())
 
 
-@admin_bp.get("/handoffs")
-@require_permission(Permission.HANDOFF_ACCEPT)
-def list_handoffs():
-    tickets = get_container().handoff.list_open(current_principal())
-    return ok([asdict(t) for t in tickets])
+@admin_bp.get("/feedback")
+@require_permission(Permission.FEEDBACK_MANAGE)
+def list_feedback():
+    """意見回饋（依院所隔離）。`?status=open|resolved`，不帶 = 全部。"""
+    return ok(
+        get_container().feedback.list(current_principal(), request.args.get("status") or None)
+    )
 
 
-@admin_bp.post("/handoffs/<ticket_id>/accept")
-@require_permission(Permission.HANDOFF_ACCEPT)
-def accept_handoff(ticket_id: str):
-    ticket = get_container().handoff.accept(current_principal(), ticket_id)
-    return ok(asdict(ticket))
+@admin_bp.patch("/feedback/<feedback_id>")
+@require_permission(Permission.FEEDBACK_MANAGE)
+def update_feedback(feedback_id: str):
+    body = _json_body()
+    return ok(
+        get_container().feedback.set_status(
+            current_principal(), feedback_id, str(body.get("status") or ""), body.get("note")
+        )
+    )
 
 
 @admin_bp.get("/patients")
@@ -202,20 +245,25 @@ def list_patients():
     return ok(patients)
 
 
+@admin_bp.get("/patients/unclaimed")
+@require_permission(Permission.PATIENT_VERIFY)
+@rate_limit("patient_unclaimed_search", limit=60, per_seconds=600, by="user")
+def find_unclaimed_patients():
+    """新增病人：用手機或姓名 + 末四碼精準找還沒被任何院所新增的病人。"""
+    return ok(
+        get_container().patient_records.find_unclaimed(
+            current_principal(),
+            phone=request.args.get("phone"),
+            name=request.args.get("name"),
+            last4=request.args.get("last4"),
+        )
+    )
+
+
 @admin_bp.get("/patients/<user_id>")
 @require_permission(Permission.PATIENT_READ)
 def get_patient(user_id: str):
     return ok(get_container().patient_records.get_patient(current_principal(), user_id))
-
-
-@admin_bp.get("/patients/<user_id>/national-id")
-@require_permission(Permission.PATIENT_IDENTITY_READ)
-@rate_limit("national_id_reveal", limit=30, per_seconds=600, by="user")
-def reveal_national_id(user_id: str):
-    value = get_container().patient_records.reveal_national_id(
-        current_principal(), user_id, ip_address=request.remote_addr
-    )
-    return ok({"national_id": value})
 
 
 @admin_bp.post("/patients/<user_id>/lock")
@@ -253,6 +301,19 @@ def verify_patient(user_id: str):
         note=body.get("note"),
     )
     return ok(record)
+
+
+@admin_bp.post("/patients/<user_id>/request-hospital-confirmation")
+@require_permission(Permission.PATIENT_VERIFY)
+@rate_limit("hospital_confirmation", limit=20, per_seconds=600, by="user")
+def request_hospital_confirmation(user_id: str):
+    """推播 LINE 請病人自己確認「在本院就醫」；確認後才能 verify。"""
+    body = request.get_json(silent=True) or {}
+    return ok(
+        get_container().patient_records.request_hospital_confirmation(
+            current_principal(), user_id, hospital_id=body.get("hospital_id")
+        )
+    )
 
 
 @admin_bp.post("/patients/<user_id>/reject")

@@ -13,7 +13,6 @@ from linebot.v3.messaging import (
     MessagingApiBlob,
     PushMessageRequest,
     ReplyMessageRequest,
-    RichMenuRequest,
     ShowLoadingAnimationRequest,
     UserProfileResponse,
 )
@@ -54,29 +53,3 @@ class LineMessagingClient:
     def get_profile(self, user_id: str) -> UserProfileResponse:
         with ApiClient(self._configuration) as api_client:
             return MessagingApi(api_client).get_profile(user_id)
-
-    def create_rich_menu(
-        self, request: RichMenuRequest, image_bytes: bytes, content_type: str = "image/png"
-    ) -> str:
-        with ApiClient(self._configuration) as api_client:
-            rich_menu_id = MessagingApi(api_client).create_rich_menu(request).rich_menu_id
-            MessagingApiBlob(api_client).set_rich_menu_image(
-                rich_menu_id, body=image_bytes, _headers={"Content-Type": content_type}
-            )
-        return rich_menu_id
-
-    def set_default_rich_menu(self, rich_menu_id: str) -> None:
-        with ApiClient(self._configuration) as api_client:
-            MessagingApi(api_client).set_default_rich_menu(rich_menu_id)
-
-    def link_rich_menu_to_user(self, user_id: str, rich_menu_id: str) -> None:
-        with ApiClient(self._configuration) as api_client:
-            MessagingApi(api_client).link_rich_menu_id_to_user(user_id, rich_menu_id)
-
-    def list_rich_menus(self) -> list[str]:
-        with ApiClient(self._configuration) as api_client:
-            return [m.rich_menu_id for m in MessagingApi(api_client).get_rich_menu_list().richmenus]
-
-    def delete_rich_menu(self, rich_menu_id: str) -> None:
-        with ApiClient(self._configuration) as api_client:
-            MessagingApi(api_client).delete_rich_menu(rich_menu_id)

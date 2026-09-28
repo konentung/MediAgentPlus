@@ -14,7 +14,6 @@
     var tokens = JSON.parse(document.getElementById("auth-tokens").textContent);
     try {
       sessionStorage.setItem("access_token", tokens.access_token);
-      sessionStorage.setItem("refresh_token", tokens.refresh_token);
     } catch (err) {
       // 私密瀏覽模式等情境可能無法寫入 sessionStorage，登入本身仍算成功
     }

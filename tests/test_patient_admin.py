@@ -4,39 +4,52 @@ from __future__ import annotations
 
 import pytest
 
-from app.domain.enums import BindingStatus, Permission, Role
+from app.domain.enums import BindingStatus, Intent, Permission, Role
 from app.domain.rbac import permissions_for
+from app.line.intents import postback_data
 from tests.test_intake import fill_all
+from tests.test_webhook import _event
 
 H1, H2 = "H1", "H2"
 
 
 @pytest.fixture()
-def submitted_patient(client, make_user, auth_header):
-    """一位填完表、指定 H1 為常去院所、已送出的 GUEST。"""
-    user = make_user(Role.GUEST, line_user_id="Upatient")
-    assert fill_all(client, auth_header(user)).status_code == 200
-    return user
+def staff(make_user):
+    return make_user(Role.HOSPITAL_STAFF, BindingStatus.UNBOUND, hospital_id=H1)
 
 
 @pytest.fixture()
-def staff(make_user):
-    return make_user(Role.MEDICAL_STAFF, BindingStatus.UNBOUND, hospital_id=H1)
+def submitted_patient(client, make_user, auth_header, staff, post_line_event):
+    """一位填完表、已送出，且 H1 院方在後台「加入本院」、病人按「是」確認過的 GUEST。"""
+    user = make_user(Role.GUEST, line_user_id="Upatient")
+    assert fill_all(client, auth_header(user)).status_code == 200
+    resp = client.post(
+        f"/api/v1/admin/patients/{user.id}/request-hospital-confirmation",
+        json={},
+        headers=auth_header(staff),
+    )
+    assert resp.status_code == 200, resp.get_json()
+    post_line_event(
+        _event(
+            "postback",
+            user_id="Upatient",
+            postback={"data": postback_data(Intent.HOSPITAL_CONFIRM, hospital_id=H1, answer="yes")},
+        )
+    )
+    return user
 
 
 # ---- RBAC ----
 def test_new_permissions_role_matrix():
     assert Permission.INTAKE_WRITE_OWN in permissions_for(Role.GUEST)
-    assert Permission.PATIENT_VERIFY in permissions_for(Role.MEDICAL_STAFF)
-    assert Permission.PATIENT_VERIFY not in permissions_for(Role.CS_AGENT)
-    assert Permission.PATIENT_WRITE not in permissions_for(Role.CS_AGENT)
-    assert Permission.PATIENT_IDENTITY_READ in permissions_for(Role.HOSPITAL_ADMIN)
-    assert Permission.PATIENT_IDENTITY_READ not in permissions_for(Role.MEDICAL_STAFF)
+    assert Permission.PATIENT_VERIFY in permissions_for(Role.HOSPITAL_STAFF)
+    assert Permission.PATIENT_VERIFY not in permissions_for(Role.MEDICAL_STAFF)
+    assert Permission.PATIENT_WRITE not in permissions_for(Role.MEDICAL_STAFF)
     assert Permission.PATIENT_READ not in permissions_for(Role.PATIENT)
 
 
-def test_cs_agent_can_read_but_not_verify(client, submitted_patient, make_user, auth_header):
-    agent = make_user(Role.CS_AGENT, hospital_id=H1)
+def test_medical_staff_can_read_but_not_verify(client, submitted_patient, make_user, auth_header):
+    agent = make_user(Role.MEDICAL_STAFF, hospital_id=H1)
     headers = auth_header(agent)
     assert (
         client.get(f"/api/v1/admin/patients/{submitted_patient.id}", headers=headers).status_code
@@ -128,18 +141,13 @@ def test_verify_creates_record_and_promotes_user(
     assert active[0]["medical_record_no"] == "MR-001"
     assert client.get("/api/v1/liff/profile", headers=auth_header(user)).status_code == 200
 
-    # 只有 HOSPITAL_ADMIN 能看明碼
-    assert (
-        client.get(
-            f"/api/v1/admin/patients/{submitted_patient.id}/national-id", headers=headers
-        ).status_code
-        == 403
-    )
+    # 身分證不存明碼也不存密文：任何角色（含 HOSPITAL_ADMIN）都只拿得到遮罩
     admin = make_user(Role.HOSPITAL_ADMIN, hospital_id=H1)
-    reveal = client.get(
-        f"/api/v1/admin/patients/{submitted_patient.id}/national-id", headers=auth_header(admin)
-    )
-    assert reveal.get_json()["data"]["national_id"] == "A123456789"
+    detail = client.get(
+        f"/api/v1/admin/patients/{submitted_patient.id}", headers=auth_header(admin)
+    ).get_json()["data"]
+    assert detail["profile"]["national_id"] == "******6789"
+    assert "national_id_fingerprint" not in detail["profile"]
 
 
 def test_verify_requires_submission(client, make_user, auth_header, staff):
@@ -312,7 +320,7 @@ def test_encounter_flag_followup_note_flow(client, container, verified_patient, 
     )
 
     dash = client.get("/api/v1/admin/dashboard", headers=headers).get_json()["data"]
-    assert set(dash) == {"pending_patients", "due_follow_ups", "open_handoffs"}
+    assert set(dash) == {"pending_patients", "due_follow_ups", "open_feedback"}
 
 
 def test_other_hospital_cannot_touch_record(client, verified_patient, make_user, auth_header):
@@ -328,13 +336,14 @@ def test_other_hospital_cannot_touch_record(client, verified_patient, make_user,
 # ---- 人員管理 API ----
 def test_list_users_scoped_to_hospital(client, make_user, auth_header):
     admin = make_user(Role.HOSPITAL_ADMIN, hospital_id=H1)
-    make_user(Role.CS_AGENT, hospital_id=H1)
-    make_user(Role.CS_AGENT, hospital_id=H2)
+    make_user(Role.HOSPITAL_STAFF, hospital_id=H1)
+    make_user(Role.HOSPITAL_STAFF, hospital_id=H2)
     rows = client.get("/api/v1/admin/users", headers=auth_header(admin)).get_json()["data"]
     assert {r["hospital_id"] for r in rows} == {H1}
     assert (
         client.get(
-            "/api/v1/admin/users", headers=auth_header(make_user(Role.CS_AGENT, hospital_id=H1))
+            "/api/v1/admin/users",
+            headers=auth_header(make_user(Role.HOSPITAL_STAFF, hospital_id=H1)),
         ).status_code
         == 403
     )
@@ -347,7 +356,7 @@ def test_list_users_scoped_to_hospital(client, make_user, auth_header):
         "/admin/",
         "/admin/patients",
         "/admin/patients/abc",
-        "/admin/handoffs",
+        "/admin/feedback",
         "/admin/staff",
         "/admin/settings",
         "/admin/permissions",
@@ -369,9 +378,9 @@ def test_admin_login_page_renders_with_line_button(client):
 
 
 def test_admin_login_page_keeps_next_and_shows_error(client):
-    html = client.get("/admin/login?next=/admin/patients&error=not_staff").get_data(as_text=True)
+    html = client.get("/admin/login?next=/admin/patients&error=unauthorized").get_data(as_text=True)
     assert "redirect_to=%2Fadmin%2Fpatients" in html or "redirect_to=/admin/patients" in html
-    assert "不是院方人員" in html
+    assert "請先登入" in html
     # next 只能是後台路徑，其他一律回 /admin
     html = client.get("/admin/login?next=https://evil.com").get_data(as_text=True)
     assert "evil.com" not in html
@@ -404,17 +413,13 @@ def test_lock_unlock_and_audit(client, container, submitted_patient, staff, make
         container.user_repo.get_by_id(submitted_patient.id).binding_status is BindingStatus.UNBOUND
     )
 
-    # 稽核：讀明碼 + 鎖定 + 解鎖各一筆，只有 AUDIT_READ 能看
+    # 稽核：鎖定 + 解鎖各一筆，只有 AUDIT_READ 能看
     admin = make_user(Role.HOSPITAL_ADMIN, hospital_id=H1)
-    client.get(url + "/national-id", headers=auth_header(admin))
     assert client.get("/api/v1/admin/audit", headers=headers).status_code == 403
     logs = client.get("/api/v1/admin/audit", headers=auth_header(admin)).get_json()["data"]
-    assert [entry["action"] for entry in logs] == [
-        "patient.national_id.reveal",
-        "patient.unlock",
-        "patient.lock",
-    ]
-    assert logs[0]["actor_id"] == admin.id and logs[0]["target_user_id"] == submitted_patient.id
+    assert [entry["action"] for entry in logs] == ["patient.unlock", "patient.lock"]
+    # 鎖定 / 解鎖都是 staff 做的
+    assert logs[0]["actor_id"] == staff.id and logs[0]["target_user_id"] == submitted_patient.id
 
 
 def test_verify_twice_only_updates_mrn(client, container, verified_patient, staff, auth_header):
@@ -460,23 +465,23 @@ def test_super_admin_list_dedupes_multi_hospital_records(
     assert other_staff.hospital_id == H2
 
 
-def test_staff_without_hospital_cannot_list_users_or_handoffs(client, make_user, auth_header):
+def test_staff_without_hospital_cannot_list_users_or_feedback(client, make_user, auth_header):
     admin = make_user(Role.HOSPITAL_ADMIN, hospital_id=None)
     assert client.get("/api/v1/admin/users", headers=auth_header(admin)).status_code == 403
-    assert client.get("/api/v1/admin/handoffs", headers=auth_header(admin)).status_code == 403
+    assert client.get("/api/v1/admin/feedback", headers=auth_header(admin)).status_code == 403
 
 
 def test_hospital_admin_can_find_unassigned_newcomer_and_offboard(client, make_user, auth_header):
     admin = make_user(Role.HOSPITAL_ADMIN, hospital_id=H1)
     newcomer = make_user(Role.GUEST)
-    other_hospital_user = make_user(Role.CS_AGENT, hospital_id=H2)
+    other_hospital_user = make_user(Role.HOSPITAL_STAFF, hospital_id=H2)
     rows = client.get("/api/v1/admin/users?staff=0", headers=auth_header(admin)).get_json()["data"]
     ids = {r["user_id"] for r in rows}
     assert newcomer.id in ids and other_hospital_user.id not in ids
     # 指派後歸本院；降回 GUEST（離職）也可以
     resp = client.put(
         f"/api/v1/admin/users/{newcomer.id}/role",
-        json={"role": "cs_agent"},
+        json={"role": "hospital_staff"},
         headers=auth_header(admin),
     )
     assert resp.status_code == 200 and resp.get_json()["data"]["hospital_id"] == H1
@@ -496,7 +501,7 @@ def test_role_assignment_guards(client, make_user, auth_header):
     assert (
         client.put(
             f"/api/v1/admin/users/{admin.id}/role",
-            json={"role": "cs_agent"},
+            json={"role": "hospital_staff"},
             headers=auth_header(admin),
         ).status_code
         == 403
@@ -513,18 +518,18 @@ def test_role_assignment_guards(client, make_user, auth_header):
     assert (
         client.put(
             f"/api/v1/admin/users/{superadmin_in_h1.id}/role",
-            json={"role": "cs_agent"},
+            json={"role": "hospital_staff"},
             headers=auth_header(admin),
         ).status_code
         == 403
     )
     # 院方角色必須有院所；SUPER_ADMIN 可清空院所（給 super_admin 用）
     superadmin = make_user(Role.SUPER_ADMIN)
-    target = make_user(Role.CS_AGENT, hospital_id=H1)
+    target = make_user(Role.HOSPITAL_STAFF, hospital_id=H1)
     assert (
         client.put(
             f"/api/v1/admin/users/{target.id}/role",
-            json={"role": "cs_agent", "hospital_id": ""},
+            json={"role": "hospital_staff", "hospital_id": ""},
             headers=auth_header(superadmin),
         ).status_code
         == 422

@@ -1,4 +1,4 @@
-"""藥局與藥品 Repository（唯讀參考資料，只有 CLI 匯入會寫入）。"""
+"""藥局與藥品 Repository（唯讀參考資料，只有後台 CSV 匯入會寫入）。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from typing import Any, Protocol
 
 from app.extensions import db
 from app.models.medication import DrugModel, PharmacyModel
-from app.repositories.base import row_to_dict
+from app.repositories.base import paginate, row_to_dict
 
 
 class PharmacyRepository(Protocol):
@@ -14,6 +14,15 @@ class PharmacyRepository(Protocol):
     def search(
         self, *, city: str | None, district: str | None, nhi_only: bool = True, limit: int = 20
     ) -> list[dict[str, Any]]: ...
+    def paginate(
+        self,
+        *,
+        city: str | None,
+        district: str | None,
+        query: str | None,
+        page: int,
+        per_page: int,
+    ) -> tuple[list[dict[str, Any]], int]: ...
     def upsert_many(self, rows: list[dict[str, Any]]) -> tuple[int, int]: ...
     def count(self) -> int: ...
 
@@ -21,6 +30,9 @@ class PharmacyRepository(Protocol):
 class DrugRepository(Protocol):
     def get(self, nhi_code: str) -> dict[str, Any] | None: ...
     def search(self, query: str, *, limit: int = 5) -> list[dict[str, Any]]: ...
+    def paginate(
+        self, *, query: str | None, page: int, per_page: int
+    ) -> tuple[list[dict[str, Any]], int]: ...
     def upsert_many(self, rows: list[dict[str, Any]]) -> tuple[int, int]: ...
     def count(self) -> int: ...
 
@@ -72,6 +84,29 @@ class SqlAlchemyPharmacyRepository:
             stmt = stmt.where(PharmacyModel.nhi_contracted.is_(True))
         return [row_to_dict(r) for r in db.session.execute(stmt).scalars()]
 
+    def paginate(
+        self,
+        *,
+        city: str | None,
+        district: str | None,
+        query: str | None,
+        page: int,
+        per_page: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        stmt = db.select(PharmacyModel).order_by(
+            PharmacyModel.city, PharmacyModel.district, PharmacyModel.name, PharmacyModel.id
+        )
+        if city:
+            stmt = stmt.where(PharmacyModel.city == city)
+        if district:
+            stmt = stmt.where(PharmacyModel.district == district)
+        if query:
+            contains = f"%{query}%"
+            stmt = stmt.where(
+                db.or_(PharmacyModel.name.ilike(contains), PharmacyModel.address.ilike(contains))
+            )
+        return paginate(stmt, page, per_page)
+
     def upsert_many(self, rows: list[dict[str, Any]]) -> tuple[int, int]:
         return _upsert(PharmacyModel, "id", rows)
 
@@ -111,6 +146,22 @@ class SqlAlchemyDrugRepository:
             .limit(limit)
         )
         return [row_to_dict(r) for r in db.session.execute(stmt).scalars()]
+
+    def paginate(
+        self, *, query: str | None, page: int, per_page: int
+    ) -> tuple[list[dict[str, Any]], int]:
+        stmt = db.select(DrugModel).order_by(DrugModel.name_en, DrugModel.nhi_code)
+        if query:
+            contains = f"%{query}%"
+            stmt = stmt.where(
+                db.or_(
+                    DrugModel.nhi_code.ilike(contains),
+                    DrugModel.name_en.ilike(contains),
+                    DrugModel.name_zh.ilike(contains),
+                    DrugModel.ingredient.ilike(contains),
+                )
+            )
+        return paginate(stmt, page, per_page)
 
     def upsert_many(self, rows: list[dict[str, Any]]) -> tuple[int, int]:
         return _upsert(DrugModel, "nhi_code", rows)

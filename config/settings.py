@@ -65,7 +65,10 @@ class BaseConfig:
     JWT_SECRET_KEY = _env("JWT_SECRET_KEY") or SECRET_KEY
     JWT_ALGORITHM = "HS256"
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(seconds=int(_env("JWT_ACCESS_EXPIRES_SECONDS", "3600")))
-    JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=int(_env("JWT_REFRESH_EXPIRES_DAYS", "30")))
+    # 沒有 refresh token：到期就重新登入。院方後台角色給較長效期（預設 8 小時）
+    JWT_STAFF_ACCESS_TOKEN_EXPIRES = timedelta(
+        seconds=int(_env("JWT_STAFF_ACCESS_EXPIRES_SECONDS", str(8 * 3600)))
+    )
 
     # ---- 病人資料欄位加密（身分證字號）----
     # Fernet 金鑰，產生方式見 .env.example。
@@ -98,9 +101,13 @@ class BaseConfig:
     )
     NHI_ER_TIMEOUT_SECONDS = int(_env("NHI_ER_TIMEOUT_SECONDS", "20"))
     TRIAGE_STALE_MINUTES = int(_env("TRIAGE_STALE_MINUTES", "30"))  # 超過就視為過舊、查詢時即時補抓
-    TRIAGE_RENOTIFY_MINUTES = int(_env("TRIAGE_RENOTIFY_MINUTES", "120"))  # 持續壅塞時重複通知間隔
     TRIAGE_RETENTION_DAYS = int(_env("TRIAGE_RETENTION_DAYS", "30"))  # 快照保留天數
-    TRIAGE_WEBHOOK_TIMEOUT_SECONDS = int(_env("TRIAGE_WEBHOOK_TIMEOUT_SECONDS", "10"))
+
+    # ---- 程序內排程（服藥提醒推播、急診資料抓取），取代外部 cron ----
+    SCHEDULER_ENABLED = _env("SCHEDULER_ENABLED", "true").lower() in {"1", "true", "yes"}
+    # 系統管理員的 LINE userId（逗號分隔）：這些人登入 / 加好友時自動成為 SUPER_ADMIN，
+    # 其他角色都在後台「人員與角色」指派
+    SUPER_ADMIN_LINE_USER_IDS = _env("SUPER_ADMIN_LINE_USER_IDS", "")
 
 
 class DevelopmentConfig(BaseConfig):
@@ -127,6 +134,7 @@ class TestingConfig(BaseConfig):
     JWT_SECRET_KEY = "test-jwt-secret"
     PATIENT_DATA_KEY = ""  # 由 SECRET_KEY 衍生
     RATELIMIT_ENABLED = False
+    SCHEDULER_ENABLED = False
     OPENAI_API_KEY = "test-openai-key"  # 測試以 FakeLlmClient / FakeVisionClient 替換，不會真的呼叫
     MEDIA_ROOT = os.path.join(tempfile.gettempdir(), "mediagent-test-media")
 

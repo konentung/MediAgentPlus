@@ -10,13 +10,13 @@
 | 議題 | 決策 | 落地 |
 |---|---|---|
 | 模型 | OpenAI API（`OPENAI_API_KEY`），對話 `gpt-4.1-mini`、處方辨識 `gpt-4.1`、向量 `text-embedding-3-small`；`AI_MODEL` / `OCR_MODEL` / `EMBEDDING_MODEL` 可覆寫 | `app/integrations/llm.py`：`OpenAiClient.complete_structured()`、`embed()` |
-| 知識來源 | 全台 129 家醫院官網衛教內文（`data/衛教內文資料/health_education_content.jsonl`，35,784 篇）經篩選匯入 13,742 篇；加上通用種子 Markdown 與院所自行上傳 | `KnowledgeService.import_health_education()`、`flask knowledge import-health-education` |
+| 知識來源 | 全台 129 家醫院官網衛教內文（`data/衛教內文資料/health_education_content.jsonl`，35,784 篇）經篩選匯入 13,742 篇；加上通用種子 Markdown 與院所自行上傳 | `KnowledgeService.import_health_education()`，後台「系統資料匯入」 |
 | 檢索 | **混合檢索**：關鍵字（jieba 斷詞 + 字元 bigram → PostgreSQL tsvector 全文檢索）+ 語意（OpenAI embedding + pgvector），各取 20 個候選，RRF 合併，同一份文件最多 2 個片段 | `app/repositories/knowledge_repository.py`、`app/domain/retrieval.py` |
-| 回答生成 | 模型只能依檢索片段寫答案：先結論、再 2–4 個重點、必要時提醒就醫；一定標 citations；片段不足要明說「知識庫沒有資料」並建議找真人 | `ConversationService.SYSTEM_PROMPT` |
+| 回答生成 | 模型只能依檢索片段寫答案：先結論、再 2–4 個重點、必要時提醒就醫；一定標 citations；片段不足要明說「知識庫沒有資料」並建議詢問原院所 | `ConversationService.SYSTEM_PROMPT` |
 | LINE 呈現 | 有引用時用 Flex：回答正文 + 免責 + 最多 3 個「參考來源」按鈕（醫院《標題》，開原文網址）；下一步 Quick Reply 照舊 | `app/line/messages/assistant.py` |
 | 涵蓋範圍 | 所有文字先過 AI 再派給模組；Rich Menu / 按鈕 postback、圖片、位置訊息直接走模組 | `MessageHandler._text_request()` → `Intent.ASSISTANT` |
 | 安全例外 | 紅旗關鍵字直接進緊急畫面、不等模型；「等藥名」狀態的文字當藥名查詢 | `EMERGENCY_KEYWORDS`、`AWAIT_DRUG_NAME` |
-| AI 失敗 | 退回關鍵字比對，再不行回失敗訊息 + 找真人；`AI_ENABLED=false` 也走這條；查詢向量失敗只退成關鍵字檢索 | `AssistantHandler._fallback()`、`KnowledgeService._semantic_candidates()` |
+| AI 失敗 | 退回關鍵字比對，再不行回失敗訊息 + 主選單；`AI_ENABLED=false` 也走這條；查詢向量失敗只退成關鍵字檢索 | `AssistantHandler._fallback()`、`KnowledgeService._semantic_candidates()` |
 
 ## 2. 流程
 
@@ -60,11 +60,8 @@ AssistantHandler（Intent.ASSISTANT）
 - 實際結果：讀取 35,784 → 匯入 13,742 篇、41,737 個片段（約 20 秒）；向量計算約 7 分鐘、費用約 US$0.25。
 
 ```bash
-flask --app wsgi knowledge import-health-education data/衛教內文資料/health_education_content.jsonl
-flask --app wsgi knowledge embed            # 可中斷、可重跑，只算還沒有向量的片段
-flask --app wsgi knowledge stats            # 文件 / 片段 / 已有向量
-flask --app wsgi knowledge search "糖尿病腳有傷口怎麼照顧"
-flask --app wsgi assistant ask "糖尿病腳有傷口怎麼照顧"
+後台 /admin/knowledge →「系統資料匯入」上傳 health_education_content.jsonl →「計算向量」（背景工作，可中斷重跑）
+後台「試搜」確認檢索結果（關鍵字 + 語意）
 ```
 
 ## 4. 知識庫（`knowledge_documents` + `knowledge_chunks`）
@@ -90,11 +87,11 @@ flask --app wsgi assistant ask "糖尿病腳有傷口怎麼照顧"
 | `slots` | city / district / drug_name / symptom / department / hospital_name |
 | `actions` | 下一步按鈕（最多 4）：call_119 / find_hospital / share_location / find_pharmacy / drug_lookup / take_prescription_photo / reminder_menu / discharge_menu / intake_form / human |
 | `citations` | 用到的知識片段編號（K1…）；服務端對回 `decision.sources`（不在模型輸出 schema 內） |
-| `needs_clarification` / `handoff_reason` | 太模糊再問一句 / 轉真人的原因 |
+| `needs_clarification` | 太模糊再問一句 |
 
 ## 6. Prompt 規則（`ConversationService.SYSTEM_PROMPT`）
 
-只能依片段與即時資料寫答案、逐條對照，片段之間有出入採保守說法；有依據必標 citations，沒有依據要明說並建議找真人；
+只能依片段與即時資料寫答案、逐條對照，片段之間有出入採保守說法；有依據必標 citations，沒有依據要明說並建議詢問原院所；
 先一句結論、再 2–4 個重點（每點一行、「・」開頭）、視情況提醒何時就醫；400 字內、口語、無 Markdown；
 不診斷不開藥；紅旗 → emergency；功能型事件可留空；actions 最多 4；提到縣市 / 藥名填 slots；超出範圍或想找人 → human。
 
@@ -118,5 +115,5 @@ flask --app wsgi assistant ask "糖尿病腳有傷口怎麼照顧"
 ## 8. 可延伸
 
 - 對話紀錄目前只存 TTL store（30 分鐘）給模型當上下文；客服接手要看脈絡再落 DB。
-- 院所自己的衛教 / FAQ 在後台上傳 Markdown 即可；衛教 JSONL 有新版就重跑 `import-health-education` + `embed`。
-- 回答品質用 `flask assistant ask` 抽樣檢查；要更準可調 `KNOWLEDGE_TOP_K`（預設 4）或把 `AI_MODEL` 換成較大的模型。
+- 院所自己的衛教 / FAQ 在後台上傳 Markdown 即可；衛教 JSONL 有新版時系統管理員在後台 `/admin/knowledge`「系統資料匯入」重新上傳並按「計算向量」（背景工作、頁面輪詢進度；等同 CLI 的 `import-health-education` + `embed`）。
+- 回答品質直接在 LINE 上抽樣檢查；要更準可調 `KNOWLEDGE_TOP_K`（預設 4）或把 `AI_MODEL` 換成較大的模型。

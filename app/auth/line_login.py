@@ -13,7 +13,6 @@ from app.core.exceptions import AuthenticationError, ExternalServiceError
 
 LINE_AUTHORIZE_URL = "https://access.line.me/oauth2/v2.1/authorize"
 LINE_TOKEN_URL = "https://api.line.me/oauth2/v2.1/token"
-LINE_REVOKE_URL = "https://api.line.me/oauth2/v2.1/revoke"
 
 
 @dataclass(frozen=True)
@@ -113,44 +112,3 @@ class LineLoginService:
             expires_in=int(body.get("expires_in", 0)),
             scope=body.get("scope", ""),
         )
-
-    def refresh_tokens(self, refresh_token: str) -> LineTokenResponse:
-        """向 LINE 換新 access token（LINE Login v2.1 `grant_type=refresh_token`）。
-
-        LINE 回 400（invalid_grant）代表 refresh token 已失效：使用者解除授權、或超過 90 天。
-        """
-        data = {
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-            "client_id": self._channel_id,
-            "client_secret": self._channel_secret,
-        }
-        try:
-            resp = self._session.post(LINE_TOKEN_URL, data=data, timeout=self._timeout)
-        except requests.RequestException as exc:
-            raise ExternalServiceError("無法連線 LINE token 端點") from exc
-        if resp.status_code != 200:
-            raise AuthenticationError("LINE refresh token 已失效")
-        body = resp.json()
-        return LineTokenResponse(
-            access_token=body["access_token"],
-            id_token=body.get("id_token"),
-            # LINE 若沒回新的 refresh token 就沿用舊的
-            refresh_token=body.get("refresh_token") or refresh_token,
-            expires_in=int(body.get("expires_in", 0)),
-            scope=body.get("scope", ""),
-        )
-
-    def revoke_token(self, access_token: str) -> None:
-        """向 LINE 撤銷 access token；LINE 會連同對應的 refresh token 一起失效。"""
-        data = {
-            "access_token": access_token,
-            "client_id": self._channel_id,
-            "client_secret": self._channel_secret,
-        }
-        try:
-            resp = self._session.post(LINE_REVOKE_URL, data=data, timeout=self._timeout)
-        except requests.RequestException as exc:
-            raise ExternalServiceError("無法連線 LINE revoke 端點") from exc
-        if resp.status_code != 200:
-            raise ExternalServiceError("LINE token 撤銷失敗")

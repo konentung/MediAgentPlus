@@ -107,7 +107,7 @@ def test_hospital_documents_are_scoped(container, make_user):
 def test_knowledge_admin_api_permissions(client, make_user, auth_header):
     superadmin = make_user(Role.SUPER_ADMIN)
     h1_admin = make_user(Role.HOSPITAL_ADMIN, hospital_id="H1")
-    agent = make_user(Role.CS_AGENT, hospital_id="H1")
+    agent = make_user(Role.HOSPITAL_STAFF, hospital_id="H1")
     patient = make_user(Role.PATIENT)
     body = {"title": "通用 FAQ", "content": "內容", "category": "faq"}
     assert (
@@ -225,10 +225,10 @@ def test_decide_validates_and_trims(container, make_user):
     container.llm_client.default = {
         "event": "faq",
         "answer": "x" * 1000,
-        "actions": ["human", "human", "find_hospital"],
+        "actions": ["find_hospital", "find_hospital", "reminder_menu"],
     }
     decision = container.conversation.decide(principal, "隨便問")
-    assert len(decision.answer) == 400 and decision.actions == ["human", "find_hospital"]
+    assert len(decision.answer) == 400 and decision.actions == ["find_hospital", "reminder_menu"]
     container.llm_client.default = {"event": "not-an-event"}
     try:
         container.conversation.decide(principal, "隨便問")
@@ -248,10 +248,10 @@ def test_free_text_goes_through_ai_and_shows_loading(post_line_event, container)
     assert labels == ["🏥 找醫院", "⏰ 服藥提醒"]
 
 
-def test_keyword_text_also_goes_through_ai(post_line_event, container):
-    """「找醫院」這種關鍵字現在也先過 AI，再由 AI 判斷套用找醫院模組。"""
+def test_keyword_text_skips_ai(post_line_event, container):
+    """完全等於 TEXT_KEYWORDS 的文字是確定進入點，直接走模組、不花模型呼叫。"""
     _text(post_line_event, "找醫院")
-    assert container.llm_client.calls[-1]["prompt"].endswith("找醫院")
+    assert container.llm_client.calls == []
     _, messages = container.line_client.replies[-1]
     assert isinstance(messages[0], TextMessage) and "分享位置" in messages[0].text
 
@@ -270,14 +270,14 @@ def test_ai_emergency_event_uses_emergency_module(post_line_event, container):
     assert messages[1].quick_reply.items[0].action.label == "撥打 119"
 
 
-def test_hospital_event_with_city_runs_board_module(post_line_event, container):
+def test_hospital_event_asks_for_location_even_with_city(post_line_event, container):
+    """找醫院只認使用者位置：AI 就算抓到縣市，也只會請對方分享位置。"""
     container.triage.poll()
     _text(post_line_event, "台北市哪家急診比較不塞")
     _, messages = container.line_client.replies[-1]
-    assert messages[0].text.startswith("幫你看台北市")
-    assert isinstance(messages[1], FlexMessage) and "台北市 急診即時狀況" in str(
-        messages[1].contents.to_dict()
-    )
+    texts = [m.text for m in messages if isinstance(m, TextMessage)]
+    assert texts[0].startswith("幫你看台北市") and any("分享位置" in t for t in texts)
+    assert not any(isinstance(m, FlexMessage) for m in messages)
 
 
 def test_medication_event_with_drug_name_runs_lookup(post_line_event, container):
@@ -316,21 +316,13 @@ def test_pharmacy_reminder_discharge_intake_events(post_line_event, container):
     assert isinstance(messages[0], FlexMessage) and "intake" in str(messages[0].contents.to_dict())
 
 
-def test_human_event_opens_ticket_with_reason(post_line_event, container):
-    _text(post_line_event, "我要找客服")
-    tickets = container.handoff_repo.list_open()
-    assert len(tickets) == 1 and tickets[0].reason == "使用者要求"
-    _, messages = container.line_client.replies[-1]
-    assert messages[0].text == "幫你轉接真人。" and "客服" in messages[1].text
-
-
 def test_symptom_answer_with_actions_and_urgent_adds_119(post_line_event, container):
     # 病況諮詢：watch（建議就醫、非急症）→ 補「附近診所」讓病人就近看診
     _text(post_line_event, "我頭痛兩天")
     _, messages = container.line_client.replies[-1]
     assert "家醫科" in messages[0].text
     items = messages[0].quick_reply.items
-    assert [i.action.label for i in items] == ["🏠 附近診所", "🏥 找醫院", "找真人"]
+    assert [i.action.label for i in items] == ["🏠 附近診所", "🏥 找醫院"]
     assert "action=clinics" in items[0].action.data
     _text(post_line_event, "我很喘")
     _, messages = container.line_client.replies[-1]
@@ -379,7 +371,7 @@ def test_discharge_event_personalized_answer_for_verified_user(
             {
                 "event": "discharge",
                 "answer": "心臟衰竭出院後今天要做的事：\n・每天早上量體重\n・限制鹽分\n・體重兩天增加 2 公斤請回診",
-                "actions": ["reminder_menu", "human"],
+                "actions": ["reminder_menu"],
             },
         ),
     )
@@ -387,7 +379,7 @@ def test_discharge_event_personalized_answer_for_verified_user(
     _text(post_line_event, "出院後要注意什麼")
     _, messages = container.line_client.replies[-1]
     assert isinstance(messages[0], TextMessage) and "量體重" in messages[0].text
-    assert [i.action.label for i in messages[0].quick_reply.items] == ["⏰ 服藥提醒", "找真人"]
+    assert [i.action.label for i in messages[0].quick_reply.items] == ["⏰ 服藥提醒"]
     # Rich Menu「我剛出院」→ DischargeHandler 也走 AI 個人化版
     post_line_event(
         _event("postback", user_id="U1", postback={"data": f"intent={Intent.DISCHARGE.value}"})
@@ -416,7 +408,7 @@ def test_ai_failure_falls_back_to_keywords(post_line_event, container):
     assert "分享位置" in messages[0].text  # 關鍵字退路
     _text(post_line_event, "隨便聊聊")
     _, messages = container.line_client.replies[-1]
-    assert "找真人" in messages[0].text
+    assert "選單" in messages[0].text
 
 
 def test_ai_disabled_falls_back(post_line_event, container):
@@ -434,7 +426,7 @@ def test_locked_user_is_blocked_before_ai(post_line_event, container):
     _text(post_line_event, "哈囉", user_id="Ulock")
     assert container.llm_client.calls == []
     _, messages = container.line_client.replies[-1]
-    assert "真人客服" in messages[0].text
+    assert "鎖定" in messages[0].text
 
 
 def test_text_clears_pending_photo_state_but_keeps_location(post_line_event, container):
@@ -622,19 +614,3 @@ def test_answer_with_citations_renders_sources(post_line_event, container, make_
     _text(post_line_event, "哈囉")
     _, messages = container.line_client.replies[-1]
     assert isinstance(messages[0], TextMessage)
-
-
-def test_health_education_cli(app, tmp_path):
-    path = _write_jsonl(tmp_path, HEALTH_ED_RECORDS)
-    runner = app.test_cli_runner()
-    result = runner.invoke(
-        args=["knowledge", "import-health-education", str(path), "--min-chars", "60"]
-    )
-    assert result.exit_code == 0, result.output
-    assert "新增 2" in result.output
-    result = runner.invoke(args=["knowledge", "embed"])
-    assert result.exit_code == 0 and "完成" in result.output
-    result = runner.invoke(args=["knowledge", "stats"])
-    assert "文件 2 篇" in result.output
-    result = runner.invoke(args=["knowledge", "search", "肝癌"])
-    assert result.exit_code == 0 and "了解肝癌" in result.output

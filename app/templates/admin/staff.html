@@ -16,7 +16,7 @@
 
 <div class="alert alert-secondary small">
   院所人員需先用 LINE 登入過本系統一次（帳號才會出現在這裡），再由院所管理員指派角色。
-  院所管理員只能指派真人客服、醫護、院所管理員三種角色，且只能指派給本院所。
+  院所管理員只能指派院內人員、醫護、院所管理員三種角色，且只能指派給本院所。
 </div>
 
 <div class="card border-0 shadow-sm">
@@ -32,9 +32,8 @@
 {% block scripts %}
 <script>
 Admin.boot(async function (ctx) {
-  var ASSIGNABLE = ctx.me.role === "super_admin"
-    ? Object.keys(Admin.choices.roles)
-    : ["cs_agent", "medical_staff", "hospital_admin"];
+  // 可指派的角色由後端 ROLE_ASSIGNABLE_BY 決定（/api/v1/auth/me 回傳）
+  var ASSIGNABLE = ctx.me.assignable_roles || [];
 
   async function load() {
     var q = document.querySelector('#search-form input[name="q"]').value.trim();

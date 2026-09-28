@@ -103,6 +103,10 @@ class NhiErClient:
         self._url = url
         self._timeout = timeout_seconds
 
+    @property
+    def url(self) -> str:
+        return self._url
+
     def fetch(self) -> ErFeed:
         try:
             resp = requests.post(

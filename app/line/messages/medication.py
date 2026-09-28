@@ -24,7 +24,6 @@ def menu_messages() -> list[Message]:
                 M.camera_roll_item("🖼 從相簿選"),
                 M.postback_item("📍 找附近藥局", Intent.MEDICATION, action="locate_prompt"),
                 M.postback_item("🔍 輸入藥名查詢", Intent.MEDICATION, action="drug"),
-                M.postback_item("找真人", Intent.HUMAN, reason="medication"),
             ],
         )
     ]
@@ -66,11 +65,10 @@ def not_prescription_messages() -> list[Message]:
 def ocr_failed_messages(reason: str) -> list[Message]:
     return [
         M.text(
-            f"{reason}\n你也可以直接輸入藥名查詢，或找真人協助。",
+            f"{reason}\n你也可以直接輸入藥名查詢。",
             quick_replies=[
                 M.camera_item("📷 重拍"),
                 M.postback_item("輸入藥名", Intent.MEDICATION, action="drug"),
-                M.postback_item("找真人", Intent.HUMAN, reason="medication_ocr_failed"),
             ],
         )
     ]
@@ -246,9 +244,7 @@ def pharmacy_result_messages(result: dict[str, Any], note: str | None = None) ->
         return [
             M.text(
                 f"{area} 附近查無健保特約藥局資料，建議回原院所藥局領藥或撥打 1957 諮詢。",
-                quick_replies=[
-                    M.postback_item("找真人", Intent.HUMAN, reason="pharmacy_not_found")
-                ],
+                quick_replies=[M.location_item("📍 重新分享位置")],
             )
         ]
     bubbles = [_pharmacy_bubble(p) for p in pharmacies[:5]]
@@ -343,11 +339,8 @@ def drug_lookup_messages(query: str, drugs: list[dict[str, Any]]) -> list[Messag
     if not drugs:
         return [
             M.text(
-                f"查無「{query}」的資料。可以試試英文學名，或找真人協助。",
-                quick_replies=[
-                    M.postback_item("再查一次", Intent.MEDICATION, action="drug"),
-                    M.postback_item("找真人", Intent.HUMAN, reason="medication_not_found"),
-                ],
+                f"查無「{query}」的資料。可以試試英文學名或商品名。",
+                quick_replies=[M.postback_item("再查一次", Intent.MEDICATION, action="drug")],
             )
         ]
     lines = []

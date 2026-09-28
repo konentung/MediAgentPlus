@@ -118,8 +118,7 @@ postgresql+psycopg://mediagent:mediagent@localhost:5432/mediagent
 不想開 pgAdmin 時，也可以用腳本一次建立同樣的角色與資料庫：
 
 ```bash
-./scripts/setup_db.sh                    # 預設 mediagent / mediagent / mediagent
-./scripts/setup_db.sh my_db my_user pw   # 自訂
+createuser -P mediagent && createdb -O mediagent mediagent   # 或用 pgAdmin 建立
 ```
 
 ---
@@ -145,7 +144,7 @@ cp .env.example .env
 1. 同一個 Provider 下建立 **LINE Login** channel。
 2. Basic settings 的 **Channel ID** → `LINE_LOGIN_CHANNEL_ID`，**Channel secret** → `LINE_LOGIN_CHANNEL_SECRET`。
 3. LINE Login 分頁的 Callback URL 填入 `LINE_LOGIN_REDIRECT_URI`（本機為 `http://localhost:5000/api/v1/auth/line/callback`）。
-4. LIFF 分頁點 Add，Endpoint URL 填 `https://<你的網域>/liff`（本機用 ngrok 網址），Scope 勾 `profile`、`openid`。這樣 `https://liff.line.me/<LIFF_ID>/intake?hospital=H1` 會開到 `/liff/intake`。
+4. LIFF 分頁點 Add，Endpoint URL 填 `https://<你的網域>/liff`（本機用 ngrok 網址），Scope 勾 `profile`、`openid`。這樣 `https://liff.line.me/<LIFF_ID>/intake` 會開到 `/liff/intake`。
 5. 取得 **LIFF ID** → `LIFF_ID`。`LIFF_CHANNEL_ID` 留空即沿用 `LINE_LOGIN_CHANNEL_ID`。
 6. 在 LINE Login channel 的 Basic settings 底下「Linked OA」連結到上面的 Messaging API 官方帳號，登入時才會提示加好友。
 
@@ -163,18 +162,17 @@ python3.11 -c "import secrets; print(secrets.token_urlsafe(48))"
 多 worker（gunicorn `-w 2` 以上）或多台機器部署時，OAuth state 與 rate limit 必須共用儲存，
 請設定 `REDIS_URL=redis://host:6379/0`；本機單一程序可留空。
 
-### 4.5 建立第一家院所與管理員
+### 4.5 第一位系統管理員與第一家院所
 
-```bash
-flask --app wsgi hospital add H1 "第一醫院" --region 台北市
-flask --app wsgi user set-role <你的 user_id> super_admin      # user_id 可在 /api/v1/auth/me 或 pgAdmin 的 users 表查到
+沒有 CLI。第一位 SUPER_ADMIN 靠 `.env` 指定：
+
+```env
+SUPER_ADMIN_LINE_USER_IDS=Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx   # 你的 LINE userId，多人用逗號分隔
 ```
 
-之後到後台 `/admin/settings` 就能新增或用 CSV 匯入其他院所（支援健保署「特約醫事機構」開放資料格式），`/admin/staff` 指派人員到院所。批次匯入也可用 CLI：
-
-```bash
-flask --app wsgi hospital import data/pharmacy/A21030000I-D21005-001.csv --only-hospitals
-```
+用 LINE Login 登入 `/admin/login`（或加官方帳號好友）時會自動升級成 SUPER_ADMIN。之後到後台 `/admin/settings`
+新增或用 CSV 匯入院所（支援健保署「特約醫事機構」開放資料格式，`data/er_hospitals.csv` 帶 59 家急救責任醫院座標），
+`/admin/staff` 指派人員到院所。
 
 病人身分證字號以 Fernet 加密儲存，金鑰放 `PATIENT_DATA_KEY`：
 
@@ -187,15 +185,14 @@ python3.11 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key
 ### 4.6 藥局 / 藥品開放資料與處方箋辨識
 
 「去哪拿藥」與「服藥小幫手」需要藥局與健保用藥資料，匯入一次即可（可重跑）。系統管理員登入後台
-`/admin/settings`，在「參考資料（藥局 / 藥品）」直接上傳 CSV；或用 CLI 從 `data/pharmacy/` 匯入：
+後台上傳 `data/pharmacy/` 的 CSV：藥局在 `/admin/pharmacies`，藥品在 `/admin/drugs`
+（健保用藥約 96MB，伺服器端匯入只要幾秒，時間都花在上傳；請用本機網址而不是 ngrok 網址操作，頁面會顯示上傳進度）：
 
-```bash
-flask --app wsgi pharmacy import data/pharmacy/A21030000I-D21005-001.csv   # 健保署特約藥局（約 1 萬筆）
-flask --app wsgi pharmacy import data/pharmacy/35_2.csv                    # 衛福部藥局，補非特約（約 1.5 千筆）
-flask --app wsgi drug import data/pharmacy/A21030000I-E41001-001.csv       # 健保用藥（約 4.5 萬筆）
-flask --app wsgi pharmacy stats
-flask --app wsgi pharmacy find "台北市松山區"                               # 測試找藥局
-```
+| 檔案 | 內容 |
+|---|---|
+| `A21030000I-D21005-001.csv` | 健保署特約藥局（約 1 萬筆） |
+| `35_2.csv` | 衛福部藥局，補非特約（約 1.5 千筆） |
+| `A21030000I-E41001-001.csv` | 健保用藥（約 4.5 萬筆） |
 
 處方箋照片辨識與 AI 對話都用 OpenAI API：在 `.env` 填 `OPENAI_API_KEY` 即可，模型留空時辨識用 `gpt-4.1`
 （一張約 5–15 秒）、對話用 `gpt-4.1-mini`。辨識期間 LINE 端顯示「處理中」動畫，不另發訊息。
@@ -213,10 +210,10 @@ token 後自動導向該路徑。
 ### 開發模式（自動重載）
 
 ```bash
-./scripts/run_dev.sh
-# 或
 flask --app wsgi run --debug
 ```
+
+排程（服藥提醒、急診資料）會在 reloader 的子程序一起啟動，log 會看到 `scheduler started`。
 
 開啟 http://localhost:5000/api/v1/health 應看到：
 
@@ -227,54 +224,40 @@ flask --app wsgi run --debug
 ### 正式模式（gunicorn）
 
 ```bash
-FLASK_ENV=production ./scripts/run_prod.sh
+FLASK_ENV=production gunicorn -w 1 --threads 4 --timeout 120 -b 0.0.0.0:5000 wsgi:app
 ```
 
 正式模式啟動時會檢查必要環境變數，缺少會直接報錯並列出缺哪些。
-可用 `PORT`、`WORKERS`、`THREADS`、`TIMEOUT`（預設 120 秒，處方辨識需要）環境變數調整。
+`--timeout 120` 是處方辨識需要。worker 數大於 1 時務必設 `REDIS_URL`，排程才會用 Redis 鎖確保每輪只有一個 worker 執行。
 
-### 服藥提醒排程（cron）
+### 服藥提醒排程（程序內）
 
-提醒推播不是常駐程序，由外部 cron 每 5 分鐘呼叫一次 CLI（可重複執行、不會重複推播）：
-
-```cron
-*/5 * * * * cd /path/to/MediAgentPlus && FLASK_ENV=production flask --app wsgi reminder run-due >> var/reminder.log 2>&1
-```
-
-本機測試可以指定時間：`flask --app wsgi reminder run-due --now 2026-09-28T08:31:00+08:00`。
+推播由 `app/scheduler.py`（APScheduler）在應用程式啟動時排定，每 5 分鐘呼叫 `ReminderService.run_due()`，
+同一排程同一時段只推播一次，不需要 cron。`SCHEDULER_ENABLED=false` 可關閉（例如只跑 migration 的容器）。
 注意 LINE 官方帳號免費方案每月只有 200 則推播，一位病人一天三次一個月就 90 則，正式上線前請升級方案。
 
 ### AI 對話助理（OpenAI）
 
 自由文字由 AI 助理判斷事件（`docs/ai-assistant-design.md`）。在 `.env` 填 `OPENAI_API_KEY` 即可（對話模型留空為 `gpt-4.1-mini`）。初始化：
 
-```bash
-flask --app wsgi knowledge import data/knowledge      # 匯入通用知識種子
-flask --app wsgi knowledge import-health-education "data/衛教內文資料/health_education_content.jsonl"  # 全台醫院衛教（約 20 秒）
-flask --app wsgi knowledge embed                      # 算向量（41,737 片段約 7 分鐘、US$0.25；可中斷重跑）
-flask --app wsgi knowledge stats
-flask --app wsgi knowledge search "糖尿病腳有傷口怎麼照顧"   # 確認檢索（關鍵字 + 語意）
-flask --app wsgi assistant ask "我頭痛兩天了"          # 實際呼叫模型，看脈絡與決策 JSON
-```
+後台 `/admin/knowledge`：
+
+1. 「匯入 Markdown」上傳 `data/knowledge/*.md`（通用知識種子）。
+2. 「系統資料匯入」上傳 `data/衛教內文資料/health_education_content.jsonl`（全台醫院衛教，約 20 秒）。
+3. 「計算向量」（41,737 片段約 7 分鐘、US$0.25；背景執行、可中斷重跑）。
+4. 「試搜」確認檢索（關鍵字 + 語意）。
 
 OpenAI 一次約 2–6 秒；`AI_TIMEOUT_SECONDS` 預設 60，gunicorn `TIMEOUT` 預設 120。
 `AI_ENABLED=false` 時文字退回關鍵字比對。院所自己的衛教 / FAQ 在後台「AI 知識庫」上傳 Markdown 即可，不需改程式。
 語意檢索需要 PostgreSQL 的 pgvector 擴充套件（Homebrew：`brew install pgvector`；migration 會自動 `CREATE EXTENSION vector`）。
 沒有 pgvector 或 `EMBEDDING_MODEL` 留空時只用關鍵字檢索，功能仍可用。
 
-### 急診動態分流排程（cron）
+### 急診資料抓取（程序內）
 
-健保署急診即時訊息約每 15 分鐘更新一次，同樣用 cron 呼叫 CLI（同一輪回報不會重複寫入、不會重複通知）：
-
-```cron
-*/15 * * * * cd /path/to/MediAgentPlus && FLASK_ENV=production flask --app wsgi triage poll >> var/triage.log 2>&1
-```
-
-沒有 cron 的環境（例如 Docker 單一容器）可以用常駐模式：`flask --app wsgi triage poll --loop --interval 900`。
-初始化時先匯入 59 家重度級急救責任醫院的座標種子檔：`flask --app wsgi hospital import data/er_hospitals.csv`，
-「找醫院」才能依使用者位置算距離、推薦最近未壅塞的醫院（沒匯入會退回縣市看板）。
-本機檢查：`flask --app wsgi triage board --area 台北市`、`flask --app wsgi triage advisories --all`。
-接收者（119 勤務指揮中心 / 診所）在後台「急診動態分流」建立：LINE 推播需要對方先加官方帳號；Webhook 與 API 拉取會產生一次性顯示的 secret。
+健保署急診即時訊息約每 15 分鐘更新一次，`app/scheduler.py` 啟動時先抓一次、之後每 15 分鐘呼叫
+`TriageService.poll()` 存快照（同一輪回報不會重複寫入）。初始化時在後台「院所設定」匯入
+`data/er_hospitals.csv`（59 家重度級急救責任醫院的座標），「找醫院」才能依使用者位置算距離推薦。
+LIFF `/liff/er` 可看目前看板。
 
 ---
 
@@ -298,18 +281,17 @@ ngrok 免費版每次重啟網址會變，記得同步更新。
 
 ## 7. 設定 Rich Menu（主選單六格）
 
-準備一張 2500×1686 的 PNG 或 JPG，六格排列為 3 欄 × 2 列，順序為：
+在 [LINE Official Account Manager](https://manager.line.biz) →「圖文選單」建立，不用程式：
+
+1. 版型選 3 欄 × 2 列（2500×1686），上傳自己的圖片。
+2. 每一格的動作類型選「文字」，文字依序填：
 
 | 我不舒服 | 找醫院 | 我剛出院 |
 |---|---|---|
-| 去哪拿藥 | 服藥提醒 | 找真人 |
+| 去哪拿藥 | 服藥提醒 | 意見回饋 |
 
-```bash
-flask --app wsgi richmenu setup --image ./assets/richmenu.png
-```
-
-預設會先刪掉既有的 Rich Menu 再建立新的；加 `--keep-existing` 可保留。
-用手機打開官方帳號聊天室，底部應出現主選單。
+文字必須完全等於上表（`app/line/intents.py` 的 `TEXT_KEYWORDS`），Bot 收到就直接進對應功能、不經 AI。
+設為預設顯示後，用手機打開官方帳號聊天室，底部應出現主選單。
 
 ---
 
@@ -321,16 +303,7 @@ flask --app wsgi richmenu setup --image ./assets/richmenu.png
 | `pytest tests/test_webhook.py -v` | 只跑 webhook 測試 |
 | `ruff check . && ruff format .` | Lint 與格式化 |
 | `flask --app wsgi routes` | 列出所有 API 路由 |
-| `flask --app wsgi rbac show` | 輸出角色權限矩陣 |
-| `flask --app wsgi user set-role <user_id> super_admin` | 以系統身分指派角色 |
-| `flask --app wsgi pharmacy import <csv>` / `drug import <csv>` | 匯入藥局 / 健保用藥開放資料 |
-| `flask --app wsgi pharmacy find "台北市松山區"` | 測試依地址找藥局 |
-| `flask --app wsgi reminder run-due [--now <iso>]` | 推播到期的服藥提醒（cron 用） |
-| `flask --app wsgi triage poll [--loop --interval 900]` | 抓健保署急診即時資料、評估壅塞、通知接收者（cron 用） |
-| `flask --app wsgi triage board [--area 台北市]` / `triage advisories [--all]` | 印出急診看板 / 分流建議 |
-| `flask --app wsgi knowledge import <dir 或 .md>` / `knowledge search "<q>"` / `knowledge list` | AI 知識庫匯入 / 試搜 / 列表 |
-| `flask --app wsgi knowledge import-health-education <jsonl>` / `knowledge embed` / `knowledge stats` | 衛教內文匯入 / 算向量 / 統計 |
-| `flask --app wsgi assistant ask "<text>" [--user-id]` | 本機直接問 AI 助理 |
+| `flask --app wsgi db upgrade` / `db migrate -m "..."` | 套用 / 產生 migration |
 | `flask --app wsgi shell` | 進入有 app context 的 Python shell |
 
 ---
@@ -340,7 +313,7 @@ flask --app wsgi richmenu setup --image ./assets/richmenu.png
 ### LINE Login 流程
 
 1. 瀏覽器開首頁 http://localhost:5000/ 按「使用 LINE 登入」（或直接開 /api/v1/auth/line/login），會導向 LINE 授權頁。
-2. 授權後回到 callback，畫面顯示「登入成功」，`access_token`/`refresh_token` 由頁面上的 script
+2. 授權後回到 callback，畫面顯示「登入成功」，`access_token` 由頁面上的 script
    存進瀏覽器的 `sessionStorage`，接著自動導回首頁並顯示登入者名稱與角色（手動測試可以打開
    DevTools Console 執行 `sessionStorage.getItem('access_token')` 取值）。
 3. 帶 token 查詢身分：

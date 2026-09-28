@@ -20,7 +20,7 @@ Event = Literal[
     "reminder",  # 服藥提醒
     "discharge",  # 出院後照護、衛教
     "intake",  # 基本資料 / 綁定 / 驗證
-    "human",  # 想找真人、客訴、機器人無法處理
+    "feedback",  # 想反映問題、客訴、找真人（沒有真人客服，導到意見回饋表單）
     "faq",  # 一般問答（依知識庫回答即可）
     "smalltalk",  # 打招呼、閒聊
     "unknown",  # 聽不懂 / 超出範圍
@@ -37,7 +37,7 @@ Action = Literal[
     "reminder_menu",
     "discharge_menu",
     "intake_form",
-    "human",
+    "feedback",
 ]
 
 EVENTS: tuple[str, ...] = Event.__args__  # type: ignore[attr-defined]
@@ -72,7 +72,6 @@ class AssistantDecision(BaseModel):
         default_factory=list, description="回答依據的知識片段編號，例如 K1、K3；沒有依據留空"
     )
     needs_clarification: bool = Field(default=False, description="問題太模糊、需要再問一句")
-    handoff_reason: str | None = Field(default=None, description="event=human 時的原因摘要")
 
     # 服務端依 citations 對回的片段（含出處與網址），不在模型輸出的 schema 內
     _sources: list[dict[str, Any]] = PrivateAttr(default_factory=list)

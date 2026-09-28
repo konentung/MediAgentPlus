@@ -9,11 +9,12 @@ from typing import Any, Protocol
 
 from app.domain.retrieval import BM25Index, cosine
 from app.extensions import db
-from app.models.knowledge import KnowledgeChunkModel, KnowledgeDocumentModel
+from app.models.knowledge import KnowledgeChunkModel, KnowledgeDocumentModel, KnowledgeJobModel
 from app.repositories.base import row_to_dict
 
 DOC = KnowledgeDocumentModel
 CHUNK = KnowledgeChunkModel
+JOB = KnowledgeJobModel
 
 
 class KnowledgeRepository(Protocol):
@@ -278,3 +279,45 @@ class SqlAlchemyKnowledgeRepository:
             db.select(db.func.count(DOC.id), db.func.max(DOC.updated_at))
         ).one()
         return int(count or 0), latest.isoformat() if latest else None
+
+
+class KnowledgeJobRepository(Protocol):
+    def create(self, **values: Any) -> dict[str, Any]: ...
+    def get(self, job_id: str) -> dict[str, Any] | None: ...
+    def update(self, job_id: str, **changes: Any) -> dict[str, Any]: ...
+    def list_recent(self, limit: int) -> list[dict[str, Any]]: ...
+    def active(self) -> dict[str, Any] | None: ...
+
+
+class SqlAlchemyKnowledgeJobRepository:
+    """後台維護工作的進度紀錄；背景執行緒與 API 各自用自己的 session 讀寫同一列。"""
+
+    ACTIVE_STATUSES = ("queued", "running")
+
+    def create(self, **values: Any) -> dict[str, Any]:
+        row = JOB(**values)
+        db.session.add(row)
+        db.session.commit()
+        return row_to_dict(row)
+
+    def get(self, job_id: str) -> dict[str, Any] | None:
+        row = db.session.get(JOB, job_id)
+        return row_to_dict(row) if row else None
+
+    def update(self, job_id: str, **changes: Any) -> dict[str, Any]:
+        row = db.session.get(JOB, job_id)
+        if row is None:
+            raise KeyError(job_id)
+        for key, value in changes.items():
+            setattr(row, key, value)
+        db.session.commit()
+        return row_to_dict(row)
+
+    def list_recent(self, limit: int) -> list[dict[str, Any]]:
+        stmt = db.select(JOB).order_by(JOB.created_at.desc()).limit(limit)
+        return [row_to_dict(r) for r in db.session.scalars(stmt)]
+
+    def active(self) -> dict[str, Any] | None:
+        stmt = db.select(JOB).where(JOB.status.in_(self.ACTIVE_STATUSES)).limit(1)
+        row = db.session.scalars(stmt).first()
+        return row_to_dict(row) if row else None

@@ -42,9 +42,9 @@ def _resolve_principal() -> Principal:
         return Principal.anonymous()
     token = header.removeprefix("Bearer ").strip()
     container = get_container()
-    claims = container.jwt.decode(token, expected_type="access")
+    claims = container.jwt.decode(token)
     user_id = claims.get("sub")
-    # 角色 / 綁定狀態一律以資料庫為準，不信任 token 內的快照
+    # 角色 / 綁定狀態一律以資料庫為準，token 裡的值可能已經過期
     user = container.user_repo.get_by_id(user_id) if user_id else None
     if user is None:
         raise AuthenticationError("使用者不存在或已停用")

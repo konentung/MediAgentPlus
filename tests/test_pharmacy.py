@@ -14,6 +14,7 @@ from app.services.pharmacy_service import (
     parse_opening_hours,
 )
 from app.utils.clock import TAIPEI
+from app.utils.geo import district_centroids, nearest_district
 
 NHI_ROWS = [
     {
@@ -132,18 +133,55 @@ def test_find_by_address_prefers_district_then_city(container, monkeypatch):
         "app.services.pharmacy_service.now_tw",
         lambda: datetime(2026, 9, 28, 9, 30, tzinfo=TAIPEI),  # 星期一上午
     )
-    result = container.pharmacies.find_by_address("台灣台北市松山區南京東路四段")
-    assert result["scope"] == "district"
+    result = container.pharmacies.find_nearby(address="台灣台北市松山區南京東路四段")
+    assert result["scope"] == "district" and result["resolved_by"] == "address"
     assert [p["name"] for p in result["pharmacies"]] == ["榮星藥局"]  # 停用的不列
     assert result["pharmacies"][0]["open_now"] is True
     assert result["pharmacies"][0]["today_hours"] == ["上午", "下午"]
 
     # 該區沒有資料 → 退到同縣市
-    result = container.pharmacies.find_by_address("台北市大安區和平東路")
+    result = container.pharmacies.find_nearby(address="台北市大安區和平東路")
     assert result["scope"] == "city"
     assert {p["name"] for p in result["pharmacies"]} == {"榮星藥局", "信義藥局"}
 
-    assert container.pharmacies.find_by_address("nowhere")["pharmacies"] == []
+    result = container.pharmacies.find_nearby(address="nowhere")
+    assert result["pharmacies"] == [] and result["city"] is None
+
+
+@pytest.mark.parametrize(
+    "lat, lng, expected",
+    [
+        (25.0500, 121.5500, ("台北市", "松山區")),
+        (22.6500, 120.3180, ("高雄市", "三民區")),  # 不是同名的舊高雄縣三民鄉（那瑪夏區）
+        (24.7800, 120.9300, ("新竹市", "香山區")),
+        (35.6800, 139.7600, None),  # 東京：離台灣太遠
+    ],
+)
+def test_nearest_district(lat, lng, expected):
+    assert nearest_district(lat, lng) == expected
+
+
+def test_district_centroids_cover_all_368_districts():
+    rows = district_centroids()
+    assert len(rows) == 368 and len({(c, d) for c, d, _, _ in rows}) == 368
+    assert all("臺" not in c for c, _, _, _ in rows)
+
+
+def test_find_nearby_falls_back_to_coordinates_when_address_unparseable(container):
+    """手機語系是英文時 LINE 給的是英文地址；沒有地址時只有座標。"""
+    container.pharmacies.import_pharmacies(NHI_ROWS)
+    english = "No. 133, Sec. 4, Nanjing E. Rd., Songshan District, Taipei City, Taiwan 105"
+    result = container.pharmacies.find_nearby(address=english, lat=25.05, lng=121.55)
+    assert (result["city"], result["district"]) == ("台北市", "松山區")
+    assert result["resolved_by"] == "coords"
+    assert [p["name"] for p in result["pharmacies"]] == ["榮星藥局"]
+
+    result = container.pharmacies.find_nearby(address=None, lat=25.05, lng=121.55)
+    assert result["resolved_by"] == "coords" and result["pharmacies"]
+
+    # 座標在台灣以外 → 兩種方法都失敗
+    result = container.pharmacies.find_nearby(address=english, lat=35.68, lng=139.76)
+    assert result["city"] is None and result["pharmacies"] == []
 
 
 DRUG_ROWS = [
@@ -203,6 +241,9 @@ def test_pharmacy_and_drug_api(client, container, make_user, auth_header):
     )
     assert resp.status_code == 200
     assert resp.get_json()["data"]["pharmacies"][0]["name"] == "榮星藥局"
+    resp = client.get("/api/v1/liff/pharmacies?lat=25.05&lng=121.55", headers=auth_header(user))
+    assert resp.status_code == 200
+    assert resp.get_json()["data"]["district"] == "松山區"
 
     resp = client.get("/api/v1/liff/drugs?q=metformin", headers=auth_header(user))
     assert resp.status_code == 200 and len(resp.get_json()["data"]) == 1
@@ -242,8 +283,8 @@ def test_super_admin_imports_reference_data_via_admin_api(client, make_user, aut
     assert resp.status_code == 200, resp.get_json()
     assert resp.get_json()["data"]["created"] == 2
 
-    stats = client.get("/api/v1/admin/reference-data", headers=headers).get_json()["data"]
-    assert stats == {"pharmacies": 3, "drugs": 2}
+    assert client.get("/api/v1/admin/pharmacies", headers=headers).get_json()["data"]["total"] == 3
+    assert client.get("/api/v1/admin/drugs", headers=headers).get_json()["data"]["total"] == 2
 
     # 也接受 JSON rows；空檔案 422
     resp = client.post("/api/v1/admin/pharmacies/import", json={"rows": MOHW_ROWS}, headers=headers)
@@ -259,5 +300,6 @@ def test_reference_data_import_is_super_admin_only(client, make_user, auth_heade
     for path in ("/api/v1/admin/pharmacies/import", "/api/v1/admin/drugs/import"):
         resp = client.post(path, json={"rows": NHI_ROWS}, headers=auth_header(admin))
         assert resp.status_code == 403
-    assert client.get("/api/v1/admin/reference-data", headers=auth_header(admin)).status_code == 403
-    assert client.get("/api/v1/admin/reference-data").status_code == 401
+    # 院方可以看清單，但不能匯入；未登入一律 401
+    assert client.get("/api/v1/admin/pharmacies", headers=auth_header(admin)).status_code == 200
+    assert client.get("/api/v1/admin/pharmacies").status_code == 401

@@ -219,7 +219,7 @@ class FakeLlmClient:
             ("出院", {"event": "discharge", "answer": ""}),
             (
                 "客服",
-                {"event": "human", "answer": "幫你轉接真人。", "handoff_reason": "使用者要求"},
+                {"event": "feedback", "answer": "目前沒有真人客服，可以用意見回饋表單反映。"},
             ),
             ("基本資料", {"event": "intake", "answer": "填寫基本資料後可使用個人化功能。"}),
             (
@@ -229,7 +229,7 @@ class FakeLlmClient:
                     "risk": "watch",
                     "slots": {"symptom": "頭痛兩天", "department": "家醫科"},
                     "answer": "頭痛兩天可先掛家醫科或神經內科；若突然劇痛請撥 119。",
-                    "actions": ["find_hospital", "human"],
+                    "actions": ["find_hospital"],
                     "citations": ["K1"],
                 },
             ),
@@ -279,24 +279,12 @@ class FakeLlmClient:
         return _validate(response_model, dict(self.default))
 
 
-class FakeWebhookClient:
-    def __init__(self) -> None:
-        self.posts: list[dict] = []
-        self.error: Exception | None = None
-
-    def post(self, url, payload, *, secret, event):
-        if self.error:
-            raise self.error
-        self.posts.append({"url": url, "payload": payload, "secret": secret, "event": event})
-
-
 @pytest.fixture()
 def app():
     app = create_app("testing")
     app.extensions["container"].line_client = FakeLineClient()
     app.extensions["container"].vision_client = FakeVisionClient()
     app.extensions["container"].er_client = FakeErClient()
-    app.extensions["container"].webhook_client = FakeWebhookClient()
     app.extensions["container"].llm_client = FakeLlmClient()
     # 全測試期間保持一個 app context，讓測試可以在 client 請求之外直接呼叫
     # container 內的 repository（沿用既有測試寫法）。這顆 context 的物件參考
@@ -367,7 +355,7 @@ def make_user(container):
 def auth_header(container):
     def _header(user) -> dict[str, str]:
         principal = container.users.to_principal(user)
-        return {"Authorization": f"Bearer {container.jwt.issue_pair(principal).access_token}"}
+        return {"Authorization": f"Bearer {container.jwt.issue(principal).access_token}"}
 
     return _header
 

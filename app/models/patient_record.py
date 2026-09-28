@@ -1,9 +1,9 @@
 """院方病人紀錄模型：跟著院所走，院所之間互相看不到。
 
 對應設計文件 docs/patient-form-design.md §3、§4.2。
-`patient_records` 是「某院所為某病人建檔」的那一筆，其餘表都掛在它底下。
-`hospital_id` 先維持與 `users` / `handoff_tickets` 一致的無外鍵字串，
-等 `Hospital` 實體建立後再補 FK。
+`patient_records` 是「某院所為某病人建檔」的那一筆，其餘表都掛在它底下（CASCADE）。
+`hospital_id` 以 RESTRICT 外鍵指向 `hospitals`：有病歷的院所不能刪。
+建檔的前提是病人已在 LINE 上確認在該院就醫（`patient_profiles.hospital_confirmed_at`）。
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ class PatientRecordModel(db.Model, TimestampMixin):
 
 
 class PatientRecordReviewModel(db.Model, TimestampMixin):
-    """院方對自填資料的審核 / 修正紀錄（結構化表改了什麼，原始快照不動）。"""
+    """院方對自填資料的審核 / 修正紀錄（結構化表改了什麼，原始送出資料不動）。"""
 
     __tablename__ = "patient_record_reviews"
 

@@ -47,7 +47,7 @@ SYSTEM_PROMPT = """你是「MediAgent+」醫療照護 LINE 機器人的對話助
 1. 只能根據「知識庫片段」與「即時資料」寫，逐條對照片段內容，不要加入片段沒有的說法、數字或藥名；
    片段之間有出入時採保守說法並說明「各院作法可能不同」。
 2. 有依據就一定在 citations 列出用到的片段編號（K1、K2…）；沒有片段能回答時，answer 要明說
-   「知識庫沒有這方面的資料」，並建議找真人客服或詢問原院所，不要憑常識補答。
+   「知識庫沒有這方面的資料」，並建議詢問原院所或就近就醫，不要憑常識補答。
 3. 內容要具體可行：先一句結論，再列 2–4 個重點（每點一行、開頭用「・」），最後視情況提醒何時該就醫。
    {max_chars} 字內、口語、不用 Markdown 語法（LINE 不會渲染）。
 4. 不做診斷、不開藥、不建議劑量；症狀問題只說明可能需要哪一科、何時該就醫、何時該撥 119。
@@ -59,7 +59,8 @@ SYSTEM_PROMPT = """你是「MediAgent+」醫療照護 LINE 機器人的對話助
    讓對應功能模組接手。
 7. actions 是給使用者的下一步按鈕（最多 4 個），只選真的有幫助的。
 8. 使用者提到縣市 / 藥名 / 症狀時填進 slots，讓功能模組直接使用。
-9. 使用者說想找人、客訴、或問題超出範圍且知識庫沒有答案 → event=human 並寫 handoff_reason。
+9. 使用者說想找真人、客訴、反映問題，或問題超出範圍且知識庫沒有答案 → event=feedback，
+   answer 一句話說明目前沒有真人客服、可留下意見回饋或聯絡原院所。
 
 病況諮詢（event=symptom）：
 10. 依片段判斷「可能需要掛哪一科」填入 slots.department（例如 家醫科、神經內科；片段沒提就留空），
@@ -183,7 +184,7 @@ class ConversationService:
             "unbound": "尚未填寫基本資料（不能用個人化功能，但找醫院 / 找藥局 / 服藥提醒都可以用）",
             "pending": "基本資料已送出、等待院所核對",
             "verified": "基本資料已驗證，可使用個人化衛教",
-            "locked": "帳號已鎖定，需真人客服協助",
+            "locked": "帳號已鎖定，請於就診時請院所人員核對解鎖",
         }.get(principal.binding_status.value, principal.binding_status.value)
         city = profile.get("address_city")
         extra = f"；居住地 {city}{profile.get('address_district') or ''}" if city else ""
@@ -226,7 +227,7 @@ class ConversationService:
         return "\n".join(f"・{line}" for line in lines), diagnosis or None
 
     def _er_block(self, text: str, profile: dict[str, Any]) -> str | None:
-        """訊息或住址提到的縣市 → 該縣市急診看板摘要（用既有快照，不即時抓）。"""
+        """訊息或住址提到的縣市 → 該縣市急診看板摘要（用已存的資料，不即時抓）。"""
         normalized = text.replace("臺", "台")
         city = next((c for c in triage_rules.AREA_CODES if c in normalized), None)
         if city is None and any(k in normalized for k in ("急診", "醫院", "掛號", "急救")):

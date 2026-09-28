@@ -3,9 +3,9 @@
 > 狀態：**已實作（2026-09-23）**。本文件是設計依據；實際程式位置見 CLAUDE.md「病人自填表與院方後台」。
 > 與設計不同之處：
 > - `patient_media`（藥袋照片）尚未做，等 Roadmap 第 4 項 OCR 定案再補。
-> - `Hospital` 實體已建立（`hospitals` 表）。病人在第 6 步從院所下拉選單選「常去的醫院 / 診所」（`preferred_hospital_id`），LIFF 連結 `?hospital=<代碼>` 只負責預選；原設計的自由文字 `preferred_hospital_name` 已移除。
+> - `Hospital` 實體已建立（`hospitals` 表）。`preferred_hospital_id` 不再是表單欄位、也沒有 QR 連結（2026-09-28 起）：病人加好友填表即可；院方在後台「新增病人」用手機或姓名 + 末四碼精準找到本人並加入本院（寫入 `preferred_hospital_id`），推播 LINE 請病人按「是，我在這裡就醫」記下 `hospital_confirmed_at`。只有新增的院所看得到這位病人，其他院所看不到也不能動，SUPER_ADMIN 看全部。原設計的自由文字 `preferred_hospital_name` 已移除。
 > - 後台登入沿用 `sessionStorage` + Bearer（§5.3），沒有另做 cookie session。
-> - 稽核 log 表尚未建立，身分證明碼讀取目前只受 `PATIENT_IDENTITY_READ` 權限控管。
+> - 身分證明碼沒有任何讀取端點與權限（2026-09-28 起），後台一律只看遮罩。
 
 ## 1. 設計原則
 
@@ -20,7 +20,7 @@
 - **原始送出內容永遠保留**：病人每次送出的答案以 JSONB 快照存進
   `patient_form_submissions`，院方審核、修正時只改結構化表，不改快照，方便稽核與爭議追溯。
 - **最小蒐集**：不蒐集與照護無關的敏感資料（宗教、性傾向、HIV 等特種個資不在表單內）。
-  身分證字號欄位級加密，畫面上一律遮罩顯示。
+  身分證字號不保存明碼與密文，只留末四碼與 HMAC 指紋，畫面上一律遮罩顯示。
 - **跟綁定流程的關係**：本表單送出即是「基本資料已填」，院方核對身份通過即是「驗證通過」。
   這等於給了 B1–B9 一個具體提案（見 §6），但綁定流程尚未定案，此處只做預留、不綁死。
 
@@ -38,7 +38,7 @@
 | 代填者與病人關係 | `filler_relationship` | select：配偶 / 子女 / 父母 / 手足 / 看護 / 其他 | 家屬代填時 ✓ | |
 | 代填者手機 | `filler_phone` | text | 家屬代填時 ✓ | `^09\d{8}$` |
 | 病人姓名 | `full_name` | text | ✓ | 2–50 字 |
-| 身分證 / 居留證字號 | `national_id` | text | ✓ | 台灣身分證檢核碼；外籍以居留證格式檢核；**加密儲存** |
+| 身分證 / 居留證字號 | `national_id` | text | ✓ | 台灣身分證檢核碼；外籍以居留證格式檢核；**只存末四碼與指紋，不存明碼 / 密文** |
 | 出生日期 | `birth_date` | date | ✓ | 早於今天；年齡 < 18 提示需監護人 |
 | 生理性別 | `sex` | select：男 / 女 / 其他 | ✓ | 用於用藥與懷孕相關欄位顯示 |
 | 慣用語言 | `preferred_language` | select：國語 / 台語 / 客語 / 英語 / 其他 | | 供客服與衛教內容選擇 |
@@ -91,7 +91,6 @@
 
 | 欄位 | key | 型別 | 必填 | 驗證 / 說明 |
 |---|---|---|---|---|
-| 常去的醫院 / 診所 | `preferred_hospital_id` | select（`options_source=hospitals`） | | 選項來自 `GET /api/v1/liff/hospitals`；從院所 QR 連結開啟時自動預選 |
 | 健保身份 | `nhi_status` | select：一般 / 無健保 / 不確定 | | |
 | 重大傷病卡 | `catastrophic_illness_card` | bool | | |
 | 身心障礙證明 | `disability_card` | bool | | |
@@ -117,14 +116,14 @@
 
 所有表繼承 `db.Model, TimestampMixin`，主鍵 `String(32)` uuid hex，Enum 走
 `sa.Enum(..., native_enum=False)`，JSON 欄位用 `JSONB().with_variant(JSON(), "sqlite")`，
-與現有 `users` / `handoff_tickets` 一致。
+與現有 `users` / `feedback` 一致。
 
 ### 4.1 病人側（跟著 user 走，跨院共用）
 
 ```text
 patient_profiles            1:1 users            A 的純量欄位攤平成 column
   user_id PK/FK, filler_relation, filler_name, filler_relationship, filler_phone,
-  full_name, national_id_encrypted, national_id_last4, birth_date, sex,
+  full_name, national_id_last4, national_id_fingerprint, birth_date, sex,
   preferred_language, phone, email, address_city, address_district, address_street,
   height_cm, weight_kg, blood_type, rh, pregnancy_status, smoking, smoking_per_day,
   drinking, betel_nut, condition_notes, supplements,
@@ -197,7 +196,7 @@ patient_record_notes        N:1 patient_records          body, author_id, visibi
 新增 `Permission.INTAKE_WRITE_OWN = "intake:write_own"`，放進 `_PUBLIC`，
 因為 GUEST 必須能在驗證前填表；`PROFILE_*` 維持在 `_BOUND_USER`。
 
-`IntakeService`（`app/services/intake_service.py`）：步驟驗證、身分證檢核與加密、
+`IntakeService`（`app/services/intake_service.py`）：步驟驗證、身分證檢核與指紋計算、
 「無」與「未填」判斷、送出時組快照並轉狀態；透過 `container.line_client.push()` 通知病人「已收到，待院方核對」。
 
 ### 5.2 院方端（後台）
@@ -207,7 +206,7 @@ REST 端點掛在既有 `admin_bp`（`/api/v1/admin/...`）：
 | 方法 | 路徑 | 權限 | 說明 |
 |---|---|---|---|
 | GET | `/admin/patients` | `PATIENT_READ` | 列表；`status=pending / active`、關鍵字（姓名、手機、病歷號）；依 `hospital_id` 隔離 |
-| GET | `/admin/patients/<user_id>` | `PATIENT_READ` | 完整 A 資料 + 本院 B 紀錄 + 快照歷史；`national_id` 遮罩，需 `PATIENT_IDENTITY_READ` 才回明碼 |
+| GET | `/admin/patients/<user_id>` | `PATIENT_READ` | 完整 A 資料 + 本院 B 紀錄 + 快照歷史；`national_id` 一律遮罩，沒有回明碼的端點 |
 | POST | `/admin/patients/<user_id>/verify` | `PATIENT_VERIFY` | 核對身份 → 建 `patient_records` → `VERIFIED` + 指派角色 → 推播病人 |
 | POST | `/admin/patients/<user_id>/reject` | `PATIENT_VERIFY` | 退回，帶原因 |
 | PATCH | `/admin/patients/<user_id>/profile` | `PATIENT_WRITE` | 院方修正自填資料，寫 `patient_record_reviews.corrections` |
@@ -218,13 +217,14 @@ REST 端點掛在既有 `admin_bp`（`/api/v1/admin/...`）：
 
 新增權限與角色對照：
 
-| Permission | CS_AGENT | MEDICAL_STAFF | HOSPITAL_ADMIN |
+| Permission | HOSPITAL_STAFF（原 CS_AGENT） | MEDICAL_STAFF | HOSPITAL_ADMIN |
 |---|---|---|---|
 | `PATIENT_READ`（已存在） | ✓ | ✓ | ✓ |
-| `PATIENT_WRITE` | | ✓ | ✓ |
-| `PATIENT_VERIFY` | | ✓ | ✓ |
-| `PATIENT_IDENTITY_READ`（身分證明碼） | | | ✓ |
-| `ENCOUNTER_MANAGE` | | ✓ | ✓ |
+| `PATIENT_WRITE` | ✓ | | ✓ |
+| `PATIENT_VERIFY` | ✓ | | ✓ |
+| `ENCOUNTER_MANAGE` | ✓ | | ✓ |
+
+（2026-09-28 調整：管病人的是 HOSPITAL_STAFF，MEDICAL_STAFF 改管藥 / 衛教，病人資料唯讀。）
 
 `PatientRecordService`：所有寫入先過 `AccessPolicy.can_access_hospital(principal, hospital_id)`；
 `verify()` 內做「同身分證是否已被其他 LINE 帳號綁定」檢查，衝突 raise `ConflictError` 並轉 `LOCKED`。
@@ -241,12 +241,12 @@ Flask + Jinja + Bootstrap 5 render 頁面骨架，頁面內 JS 以 `fetch()` 打
 
 | 網址 | 頁面 | 主要操作 | 對應 API |
 |---|---|---|---|
-| `/admin` | 儀表板 | 待審核病人數、開放工單數、今日追蹤事項 | `GET /admin/patients?status=pending`、`GET /admin/handoffs` |
+| `/admin` | 儀表板 | 待審核病人數、待處理回饋數、今日追蹤事項 | `GET /admin/patients?status=pending`、`GET /admin/feedback` |
 | `/admin/login` | 登入 | 302 到 `/api/v1/auth/line/login?redirect_to=/admin` | 既有 LINE Login |
 | `/admin/patients` | 病人列表 | 分頁「待審核 / 已建檔」、搜尋姓名 / 手機 / 病歷號 | `GET /admin/patients` |
 | `/admin/patients/<user_id>` | 病人詳情 | 檢視 A 資料、核對通過 / 退回、修正、就診紀錄、風險警示、追蹤、備註 | `/admin/patients/<user_id>/*` |
-| `/admin/handoffs` | 真人客服工單 | 接單、回覆 | 既有 `GET /admin/handoffs`、`POST .../accept` |
-| `/admin/staff` | 人員與角色 | 指派 CS_AGENT / MEDICAL_STAFF / HOSPITAL_ADMIN | 既有 `PUT /admin/users/<id>/role` |
+| `/admin/feedback` | 意見回饋 | 查看、標記處理 | `GET /admin/feedback`、`PATCH .../{id}` |
+| `/admin/staff` | 人員與角色 | 指派 HOSPITAL_STAFF / MEDICAL_STAFF / HOSPITAL_ADMIN | 既有 `PUT /admin/users/<id>/role` |
 | `/admin/settings` | 院所設定 | 預留（Rich Menu、院所資訊） | 未來 |
 
 **登入與權限**（解決 §9 第 3 題）：不另外做 cookie session。既有的 LINE Login callback
@@ -255,7 +255,7 @@ Flask + Jinja + Bootstrap 5 render 頁面骨架，頁面內 JS 以 `fetch()` 打
 1. 頁面骨架不需驗證即可 render（骨架本身不含任何資料）。
 2. 共用的 `admin/base.html` 內建 JS：讀 `sessionStorage.access_token`；沒有就導向 `/admin/login`；
    有就先打 `GET /api/v1/auth/me`，不是 staff 角色則顯示「無權限」頁並提供登出。
-3. 所有資料請求帶 `Authorization: Bearer`，401 時用 refresh token 換新，失敗才回登入頁。
+3. 所有資料請求帶 `Authorization: Bearer`，401（到期）就回登入頁重新登入。
 4. 側欄選單依 `/api/v1/admin/permissions` 回傳的權限矩陣顯示 / 隱藏（例如 CS_AGENT 看不到「人員與角色」）。
    **真正的授權仍由 API 端 decorator 決定**，前端隱藏只是體驗。
 
@@ -287,7 +287,7 @@ SUPER_ADMIN 在列表頁多一個「院所」篩選器。
 
 ## 7. 安全與個資
 
-- `national_id` 以 `cryptography.fernet` 欄位級加密，金鑰 `PATIENT_DATA_KEY` 放 `.env`；另存 `national_id_last4` 與 SHA-256 雜湊（帶 salt）供搜尋與重複檢查。
+- `national_id` **不落 DB**：只存 `national_id_last4`（遮罩顯示）與 HMAC 指紋 `national_id_fingerprint`（金鑰 `PATIENT_DATA_KEY`，供重複檢查），系統沒有任何可還原明碼的資料；院方核對用末四碼 + 姓名 + 生日對照 HIS。
 - 所有 `/admin/patients/*` 讀取寫稽核紀錄（`who / when / which user_id / which fields`），對應既有 `AUDIT_READ`。
 - 表單輸入一律 server-side 驗證（長度、白名單 select 值、手機格式），自由文字輸出到 Jinja 依預設 autoescape。
 - 藥袋照片：上傳先驗證 MIME 與大小（≤ 5 MB），儲存到物件儲存並產生短效簽名 URL，不存 DB。
@@ -305,7 +305,7 @@ SUPER_ADMIN 在列表頁多一個「院所」篩選器。
 ## 9. 待確認問題
 
 1. **院方核對身份的方式**：櫃檯人工核對（本設計預設）、健保卡讀卡、還是院方名單自動比對？影響 B1 與綁定流程。
-2. **病人怎麼「指定」院所**：只靠步驟 6 的常去院所？還是櫃檯掃病人 LINE 上的 QR code？
+2. **病人怎麼「指定」院所**：已定案。病人不指定；院方在後台用手機或姓名 + 末四碼找到病人「加入本院」，推播 LINE 請病人自己確認「有在這家就醫」，確認後才能核對建檔。只有新增的院所看得到。
 3. **後台登入**：§5.3 預設沿用既有 `sessionStorage` + Bearer 流程；若院方需要多分頁 / 長時間登入，再改 HttpOnly cookie。
 4. **家屬代填**：一個家屬可否代填多位病人？若可，`patient_profiles` 需改為 `FAMILY` 對多個 profile 的關聯表。
 5. **診斷欄位**：是否要 ICD-10 代碼選單，還是先讓醫護自由輸入？

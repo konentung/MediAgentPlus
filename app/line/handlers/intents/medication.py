@@ -3,6 +3,7 @@
 流程（對話狀態存在 `container.conversation_state`）：
   menu → 設定「等處方箋照片」→ 使用者傳圖 → image：loading 動畫 → 下載 → 模型辨識 → 結果 Flex
   confirm → 設定「等位置」→ 使用者分享位置 → locate：依地址找同區藥局 → Carousel
+  （地址抓不到縣市時改用座標反推鄉鎮市區）
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from app.line.state_store import (
     AWAIT_PRESCRIPTION_PHOTO,
     PENDING_LOCATION,
 )
+from app.utils.geo import parse_coords
 
 logger = logging.getLogger(__name__)
 
@@ -124,19 +126,26 @@ class MedicationHandler(IntentHandler):
         ctx.reply(msg.location_prompt_messages(self._profile_address(ctx) is not None))
 
     def _action_locate(self, ctx: BotContext, params: dict[str, str]) -> None:
+        # 位置訊息帶地址 + 座標；地址可能是英文或空白，座標是保底（見 PharmacyService.find_nearby）
         address = params.get("address")
+        coords = parse_coords(params.get("lat"), params.get("lng"))
         source = params.get("source")
         if source == "profile":
-            address = self._profile_address(ctx)
+            address, coords = self._profile_address(ctx), None
         elif source == "state":
             state = self._states(ctx).pop(ctx.line_user_id)
             if state and state.action == PENDING_LOCATION:
                 address = state.payload.get("address")
-        if not address:
+                coords = parse_coords(state.payload.get("lat"), state.payload.get("lng"))
+        if not address and not coords:
             self._prompt_location(ctx, params.get("prescription_id"))
             return
         self._states(ctx).clear(ctx.line_user_id)
-        result = ctx.container.pharmacies.find_by_address(address)
+        result = ctx.container.pharmacies.find_nearby(
+            address=address,
+            lat=coords[0] if coords else None,
+            lng=coords[1] if coords else None,
+        )
         ctx.reply(
             msg.pharmacy_result_messages(result, CONTROLLED_NOTE if result["pharmacies"] else None)
         )

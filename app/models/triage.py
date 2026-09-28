@@ -1,33 +1,18 @@
-"""急診動態分流（Roadmap 第 1 項）的資料模型。
+"""急診分流（找醫院）的資料模型。
 
 - `er_snapshots`：健保署急診即時訊息的時序快照，(醫院, 回報時間) 唯一，cron 重跑不會重複。
-- `triage_advisories`：某縣市出現壅塞醫院時開立的「分流建議」，解除後保留成歷史。
-- `triage_subscriptions`：分流建議的接收者（LINE 推播 / Webhook / API 拉取），由院方後台建立，
-  身份由建立者線下核對；`hospital_id` 決定哪個院所的管理員看得到這筆訂閱。
+  只用來依使用者位置推薦急診醫院，沒有分流建議 / 接收者（2026-09-28 移除）。
 """
 
 from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import (
-    JSON,
-    Boolean,
-    DateTime,
-    ForeignKey,
-    Index,
-    Integer,
-    String,
-    Text,
-    UniqueConstraint,
-)
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Boolean, DateTime, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.extensions import db
 from app.models import TimestampMixin
-
-JsonColumn = JSONB().with_variant(JSON(), "sqlite")
 
 
 def _new_id() -> str:
@@ -54,42 +39,3 @@ class ErSnapshotModel(db.Model, TimestampMixin):
     wait_icu: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     reported_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     fetched_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
-class TriageAdvisoryModel(db.Model, TimestampMixin):
-    __tablename__ = "triage_advisories"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
-    area_code: Mapped[str] = mapped_column(String(4), nullable=False, index=True)
-    status: Mapped[str] = mapped_column(String(16), default="open", nullable=False)  # open/resolved
-    congested: Mapped[list] = mapped_column(JsonColumn, default=list, nullable=False)
-    alternatives: Mapped[list] = mapped_column(JsonColumn, default=list, nullable=False)
-    report: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    snapshot_reported_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
-    opened_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
-    resolved_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
-    last_notified_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
-    notify_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-
-
-class TriageSubscriptionModel(db.Model, TimestampMixin):
-    __tablename__ = "triage_subscriptions"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
-    kind: Mapped[str] = mapped_column(String(16), nullable=False)  # line / webhook / api
-    label: Mapped[str] = mapped_column(String(100), nullable=False)  # 例：台北市消防局勤指中心
-    area_codes: Mapped[list] = mapped_column(JsonColumn, default=list, nullable=False)  # 空 = 全國
-    user_id: Mapped[str | None] = mapped_column(
-        String(32), ForeignKey("users.id", ondelete="SET NULL"), index=True
-    )
-    webhook_url: Mapped[str | None] = mapped_column(String(500))
-    secret_encrypted: Mapped[str | None] = mapped_column(Text)  # webhook 簽章金鑰 / API key
-    secret_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
-    hospital_id: Mapped[str | None] = mapped_column(
-        String(32), ForeignKey("hospitals.id", ondelete="SET NULL"), index=True
-    )
-    created_by: Mapped[str | None] = mapped_column(String(32))
-    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    last_notified_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
-    last_error: Mapped[str | None] = mapped_column(String(300))
-    notify_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

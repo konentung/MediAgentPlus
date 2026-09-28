@@ -6,13 +6,25 @@ from typing import Any, Protocol
 
 from app.extensions import db
 from app.models.hospital import HospitalModel
-from app.repositories.base import row_to_dict
+from app.repositories.base import paginate, row_to_dict
 
 
 class HospitalRepository(Protocol):
     def get(self, hospital_id: str) -> dict[str, Any] | None: ...
     def get_many(self, hospital_ids: list[str]) -> dict[str, dict[str, Any]]: ...
-    def list(self, *, active_only: bool = True) -> list[dict[str, Any]]: ...
+    def list(
+        self, *, active_only: bool = True, exclude_clinics: bool = False
+    ) -> list[dict[str, Any]]: ...
+    def paginate(
+        self,
+        *,
+        query: str | None,
+        region: str | None,
+        tier: str | None,
+        active_only: bool,
+        page: int,
+        per_page: int,
+    ) -> tuple[list[dict[str, Any]], int]: ...
     def search_nearby(
         self,
         *,
@@ -40,11 +52,47 @@ class SqlAlchemyHospitalRepository:
         ).scalars()
         return {row.id: row_to_dict(row) for row in rows}
 
-    def list(self, *, active_only: bool = True) -> list[dict[str, Any]]:
+    def list(
+        self, *, active_only: bool = True, exclude_clinics: bool = False
+    ) -> list[dict[str, Any]]:
+        """下拉選單用；`exclude_clinics` 只留醫院層級（診所有上萬家，選單放不下）。"""
         stmt = db.select(HospitalModel).order_by(HospitalModel.name)
         if active_only:
             stmt = stmt.where(HospitalModel.active.is_(True))
+        if exclude_clinics:
+            tier = HospitalModel.capacity_tier
+            stmt = stmt.where(db.or_(tier.is_(None), tier != "clinic"))
         return [row_to_dict(r) for r in db.session.execute(stmt).scalars()]
+
+    def paginate(
+        self,
+        *,
+        query: str | None,
+        region: str | None,
+        tier: str | None,
+        active_only: bool,
+        page: int,
+        per_page: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """後台「所有院所」表格：代碼 / 名稱 / 地址關鍵字、縣市、層級篩選。"""
+        stmt = db.select(HospitalModel).order_by(HospitalModel.name, HospitalModel.id)
+        if active_only:
+            stmt = stmt.where(HospitalModel.active.is_(True))
+        if query:
+            contains = f"%{query}%"
+            stmt = stmt.where(
+                db.or_(
+                    HospitalModel.id.ilike(contains),
+                    HospitalModel.name.ilike(contains),
+                    HospitalModel.address.ilike(contains),
+                )
+            )
+        if region:
+            variants = {region, region.replace("台", "臺"), region.replace("臺", "台")}
+            stmt = stmt.where(HospitalModel.region.in_(list(variants)))
+        if tier:
+            stmt = stmt.where(HospitalModel.capacity_tier == tier)
+        return paginate(stmt, page, per_page)
 
     def list_with_coords(self, *, tiers: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
         """所有有座標的啟用院所（依距離排序時用，交給呼叫端算距離）。"""

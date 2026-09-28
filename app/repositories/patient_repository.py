@@ -29,9 +29,10 @@ from app.repositories.base import row_to_dict
 
 # profile 上不屬於表單欄位、但 Service 需要的中繼資料
 PROFILE_META_KEYS = (
-    "national_id_encrypted",
     "national_id_last4",
     "national_id_fingerprint",
+    "preferred_hospital_id",  # 不是表單欄位：由病人在 LINE 上確認院所後寫入
+    "hospital_confirmed_at",
     "completed_steps",
     "submitted_at",
     "created_at",
@@ -40,8 +41,9 @@ PROFILE_META_KEYS = (
 
 
 @dataclass
-class NationalIdCipherText:
-    encrypted: str
+class NationalIdDigest:
+    """身分證字號落 DB 的唯一形式：末四碼 + HMAC 指紋，沒有明碼也沒有密文。"""
+
     last4: str
     fingerprint: str
 
@@ -64,9 +66,13 @@ class PatientRepository(Protocol):
         step: Step,
         data: dict[str, Any],
         *,
-        national_id: NationalIdCipherText | None = None,
+        national_id: NationalIdDigest | None = None,
     ) -> dict[str, Any]: ...
     def find_user_id_by_fingerprint(self, fingerprint: str) -> str | None: ...
+    def set_hospital(self, user_id: str, hospital_id: str | None, *, confirmed: bool) -> None: ...
+    def find_unclaimed(
+        self, *, phone: str | None, name: str | None, last4: str | None
+    ) -> list[dict[str, Any]]: ...
     def add_submission(self, user_id: str, answers: dict[str, Any]) -> dict[str, Any]: ...
     def list_submissions(self, user_id: str) -> list[dict[str, Any]]: ...
     def review_latest_submission(
@@ -152,7 +158,7 @@ class SqlAlchemyPatientRepository:
         step: Step,
         data: dict[str, Any],
         *,
-        national_id: NationalIdCipherText | None = None,
+        national_id: NationalIdDigest | None = None,
     ) -> dict[str, Any]:
         row = db.session.get(PatientProfileModel, user_id)
         if row is None:
@@ -166,7 +172,6 @@ class SqlAlchemyPatientRepository:
             value = data[f.key]
             if f.key == "national_id":
                 if national_id is not None:
-                    row.national_id_encrypted = national_id.encrypted
                     row.national_id_last4 = national_id.last4
                     row.national_id_fingerprint = national_id.fingerprint
             elif kind in ("profile", "json"):
@@ -180,6 +185,58 @@ class SqlAlchemyPatientRepository:
         row.completed_steps = sorted(completed)
         db.session.commit()
         return self.get_profile(user_id) or {}
+
+    def set_hospital(self, user_id: str, hospital_id: str | None, *, confirmed: bool) -> None:
+        """病人在 LINE 上確認（或否認）就醫院所；否認就把院所清掉。
+
+        這是 `preferred_hospital_id` 唯一的寫入點（表單不問院所）。
+        """
+        row = db.session.get(PatientProfileModel, user_id)
+        if row is None:
+            return
+        row.preferred_hospital_id = hospital_id
+        row.hospital_confirmed_at = datetime.now(UTC) if (hospital_id and confirmed) else None
+        db.session.commit()
+
+    def find_unclaimed(
+        self, *, phone: str | None, name: str | None, last4: str | None
+    ) -> list[dict[str, Any]]:
+        """院所「新增病人」用：已送出、還沒被任何院所新增的病人。
+
+        只能用手機或「姓名 + 末四碼」精準比對，不做模糊搜尋。
+        """
+        stmt = (
+            db.select(PatientProfileModel, UserModel)
+            .join(UserModel, UserModel.id == PatientProfileModel.user_id)
+            .where(
+                PatientProfileModel.submitted_at.is_not(None),
+                PatientProfileModel.preferred_hospital_id.is_(None),
+                UserModel.binding_status != BindingStatus.LOCKED,
+            )
+            .order_by(PatientProfileModel.submitted_at.desc())
+            .limit(10)
+        )
+        if phone:
+            stmt = stmt.where(PatientProfileModel.phone == phone)
+        elif name and last4:
+            stmt = stmt.where(
+                PatientProfileModel.full_name == name,
+                PatientProfileModel.national_id_last4 == last4,
+            )
+        else:
+            return []
+        return [
+            {
+                "user_id": profile.user_id,
+                "full_name": profile.full_name,
+                "national_id_last4": profile.national_id_last4,
+                "birth_date": profile.birth_date.isoformat() if profile.birth_date else None,
+                "phone": profile.phone,
+                "filler_relation": profile.filler_relation,
+                "submitted_at": profile.submitted_at.isoformat() if profile.submitted_at else None,
+            }
+            for profile, user in db.session.execute(stmt)
+        ]
 
     def _replace_list(
         self, user_id: str, f: Field, kind: str, sub: str | None, items: list[Any]
@@ -320,7 +377,8 @@ class SqlAlchemyPatientRepository:
             .order_by(PatientProfileModel.submitted_at.desc())
         )
         if criteria.hospital_id is not None:
-            # 院所只看得到：指定本院為常去院所的待審核病人，或已在本院建檔的病人
+            # 院所只看得到自己「新增」的病人（preferred_hospital_id 是本院，不論病人確認了沒）
+            # 或已在本院建檔的病人；還沒被任何院所新增的病人只能用 find_unclaimed() 精準查
             stmt = stmt.where(
                 db.or_(
                     PatientProfileModel.preferred_hospital_id == criteria.hospital_id,
@@ -359,6 +417,7 @@ class SqlAlchemyPatientRepository:
                     "filler_relation": profile.filler_relation,
                     "preferred_hospital_id": profile.preferred_hospital_id,
                     "preferred_hospital_name": hospital_name,
+                    "hospital_confirmed": profile.hospital_confirmed_at is not None,
                     "submitted_at": profile.submitted_at.isoformat()
                     if profile.submitted_at
                     else None,

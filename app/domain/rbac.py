@@ -6,8 +6,8 @@
 from __future__ import annotations
 
 from app.core.exceptions import AuthorizationError
+from app.domain.enums import HOSPITAL_ROLES, Role
 from app.domain.enums import Permission as P  # noqa: N817
-from app.domain.enums import Role
 from app.domain.principal import Principal
 
 _PUBLIC: frozenset[P] = frozenset(
@@ -16,7 +16,7 @@ _PUBLIC: frozenset[P] = frozenset(
         P.CONSULT_HOSPITAL,
         P.CONSULT_MEDICATION_ONCE,
         P.CONSULT_EDUCATION_GENERIC,
-        P.HANDOFF_REQUEST,
+        P.FEEDBACK_SUBMIT,
         P.INTAKE_WRITE_OWN,
         P.PRESCRIPTION_MANAGE_OWN,
         P.REMINDER_MANAGE_OWN,
@@ -29,39 +29,36 @@ _BOUND_USER: frozenset[P] = _PUBLIC | {
     P.EDUCATION_PERSONAL,
 }
 
-# 院方人員同時也是 LINE 使用者：一般諮詢、找醫院等公開功能照樣可用
-_CS_AGENT: frozenset[P] = _PUBLIC | frozenset(
+# 院方人員同時也是 LINE 使用者：一般諮詢、找醫院等公開功能照樣可用。
+# 院內人員（管病人）：病人資料核對建檔 + 就診紀錄 + 意見回饋
+_HOSPITAL_STAFF: frozenset[P] = _PUBLIC | frozenset(
     {
-        P.HANDOFF_ACCEPT,
-        P.HANDOFF_REPLY,
+        P.FEEDBACK_MANAGE,
         P.CONVERSATION_READ,
         P.PATIENT_READ,
-        P.TRIAGE_READ,
-    }
-)
-
-_MEDICAL_STAFF: frozenset[P] = _PUBLIC | frozenset(
-    {
-        P.PATIENT_READ,
-        P.CONVERSATION_READ,
-        P.EDUCATION_CONTENT_MANAGE,
         P.PATIENT_WRITE,
         P.PATIENT_VERIFY,
         P.ENCOUNTER_MANAGE,
-        P.TRIAGE_READ,
+    }
+)
+
+# 醫護（管藥 / 醫療內容）：處方與服藥紀錄 + 衛教內容；病人資料唯讀
+_MEDICAL_STAFF: frozenset[P] = _PUBLIC | frozenset(
+    {
+        P.CONVERSATION_READ,
+        P.PATIENT_READ,
+        P.MEDICATION_MANAGE,
+        P.EDUCATION_CONTENT_MANAGE,
     }
 )
 
 _HOSPITAL_ADMIN: frozenset[P] = (
-    _CS_AGENT
+    _HOSPITAL_STAFF
     | _MEDICAL_STAFF
     | {
         P.STAFF_MANAGE,
         P.HOSPITAL_SETTINGS,
-        P.RICHMENU_MANAGE,
         P.AUDIT_READ,
-        P.PATIENT_IDENTITY_READ,
-        P.TRIAGE_SUBSCRIPTION_MANAGE,
     }
 )
 
@@ -69,19 +66,18 @@ ROLE_PERMISSIONS: dict[Role, frozenset[P]] = {
     Role.GUEST: _PUBLIC,
     Role.PATIENT: _BOUND_USER,
     Role.FAMILY: _BOUND_USER,
-    Role.CS_AGENT: _CS_AGENT,
+    Role.HOSPITAL_STAFF: _HOSPITAL_STAFF,
     Role.MEDICAL_STAFF: _MEDICAL_STAFF,
     Role.HOSPITAL_ADMIN: _HOSPITAL_ADMIN,
+    # 系統方：全部權限（含 HOSPITAL_MANAGE / REFERENCE_DATA_MANAGE / SYSTEM_MANAGE）
     Role.SUPER_ADMIN: frozenset(P),
 }
 
 # 哪些角色可以指派哪些角色（避免越權提權）
 ROLE_ASSIGNABLE_BY: dict[Role, frozenset[Role]] = {
     Role.SUPER_ADMIN: frozenset(Role),
-    # GUEST 讓院所管理員能把離職同仁降回一般使用者
-    Role.HOSPITAL_ADMIN: frozenset(
-        {Role.GUEST, Role.CS_AGENT, Role.MEDICAL_STAFF, Role.HOSPITAL_ADMIN}
-    ),
+    # GUEST 讓院所管理員能把離職同仁降回一般使用者；院方不能指派系統方角色
+    Role.HOSPITAL_ADMIN: frozenset({Role.GUEST} | HOSPITAL_ROLES),
 }
 
 

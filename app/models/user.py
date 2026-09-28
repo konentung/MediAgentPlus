@@ -19,8 +19,8 @@ class UserModel(db.Model, TimestampMixin):
     line_user_id: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
     display_name: Mapped[str | None] = mapped_column(String(255))
     picture_url: Mapped[str | None] = mapped_column(String(512))
-    # role 刻意不加 CHECK constraint：角色之後會持續新增，VARCHAR + 應用層驗證
-    # 讓「新增一個角色」不必改 migration；binding_status 則維持 CHECK constraint。
+    # role 不加 CHECK constraint：角色會持續新增，由 Role 列舉驗證，
+    # 新增角色只改 enums.py + rbac.py，不用寫 migration。binding_status 值域固定，保留 CHECK。
     role: Mapped[Role] = mapped_column(
         db.Enum(Role, name="role", native_enum=False, length=32, create_constraint=False),
         default=Role.GUEST,

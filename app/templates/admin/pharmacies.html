@@ -1,0 +1,133 @@
+{% extends "admin/base.html" %}
+{% block title %}藥局{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4 mb-0">藥局</h1>
+  <span class="small text-secondary" id="pharmacy-stats">—</span>
+</div>
+<p class="small text-secondary">
+  「去哪拿藥」找藥局用的開放資料（健保署特約藥局 + 衛福部藥局基本資料），依縣市 / 鄉鎮市區配對、依營業時段標示現在是否營業。唯讀參考資料，只有系統管理員能匯入。
+</p>
+
+<div class="card border-0 shadow-sm mb-3">
+  <div class="card-body">
+    <form class="row g-2 mb-3" id="filter-form" role="search">
+      <div class="col-md-3"><input class="form-control" id="filter-city" placeholder="縣市，例如 台北市"></div>
+      <div class="col-md-3"><input class="form-control" id="filter-district" placeholder="鄉鎮市區，例如 大安區"></div>
+      <div class="col-md-4"><input class="form-control" id="filter-q" placeholder="名稱或地址關鍵字"></div>
+      <div class="col-md-2 d-flex gap-2">
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="submit">篩選</button>
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="reset">清除</button>
+      </div>
+    </form>
+    <div class="table-responsive">
+      <table class="table table-sm table-hover align-middle mb-0">
+        <thead class="table-light"><tr><th>代碼</th><th>名稱</th><th>縣市</th><th>鄉鎮市區</th><th>地址</th><th>電話</th><th>健保特約</th><th>今日營業</th></tr></thead>
+        <tbody id="table-body"></tbody>
+      </table>
+    </div>
+    <p class="small text-secondary mt-3 mb-0 d-none" id="table-empty">沒有符合的藥局。</p>
+    <div id="pagination"></div>
+  </div>
+</div>
+
+<div class="card border-0 shadow-sm mb-3" data-perm="reference_data:manage">
+  <div class="card-header bg-white fw-bold">匯入藥局 CSV（系統管理員）</div>
+  <div class="card-body">
+    <p class="small text-secondary">
+      來源：健保署「特約醫事機構」（只取藥局列；欄位 醫事機構代碼、醫事機構種類…）或衛福部「藥局基本資料」（只補非健保特約；欄位 機構名稱、是否為健保特約藥局…）。
+      匯入一次即可，重新上傳會以代碼更新既有資料，可重跑。
+    </p>
+    <form id="import-form">
+      <div class="row g-2 align-items-end">
+        <div class="col-md-8">
+          <label class="form-label fw-bold small" for="import-file">藥局 CSV</label>
+          <input class="form-control form-control-sm" id="import-file" type="file" name="file" accept=".csv,text/csv" required>
+        </div>
+        <div class="col-md-4">
+          <button class="btn btn-sm btn-brand w-100" id="import-submit" type="submit">匯入藥局</button>
+        </div>
+      </div>
+      <div class="mt-3 d-none" id="import-progress">
+        <div class="progress" role="progressbar" aria-label="上傳進度" aria-valuemin="0" aria-valuemax="100" style="height: .5rem;">
+          <div class="progress-bar" id="import-bar" style="width: 0%"></div>
+        </div>
+        <div class="small text-secondary mt-1" id="import-status"></div>
+      </div>
+      <div class="alert small mt-3 mb-0 d-none" id="import-result"></div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+Admin.boot(async function (ctx) {
+  var statsEl = document.getElementById("pharmacy-stats"), body = document.getElementById("table-body");
+  var empty = document.getElementById("table-empty"), pager = document.getElementById("pagination");
+  var filterForm = document.getElementById("filter-form");
+  var fields = { city: document.getElementById("filter-city"), district: document.getElementById("filter-district"), q: document.getElementById("filter-q") };
+  var state = { city: "", district: "", q: "", page: 1 };
+
+  function openLabel(p) {
+    if (p.open_now === null) return "—";
+    return (p.open_now ? "營業中" : "休息") + (p.today_hours.length ? "（" + p.today_hours.join("、") + "）" : "");
+  }
+
+  async function load() {
+    var qs = "?city=" + encodeURIComponent(state.city) + "&district=" + encodeURIComponent(state.district) +
+      "&q=" + encodeURIComponent(state.q) + "&page=" + state.page;
+    var data = await ctx.api("/api/v1/admin/pharmacies" + qs);
+    statsEl.textContent = "共 " + data.total + " 筆";
+    empty.classList.toggle("d-none", data.total > 0);
+    body.innerHTML = data.items.map(function (p) {
+      return "<tr" + (p.active ? "" : " class='text-secondary'") + "><td><code>" + Admin.esc(p.id) + "</code></td><td>" + Admin.esc(p.name) +
+        "</td><td>" + Admin.esc(p.city || "—") + "</td><td>" + Admin.esc(p.district || "—") +
+        "</td><td class='small'>" + Admin.esc(p.address || "—") + "</td><td>" + Admin.esc(p.phone || "—") +
+        "</td><td>" + (p.nhi_contracted ? "是" : "否") + "</td><td class='small'>" + Admin.esc(openLabel(p)) + "</td></tr>";
+    }).join("");
+    Admin.pagination(pager, data, function (page) { state.page = page; load().catch(function (err) { Admin.toast(err.message, "danger"); }); });
+  }
+
+  filterForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    Object.keys(fields).forEach(function (k) { state[k] = fields[k].value.trim(); });
+    state.page = 1;
+    load().catch(function (err) { Admin.toast(err.message, "danger"); });
+  });
+  filterForm.addEventListener("reset", function () {
+    state = { city: "", district: "", q: "", page: 1 };
+    load().catch(function (err) { Admin.toast(err.message, "danger"); });
+  });
+
+  var form = document.getElementById("import-form");
+  if (form) {
+    var btn = document.getElementById("import-submit"), progress = document.getElementById("import-progress");
+    var bar = document.getElementById("import-bar"), status = document.getElementById("import-status"), result = document.getElementById("import-result");
+    function setProgress(pct, text) { bar.style.width = pct + "%"; status.textContent = text; }
+    form.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      var file = form.elements.file.files[0];
+      if (!file) return;
+      var sizeMB = (file.size / 1048576).toFixed(1);
+      btn.disabled = true; result.classList.add("d-none"); progress.classList.remove("d-none");
+      setProgress(0, "上傳中 0%（" + sizeMB + " MB）");
+      try {
+        var r = await Admin.upload("/api/v1/admin/pharmacies/import", file, function (pct) {
+          setProgress(pct, pct < 100 ? "上傳中 " + pct + "%（" + sizeMB + " MB）" : "上傳完成，伺服器匯入中…");
+        });
+        result.className = "alert alert-success small mt-3 mb-0";
+        result.textContent = "新增 " + r.created + "、更新 " + r.updated + "、略過 " + r.skipped;
+        form.reset();
+        state.page = 1; await load();
+      } catch (err) {
+        result.className = "alert alert-danger small mt-3 mb-0"; result.textContent = err.message;
+      } finally { btn.disabled = false; progress.classList.add("d-none"); }
+    });
+  }
+
+  await load();
+});
+</script>
+{% endblock %}

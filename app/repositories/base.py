@@ -21,3 +21,14 @@ def row_to_dict(row: object, *, exclude: tuple[str, ...] = ()) -> dict:
             value = float(value)
         result[column.key] = value
     return result
+
+
+def paginate(stmt, page: int, per_page: int) -> tuple[list[dict], int]:
+    """後台表格分頁：回傳 (該頁列, 符合條件的總筆數)。stmt 需已含 where / order_by。"""
+    from app.extensions import db
+
+    total = db.session.execute(
+        db.select(db.func.count()).select_from(stmt.order_by(None).subquery())
+    ).scalar_one()
+    rows = db.session.execute(stmt.offset((page - 1) * per_page).limit(per_page)).scalars()
+    return [row_to_dict(r) for r in rows], int(total)

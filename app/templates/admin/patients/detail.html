@@ -23,7 +23,7 @@
         <div class="d-flex flex-wrap gap-2" id="header-actions">
           <button class="btn btn-brand" data-perm="patient:verify" data-bs-toggle="modal" data-bs-target="#verify-modal" id="btn-verify">核對身份 / 建檔</button>
           <button class="btn btn-outline-danger" data-perm="patient:verify" data-bs-toggle="modal" data-bs-target="#reject-modal" id="btn-reject">退回補正</button>
-          <button class="btn btn-outline-secondary" data-perm="patient:identity_read" id="btn-reveal">顯示完整身分證</button>
+          <button class="btn btn-outline-primary" data-perm="patient:verify" id="btn-request-confirm">請病人確認就醫院所</button>
           <button class="btn btn-outline-danger" data-perm="patient:verify" id="btn-lock">鎖定帳號</button>
           <button class="btn btn-outline-success" data-perm="patient:verify" id="btn-unlock">解除鎖定</button>
         </div>
@@ -251,7 +251,7 @@ Admin.boot(async function (ctx) {
       "身分證 " + (p.national_id || "—"), "出生 " + (p.birth_date || "—"), "手機 " + (p.phone || "—"),
       p.filler_relation === "family" ? "家屬代填（" + (p.filler_name || "") + "）" : "本人填寫",
       "LINE 角色 " + label("roles", u.role),
-      "常去院所 " + Admin.hospitalName(p.preferred_hospital_id)
+      "就醫院所 " + (p.preferred_hospital_id ? Admin.hospitalName(p.preferred_hospital_id) + (p.hospital_confirmed ? "（病人已確認）" : "（尚未確認）") : "未指定（尚未確認）")
     ].join("　·　");
     document.getElementById("p-flags").innerHTML = detail.flags.filter(function (f) { return f.active; }).map(function (f) {
       return '<span class="badge ' + (LEVEL[f.level] || "text-bg-secondary") + '">' + esc(label("flag_types", f.flag_type)) + (f.note ? "：" + esc(f.note) : "") + "</span>";
@@ -269,8 +269,12 @@ Admin.boot(async function (ctx) {
     document.getElementById("btn-reject").classList.toggle("d-none", !isPending || !ctx.can("patient:verify"));
     document.getElementById("btn-lock").classList.toggle("d-none", isLocked || !ctx.can("patient:verify"));
     document.getElementById("btn-unlock").classList.toggle("d-none", !isLocked || !ctx.can("patient:verify"));
-    document.getElementById("btn-verify").disabled = !p.submitted_at || isLocked || (!r && !isPending);
-    document.getElementById("btn-verify").title = isLocked ? "請先解除鎖定" : (!p.submitted_at ? "病人尚未送出表單" : "");
+    // 核對建檔的前提：病人自己在 LINE 上確認過在本院就醫（QR 進來勾選、或後台送確認請求）
+    var myHospital = ctx.me.hospital_id;
+    var confirmedHere = !!(p.hospital_confirmed && p.preferred_hospital_id && (!myHospital || p.preferred_hospital_id === myHospital));
+    document.getElementById("btn-request-confirm").classList.toggle("d-none", !!r || !p.submitted_at || confirmedHere || isLocked || !ctx.can("patient:verify"));
+    document.getElementById("btn-verify").disabled = !p.submitted_at || isLocked || (!r && !isPending) || (!r && !confirmedHere);
+    document.getElementById("btn-verify").title = isLocked ? "請先解除鎖定" : (!p.submitted_at ? "病人尚未送出表單" : (!r && !confirmedHere ? "病人尚未確認在本院就醫，請先按「請病人確認就醫院所」" : ""));
     if (!r && !ctx.me.hospital_id) {
       document.getElementById("v-hospital-wrap").classList.remove("d-none");
       Admin.hospitalOptions(document.getElementById("v-hospital"), true);
@@ -427,18 +431,14 @@ Admin.boot(async function (ctx) {
     if (reason === null) return;
     act("POST", API + "/lock", { reason: reason }, "已鎖定帳號");
   });
+  document.getElementById("btn-request-confirm").addEventListener("click", function () {
+    if (!window.confirm("將推播 LINE 訊息請病人確認是否在本院就醫，確定？")) return;
+    act("POST", API + "/request-hospital-confirmation", {}, "已推播給病人，病人在 LINE 上按「是，我在這裡就醫」後即可核對建檔");
+  });
   document.getElementById("btn-unlock").addEventListener("click", function () {
     if (!window.confirm("解除鎖定後病人可以重新填寫資料，確定？")) return;
     act("POST", API + "/unlock", {}, "已解除鎖定");
   });
-  document.getElementById("btn-reveal").addEventListener("click", async function () {
-    try {
-      var result = await ctx.api(API + "/national-id");
-      document.querySelector('[data-value="national_id"]').textContent = result.national_id;
-      Admin.toast("已顯示完整身分證字號（此操作會被記錄）", "warning");
-    } catch (err) { Admin.toast(err.message, "danger"); }
-  });
-
   await load();
 });
 </script>

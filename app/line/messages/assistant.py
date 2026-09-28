@@ -13,7 +13,7 @@ from app.domain.enums import Intent
 from app.domain.retrieval import hit_label
 from app.line.messages.builder import MessageBuilder as M
 
-AI_FAILED_TEXT = "我暫時無法判斷你的問題，可以從下方選單選擇服務，或輸入「找真人」由客服協助你。"
+AI_FAILED_TEXT = "我暫時無法判斷你的問題，可以從下方選單選擇服務，或稍後再試一次。"
 CLARIFY_TEXT = "可以再多說一點嗎？例如哪裡不舒服、持續多久，或你想找哪一種服務。"
 DISCLAIMER = "以上整理自各醫院公開衛教資料，僅供參考，實際狀況請以醫師或原院所說明為準。"
 MAX_SOURCES = 3
@@ -46,8 +46,8 @@ def action_items(actions: list[str], liff_url: str) -> list[QuickReplyItem]:
             items.append(M.postback_item("🏠 出院衛教", Intent.DISCHARGE))
         elif action == "intake_form":
             items.append(M.uri_item("📝 填寫基本資料", liff_url))
-        elif action == "human":
-            items.append(M.postback_item("找真人", Intent.HUMAN, reason="assistant"))
+        elif action == "feedback":
+            items.append(M.postback_item("💬 意見回饋", Intent.FEEDBACK))
     return items[:13]
 
 
@@ -106,4 +106,4 @@ def _answer_bubble(text: str, sources: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def failed_messages() -> list[Message]:
-    return [M.text(AI_FAILED_TEXT, quick_replies=[M.postback_item("找真人", Intent.HUMAN)])]
+    return [M.text(AI_FAILED_TEXT, quick_replies=[M.postback_item("主選單", Intent.MENU)])]

@@ -1,4 +1,4 @@
-"""藥物諮詢 / 服藥小幫手的資料模型（Roadmap 第 4、5 項）。
+"""藥物諮詢 / 服藥小幫手的資料模型。
 
 刻意極簡：處方的藥品清單存成 JSON（不另開 items 表）、照片路徑直接掛在處方上、
 藥局 / 藥品是唯讀參考資料、提醒排程與推播紀錄各一張表。
@@ -23,7 +23,10 @@ def _new_id() -> str:
 
 
 class PrescriptionModel(db.Model, TimestampMixin):
-    """一張處方箋。`items` 是藥品清單 JSON，每項欄位見 `PrescriptionService.ITEM_FIELDS`。"""
+    """一張處方箋。`items` 是藥品清單 JSON，每項的鍵見 `PrescriptionService._item_from_extraction()`
+    （drug_name / drug_name_raw / dose_text / frequency_code / timing / duration_days / quantity /
+    instructions / nhi_code / category / confidence），修改時由 `validate_items()` 驗證。
+    """
 
     __tablename__ = "prescriptions"
 

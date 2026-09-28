@@ -4,7 +4,9 @@
 - 等處方箋照片 → 圖片交給藥物諮詢辨識；沒有狀態 → 先問「這是處方箋嗎？」
 - 等位置 → 交給找藥局 / 找醫院（找醫院用經緯度算距離）；沒有狀態 → 先記下位置再問要找什麼
 - 等藥名 → 自由文字當藥名查詢
-- 其他文字 → AI 助理（`AssistantHandler`）判斷事件後套用模組
+- 文字完全等於 `TEXT_KEYWORDS` 的關鍵字（主選單、我不舒服、找醫院、我剛出院、去哪拿藥、
+  服藥提醒、意見回饋、設定）→ 直接走該功能，**不經 AI**：這是不依賴模型的確定進入點
+- 其他自由文字 → AI 助理（`AssistantHandler`）判斷事件後套用模組
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from linebot.v3.webhooks import (
 from app.domain.enums import Intent
 from app.line.context import BotContext
 from app.line.handlers.base import EventHandler
-from app.line.intents import EMERGENCY_KEYWORDS, IntentRequest
+from app.line.intents import EMERGENCY_KEYWORDS, IntentRequest, keyword_intent
 from app.line.router import IntentRouter
 from app.line.state_store import (
     AWAIT_DRUG_NAME,
@@ -49,9 +51,11 @@ class MessageHandler(EventHandler):
             self._router.route(ctx, None)
 
     def _text_request(self, ctx: BotContext, text: str) -> IntentRequest | None:
-        """文字一律交給 AI 助理判斷事件，只有兩個例外：
-        紅旗關鍵字直接進緊急畫面（安全層，不等模型）；正在「等藥名」時當藥名查詢。
-        AI 未啟用時退回關鍵字比對（AssistantHandler 內處理）。"""
+        """文字的分派順序（前三種都不經 AI）：
+        1. 紅旗關鍵字 → 緊急畫面（安全層）
+        2. 正在「等藥名」→ 當藥名查詢
+        3. 完全等於功能關鍵字（主選單、找醫院…）→ 直接走該功能
+        4. 其餘自由文字 → AI 助理判斷事件；AI 未啟用時 AssistantHandler 再退回關鍵字包含比對"""
         states = ctx.container.conversation_state
         state = states.peek(ctx.line_user_id) if ctx.line_user_id else None
         normalized = text.strip()
@@ -64,6 +68,9 @@ class MessageHandler(EventHandler):
             return IntentRequest(Intent.MEDICATION, {"action": "lookup", "q": normalized})
         if state and state.action != PENDING_LOCATION:
             states.clear(ctx.line_user_id)  # 使用者改打字聊別的，丟掉等照片 / 等位置的狀態
+        direct = keyword_intent(normalized)
+        if direct:
+            return IntentRequest(direct, {"text": normalized})
         return IntentRequest(Intent.ASSISTANT, {"text": normalized})
 
     def _image_request(self, ctx: BotContext, message_id: str) -> IntentRequest:

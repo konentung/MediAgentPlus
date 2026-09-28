@@ -11,16 +11,20 @@ from urllib.parse import parse_qs, urlencode
 
 from app.domain.enums import Intent
 
-# Rich Menu / 文字關鍵字對照（服務地圖：主選單常駐 6 格）
+# 文字關鍵字 → 功能的「確定進入點」：使用者輸入**完全等於**這些字（去頭尾空白、不分大小寫）
+# 就直接走功能，不經 AI 判斷；只有不是關鍵字的自由文字才交給 AI（`MessageHandler._text_request`）。
+# Rich Menu 六格與 Quick Reply 用 postback，本來就不經 AI。
 TEXT_KEYWORDS: dict[str, Intent] = {
+    "主選單": Intent.MENU,
+    "選單": Intent.MENU,
+    "menu": Intent.MENU,
     "我不舒服": Intent.SYMPTOM,
     "找醫院": Intent.FIND_HOSPITAL,
     "我剛出院": Intent.DISCHARGE,
     "去哪拿藥": Intent.MEDICATION,
     "找藥局": Intent.MEDICATION,
     "服藥提醒": Intent.REMINDER,
-    "找真人": Intent.HUMAN,
-    "真人客服": Intent.HUMAN,
+    "意見回饋": Intent.FEEDBACK,
     "設定": Intent.SETTINGS,
 }
 
@@ -51,6 +55,11 @@ class IntentRequest:
             return cls(Intent.EMERGENCY, {"text": normalized})
         intent = TEXT_KEYWORDS.get(normalized)
         return cls(intent, {"text": normalized}) if intent else None
+
+
+def keyword_intent(text: str) -> Intent | None:
+    """完全等於關鍵字（去頭尾空白、不分大小寫）才算命中；「找醫院嗎」這種不算，交給 AI。"""
+    return TEXT_KEYWORDS.get(text.strip().casefold()) or TEXT_KEYWORDS.get(text.strip())
 
 
 def postback_data(intent: Intent, **params: str) -> str:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from linebot.v3.messaging import FlexMessage, TextMessage
 
 from app.core.exceptions import ExternalServiceError
@@ -175,6 +176,36 @@ def test_location_without_context_then_choose_pharmacy(post_line_event, containe
     )
     _, messages = container.line_client.replies[-1]
     assert "信義區" in messages[0].text and isinstance(messages[1], FlexMessage)
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["No. 133, Sec. 4, Nanjing E. Rd., Songshan District, Taipei City, Taiwan 105", None],
+)
+def test_location_with_english_or_missing_address_uses_coordinates(
+    post_line_event, container, address
+):
+    """手機語系是英文（或 LINE 沒附地址）時，用座標反推鄉鎮市區，不能回「無法判斷縣市」。"""
+    container.pharmacies.import_pharmacies(NHI_ROWS)
+    post_line_event(
+        _event(
+            "postback", postback={"data": postback_data(Intent.MEDICATION, action="locate_prompt")}
+        )
+    )
+    post_line_event(_location_event(address))
+    _, messages = container.line_client.replies[-1]
+    assert "台北市松山區" in messages[0].text and isinstance(messages[1], FlexMessage)
+
+    # 先傳位置、再按「找附近藥局」的路徑也要帶座標
+    post_line_event(_location_event(address))
+    post_line_event(
+        _event(
+            "postback",
+            postback={"data": postback_data(Intent.MEDICATION, action="locate", source="state")},
+        )
+    )
+    _, messages = container.line_client.replies[-1]
+    assert "台北市松山區" in messages[0].text and isinstance(messages[1], FlexMessage)
 
 
 def test_drug_lookup_by_free_text(post_line_event, container):

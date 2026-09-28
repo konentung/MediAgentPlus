@@ -2,7 +2,7 @@
 
 對應設計文件 docs/patient-form-design.md §4.1。
 純量欄位攤平在 `patient_profiles`；過敏、病史、用藥、緊急聯絡人拆表方便院方跨病人查詢；
-`patient_form_submissions` 保存每次送出的原始 JSON 快照供稽核。
+`patient_form_submissions` 保存每次送出的原始 JSON 供稽核。
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ class PatientProfileModel(db.Model, TimestampMixin):
     filler_relationship: Mapped[str | None] = mapped_column(String(16))
     filler_phone: Mapped[str | None] = mapped_column(String(20))
     full_name: Mapped[str | None] = mapped_column(String(50))
-    national_id_encrypted: Mapped[str | None] = mapped_column(String(255))
+    # 身分證字號不存明碼也不存密文：只留末四碼（遮罩顯示）與 HMAC 指紋（去重）
     national_id_last4: Mapped[str | None] = mapped_column(String(4))
     national_id_fingerprint: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
     birth_date: Mapped[str | None] = mapped_column(Date)
@@ -68,9 +68,13 @@ class PatientProfileModel(db.Model, TimestampMixin):
     condition_notes: Mapped[str | None] = mapped_column(String(500))
     has_current_medications: Mapped[str | None] = mapped_column(String(8))
     supplements: Mapped[str | None] = mapped_column(String(300))
+    # 「新增」這位病人的院所，不是表單欄位：院方在後台用手機 / 姓名 + 末四碼找到病人
+    # 按「加入本院」時寫入，病人在 LINE 上按「不是」時清空；只有這家院所看得到這位待核對病人
     preferred_hospital_id: Mapped[str | None] = mapped_column(
         String(32), ForeignKey("hospitals.id", ondelete="SET NULL"), index=True
     )
+    # 病人自己在 LINE 上按下「是，我在這裡就醫」的時間；NULL = 尚未確認，院所不能核對建檔
+    hospital_confirmed_at: Mapped[str | None] = mapped_column(db.DateTime(timezone=True))
     nhi_status: Mapped[str | None] = mapped_column(String(16))
     catastrophic_illness_card: Mapped[bool | None] = mapped_column(Boolean)
     disability_card: Mapped[bool | None] = mapped_column(Boolean)
@@ -125,7 +129,7 @@ class PatientMedicationModel(db.Model, TimestampMixin):
     dose: Mapped[str | None] = mapped_column(String(50))
     frequency: Mapped[str | None] = mapped_column(String(8))
     purpose: Mapped[str | None] = mapped_column(String(100))
-    # self_reported：病人自填；prescription：之後由處方（Roadmap 第 4 項）同步
+    # 目前只有 self_reported（病人自填）；保留欄位給日後由處方箋辨識結果同步（值 prescription）
     source: Mapped[str] = mapped_column(String(16), default="self_reported", nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -146,7 +150,7 @@ class PatientConsentModel(db.Model, TimestampMixin):
 
 
 class PatientFormSubmissionModel(db.Model, TimestampMixin):
-    """每次送出的原始快照。院方審核只改結構化表，不改這裡。"""
+    """每次送出時的原始資料。院方審核只改結構化表，不改這裡。"""
 
     __tablename__ = "patient_form_submissions"
 

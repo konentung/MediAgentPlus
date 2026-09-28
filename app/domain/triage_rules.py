@@ -46,35 +46,6 @@ AREA_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("東部 / 離島", ("45", "46", "44", "90", "91")),
 )
 
-# 鄰近縣市（分流建議找不到同縣市有餘裕的醫院時，往鄰近縣市找）；下方會補成對稱
-_ADJACENT: dict[str, tuple[str, ...]] = {
-    "01": ("31", "11"),
-    "31": ("01", "11", "32", "34"),
-    "32": ("31", "33"),
-    "12": ("33",),
-    "33": ("12", "32", "35"),
-    "34": ("31", "45"),
-    "35": ("33", "03"),
-    "03": ("35", "37", "38"),
-    "37": ("03", "38", "39"),
-    "38": ("03", "37"),
-    "39": ("37", "40"),
-    "40": ("22", "39", "05"),
-    "22": ("40",),
-    "05": ("40", "07"),
-    "07": ("05", "43"),
-    "43": ("07", "46"),
-    "45": ("34", "46"),
-    "46": ("45", "43"),
-}
-ADJACENT_AREAS: dict[str, tuple[str, ...]] = {code: () for code in AREA_NAMES}
-for _code, _neighbors in _ADJACENT.items():
-    for _n in _neighbors:
-        if _n not in ADJACENT_AREAS[_code]:
-            ADJACENT_AREAS[_code] = (*ADJACENT_AREAS[_code], _n)
-        if _code not in ADJACENT_AREAS[_n]:
-            ADJACENT_AREAS[_n] = (*ADJACENT_AREAS[_n], _code)
-
 # conT_TYPE：1=醫學中心、2=區域醫院、3=地區醫院
 TIER_LABELS: dict[str, str] = {"1": "醫學中心", "2": "區域醫院", "3": "地區醫院"}
 

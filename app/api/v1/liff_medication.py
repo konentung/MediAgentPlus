@@ -14,6 +14,7 @@ from app.core.ratelimit import rate_limit
 from app.core.responses import ok
 from app.domain.enums import Permission
 from app.domain.reminder_rules import public_rules
+from app.utils.geo import parse_coords
 
 liff_medication_bp = Blueprint("liff_medication", __name__, url_prefix="/liff")
 
@@ -91,8 +92,15 @@ def prescription_propose_schedules(prescription_id: str):
 @require_permission(Permission.CONSULT_MEDICATION_ONCE)
 @rate_limit("pharmacy_search", limit=60, per_seconds=600, by="user")
 def pharmacy_search():
-    """`?address=台北市松山區…`：依縣市 / 鄉鎮市區列出健保特約藥局。"""
-    return ok(get_container().pharmacies.find_by_address(request.args.get("address", "")))
+    """`?address=台北市松山區…` 或 `?lat=&lng=`：依縣市 / 鄉鎮市區列出健保特約藥局。"""
+    coords = parse_coords(request.args.get("lat"), request.args.get("lng"))
+    return ok(
+        get_container().pharmacies.find_nearby(
+            address=request.args.get("address") or None,
+            lat=coords[0] if coords else None,
+            lng=coords[1] if coords else None,
+        )
+    )
 
 
 @liff_medication_bp.get("/drugs")

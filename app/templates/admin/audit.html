@@ -17,7 +17,7 @@
 {% block scripts %}
 <script>
 Admin.boot(async function (ctx) {
-  var ACTION = { "patient.national_id.reveal": "讀取身分證明碼", "patient.lock": "鎖定帳號", "patient.unlock": "解除鎖定" };
+  var ACTION = { "patient.lock": "鎖定帳號", "patient.unlock": "解除鎖定" };
   var rows = await ctx.api("/api/v1/admin/audit");
   var tbody = document.getElementById("rows");
   if (!rows.length) { tbody.innerHTML = '<tr><td colspan="7" class="text-center text-secondary py-4">尚無紀錄</td></tr>'; return; }

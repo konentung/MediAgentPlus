@@ -18,9 +18,9 @@
 | 議題 | 決策 | 落地方式 |
 |---|---|---|
 | 辨識模型 / 費用 | **OpenAI API**（`OPENAI_API_KEY`，`OCR_MODEL` 預設 `gpt-4.1`）；原先的 Claude 訂閱 / Anthropic SDK 後端已於 2026-09-27 移除 | `app/integrations/llm.py` 的 `OpenAiClient` + `vision.py` 的提示詞與輸出模型 |
-| 地理編碼 | **不用地圖服務** | LINE `LocationAction` 的位置訊息自帶地址，解析縣市 / 鄉鎮市區比對 `pharmacies.city / district`；藥局表不存經緯度 |
-| 藥局資料 | 存資料表 | `pharmacies`（健保署特約 + 衛福部非特約），`flask pharmacy import` 匯入、可重跑 |
-| 藥品資料 | 匯入一次即可，不排定期更新 | `drugs`（健保用藥 E41001，同代號只留最新），`flask drug import` |
+| 地理編碼 | **不用地圖服務** | LINE `LocationAction` 的位置訊息自帶地址，解析縣市 / 鄉鎮市區比對 `pharmacies.city / district`；藥局表不存經緯度。地址抓不到縣市（英文地址 / 沒有地址）時用經緯度找最近的鄉鎮市區中心點（`app/resources/tw_districts.csv`，368 筆離線資料） |
+| 藥局資料 | 存資料表 | `pharmacies`（健保署特約 + 衛福部非特約），後台「參考資料」CSV 匯入、可重跑 |
+| 藥品資料 | 匯入一次即可，不排定期更新 | `drugs`（健保用藥 E41001，同代號只留最新），後台 CSV 匯入 |
 | 提醒對象 | **一般人也可用**，不需先驗證基本資料 | `REMINDER_MANAGE_OWN` / `PRESCRIPTION_MANAGE_OWN` 放進 `_PUBLIC`，`ReminderHandler.requires_verified=False` |
 | 辨識中的提示 | 不發「辨識中」訊息，用 **LINE loading animation** | `line_client.show_loading_animation(chat_id, 60)`，辨識完直接 reply；reply token 過期改 push |
 | 照片保留 | **完整保留**，不自動清除 | `prescriptions.image_path` 指向 `MEDIA_ROOT/<user>/<id>.bin`（Fernet 加密），LIFF 可看原圖 |
@@ -33,7 +33,7 @@
 
 1. **處方箋是共用核心**：`prescriptions` + `prescription_items` 由「拍照辨識」或「手動輸入」產生，藥局推薦與服藥提醒都從它衍生，之後串 HIS 只是多一種 `source`。
 2. **辨識結果一定要病人確認**：AI 辨識（OCR）不可直接拿來排提醒。流程固定為「辨識 → 顯示結果 → 病人確認或修改 → 才建立提醒」，避免辨識錯誤造成錯誤用藥提醒。
-3. **不做醫療判斷**：機器人只做「處方上寫什麼、幾點該吃、哪裡能領」，不做劑量建議、交互作用判讀；異常一律導向真人（`Intent.HUMAN`）或原院所藥局。
+3. **不做醫療判斷**：機器人只做「處方上寫什麼、幾點該吃、哪裡能領」，不做劑量建議、交互作用判讀；異常一律導向原院所藥局（可用意見回饋反映問題）。
 4. **沿用既有架構**：`Intent.MEDICATION` / `Intent.REMINDER` 兩個 stub 直接擴充；排程走 Flask CLI + cron，不引入 Celery；外部呼叫（OpenAI、LINE）全部包成容器內的 client，測試以假物件替換。
 5. **資料最少化**：處方箋照片含個資，預設保留 30 天供院方核對後自動清除；GUEST（未驗證）使用者的處方 7 天後清除。
 
@@ -43,7 +43,7 @@
 
 ```
 Rich Menu「去哪拿藥」
-  └─ Quick Reply：[📷 拍處方箋] [🖼 從相簿選] [🔍 輸入藥名] [📍 找附近藥局] [找真人]
+  └─ Quick Reply：[📷 拍處方箋] [🖼 從相簿選] [🔍 輸入藥名] [📍 找附近藥局] [意見回饋]
        │  （camera / cameraRoll / location 都是 LINE 內建 Quick Reply action）
        ▼
   病人送出圖片訊息
@@ -62,7 +62,7 @@ Rich Menu「去哪拿藥」
 ```
 
 未拍處方箋、直接按「找附近藥局」也可以（只依位置找健保特約藥局，不帶處方）。
-「輸入藥名」→ 查 `drugs` 資料表回覆藥品基本資料（中英文名、劑型、成分、仿單連結），查無 → 找真人（現有 stub 的設計）。
+「輸入藥名」→ 查 `drugs` 資料表回覆藥品基本資料（中英文名、劑型、成分、仿單連結），查無 → 提示改用英文學名。
 
 ### 2.2 服藥小幫手：處方 → 提醒 → 推播 → 回報
 
@@ -75,7 +75,7 @@ Rich Menu「去哪拿藥」
   ▼
 開 LIFF /liff/reminders：列出每項藥的時間、起訖日（起 = 今天，訖 = 今天 + 處方天數），病人可調整後儲存
   ▼
-cron 每 5 分鐘 `flask reminder run-due`：
+APScheduler 每 5 分鐘 `ReminderService.run_due()`（`app/scheduler.py`）：
   找出「時間到、尚未送過」的提醒 → 同一人同一時段的多顆藥合併成 1 則 Flex 推播（省推播額度）
      Flex：藥名 / 劑量清單 + [✅ 已服用] [⏰ 30 分鐘後再提醒] [⏭ 這次跳過]
   ▼
@@ -376,7 +376,7 @@ API（`app/api/v1/liff.py` 拆出 `liff_medication.py`，避免單檔過長）�
 | PATCH | `/api/v1/liff/prescriptions/{id}` | 同上 | 修改 items（`draft` 或 `confirmed` 都可改，改了提醒不自動跟著變） |
 | POST | `/api/v1/liff/prescriptions/{id}/confirm` | 同上 | `draft` → `confirmed` |
 | DELETE | `/api/v1/liff/prescriptions/{id}` | 同上 | 標 `discarded`，刪照片 |
-| GET | `/api/v1/liff/pharmacies?lat=&lng=&radius_km=` | `CONSULT_MEDICATION_ONCE` | 附近藥局（LIFF 頁面若要顯示地圖用） |
+| GET | `/api/v1/liff/pharmacies?address=` 或 `?lat=&lng=` | `CONSULT_MEDICATION_ONCE` | 同鄉鎮市區的健保特約藥局（座標只用來反推鄉鎮市區，不算距離） |
 | GET | `/api/v1/liff/drugs?q=` | 同上 | 藥品查詢 |
 | POST | `/api/v1/liff/prescriptions/{id}/schedules/propose` | `require_verified` + `REMINDER_MANAGE_OWN` | 回預設時間點（不寫入） |
 | GET / POST | `/api/v1/liff/reminders` | 同上 | 列表 / 建立（可一次多筆） |

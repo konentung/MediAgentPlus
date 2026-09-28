@@ -7,9 +7,11 @@ from app.line.context import BotContext
 from app.line.handlers.intents.assistant import AssistantHandler
 from app.line.handlers.intents.base import IntentHandler
 from app.line.handlers.intents.discharge import DischargeHandler
+from app.line.handlers.intents.feedback import FeedbackHandler
 from app.line.handlers.intents.hospital import FindHospitalHandler
-from app.line.handlers.intents.human import HumanHandoffHandler
+from app.line.handlers.intents.hospital_confirm import HospitalConfirmHandler
 from app.line.handlers.intents.medication import MedicationHandler
+from app.line.handlers.intents.menu import MenuHandler
 from app.line.handlers.intents.reminder import ReminderHandler
 from app.line.handlers.intents.settings import SettingsHandler
 from app.line.handlers.intents.symptom import EmergencyHandler, SymptomHandler
@@ -45,9 +47,11 @@ class IntentRouter:
             DischargeHandler(),
             MedicationHandler(),
             ReminderHandler(),
-            HumanHandoffHandler(),
+            FeedbackHandler(),
             SettingsHandler(),
+            HospitalConfirmHandler(),
+            MenuHandler(),
         ):
             router.register(handler)
-        router.register(AssistantHandler(router))  # 自由文字 → AI 判斷 → 套用上面的模組
+        router.register(AssistantHandler(router))
         return router
