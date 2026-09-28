@@ -4,7 +4,7 @@
 {% block content %}
 <h1 class="h4 mb-3">院所設定</h1>
 
-<div class="card border-0 shadow-sm mb-3" id="my-hospital-card">
+<div class="card mb-3" id="my-hospital-card">
   <div class="card-body">
     <h2 class="h6 fw-bold">本院資料</h2>
     <p class="small text-secondary d-none" id="my-hospital-empty">你的帳號尚未指派院所。系統管理員可在下方「所有院所」新增院所後，到「人員與角色」把你指派到該院所。</p>
@@ -19,7 +19,7 @@
   </div>
 </div>
 
-<div class="card border-0 shadow-sm mb-3" id="intake-link-card">
+<div class="card mb-3" id="intake-link-card">
   <div class="card-body">
     <h2 class="h6 fw-bold">病人填表連結</h2>
     <p class="small text-secondary">把這個連結做成 QR code 貼在櫃檯，病人在 LINE 內掃描後，表單會自動選好本院，送出的資料就會進到本院的「待核對」清單。</p>
@@ -31,8 +31,8 @@
   </div>
 </div>
 
-<div class="card border-0 shadow-sm mb-3 d-none" id="all-hospitals-card">
-  <div class="card-header bg-white d-flex justify-content-between align-items-center">
+<div class="card mb-3 d-none" id="all-hospitals-card">
+  <div class="card-header d-flex justify-content-between align-items-center">
     <span class="fw-bold">所有院所</span>
     <div class="d-flex gap-2">
       <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#import-modal">匯入 CSV</button>

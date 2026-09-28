@@ -4,30 +4,202 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}後台{% endblock %} - MediAgent+</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
-    body { background: #f5f6f8; font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", "Microsoft JhengHei", sans-serif; }
-    .sidebar { background: #1f3d36; min-height: 100vh; }
-    .sidebar .nav-link { color: rgba(255,255,255,.75); border-radius: .5rem; }
-    .sidebar .nav-link:hover, .sidebar .nav-link.active { color: #fff; background: rgba(255,255,255,.12); }
-    .brand { color: #2f6f62; }
-    .btn-brand { background: #2f6f62; border-color: #2f6f62; color: #fff; }
-    .btn-brand:hover { background: #245648; border-color: #245648; color: #fff; }
+    /* ---- MediAgent+ 品牌色票（Space Cadet / Cool Gray / Platinum / Red）---- */
+    :root {
+      --ma-ink: #2B2D42;          /* 主色：深色背景、主要文字、線條 */
+      --ma-ink-hover: #3B3E57;    /* 主色 hover 稍亮 */
+      --ma-gray: #8D99AE;         /* 輔助色：邊框、圖示、深底上的心電圖線 */
+      --ma-gray-text: #6B7489;    /* 白底上的次要文字（由 #8D99AE 加深以符合 WCAG AA） */
+      --ma-platinum: #EDF2F4;     /* 淺色背景 */
+      --ma-white: #FFFFFF;
+      --ma-red: #EF233C;          /* 強調：深色 / 白金底 */
+      --ma-red-strong: #D90429;   /* 強調：白色 / 灰藍底 */
+      --ma-border: #DDE3E8;
+      --ma-divider: #E3E8EC;
+      --ma-row-hover: #F6F8FA;
+      --ma-radius-card: 16px;
+      --ma-radius-control: 10px;
+
+      /* Bootstrap 主題覆寫 */
+      --bs-body-bg: var(--ma-platinum);
+      --bs-body-color: var(--ma-ink);
+      --bs-body-font-family: "Inter", -apple-system, BlinkMacSystemFont, "PingFang TC", "Microsoft JhengHei", sans-serif;
+      --bs-heading-color: var(--ma-ink);
+      --bs-primary: var(--ma-ink);
+      --bs-primary-rgb: 43, 45, 66;
+      --bs-secondary: var(--ma-gray-text);
+      --bs-secondary-rgb: 107, 116, 137;
+      --bs-secondary-color: var(--ma-gray-text);
+      --bs-success: var(--ma-ink);
+      --bs-success-rgb: 43, 45, 66;
+      --bs-danger: var(--ma-red-strong);
+      --bs-danger-rgb: 217, 4, 41;
+      --bs-light: var(--ma-platinum);
+      --bs-light-rgb: 237, 242, 244;
+      --bs-dark: var(--ma-ink);
+      --bs-dark-rgb: 43, 45, 66;
+      --bs-link-color: var(--ma-ink);
+      --bs-link-color-rgb: 43, 45, 66;
+      --bs-link-hover-color: var(--ma-red-strong);
+      --bs-link-hover-color-rgb: 217, 4, 41;
+      --bs-border-color: var(--ma-border);
+      --bs-border-radius: var(--ma-radius-control);
+      --bs-border-radius-sm: 8px;
+      --bs-border-radius-lg: var(--ma-radius-card);
+      --bs-code-color: var(--ma-red-strong);
+    }
+
+    body { background: var(--ma-platinum); color: var(--ma-ink); }
+    h1, h2, h3, h4, h5, h6, .h1, .h2, .h3, .h4, .h5, .h6 { font-weight: 600; color: var(--ma-ink); }
+    a { text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code { color: var(--ma-ink); background: var(--ma-platinum); padding: .1em .35em; border-radius: 6px; font-size: .9em; }
+
+    /* 焦點框：品牌紅 */
+    :focus-visible { outline: 2px solid var(--ma-red); outline-offset: 2px; }
+    .form-control:focus, .form-select:focus, .form-check-input:focus, .btn:focus-visible, .nav-link:focus-visible {
+      box-shadow: none; outline: 2px solid var(--ma-red); outline-offset: 2px;
+    }
+    .form-control:focus, .form-select:focus { border-color: var(--ma-ink); }
+
+    /* ---- Logo ---- */
+    .ma-logo { display: inline-flex; align-items: center; gap: .45rem; color: inherit; }
+    .ma-logo:hover { text-decoration: none; }
+    .ma-logo__ecg { height: 22px; width: auto; flex: none; }
+    .ma-logo__word { font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-weight: 600; font-size: 1.25rem; letter-spacing: -.01em; line-height: 1; display: inline-flex; align-items: center; gap: .15rem; }
+    .ma-logo__cross { height: .8em; width: auto; }
+
+    /* ---- Loading gate：心電圖描線動畫 ---- */
+    #gate { background: var(--ma-platinum); }
+    #gate .ma-pulse { width: 120px; height: auto; display: block; margin: 0 auto; }
+    #gate .ma-pulse polyline { stroke: var(--ma-ink); stroke-dasharray: 100; stroke-dashoffset: 100; animation: ma-trace 1.6s ease-in-out infinite; }
+    @keyframes ma-trace { 0% { stroke-dashoffset: 100; } 55% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: -100; } }
+    @media (prefers-reduced-motion: reduce) { #gate .ma-pulse polyline { animation: none; stroke-dashoffset: 0; } }
+
+    /* ---- 側邊欄 ---- */
+    .sidebar { background: var(--ma-ink); min-height: 100vh; color: var(--ma-platinum); }
+    .sidebar .ma-logo { color: var(--ma-platinum); }
+    .sidebar .ma-logo__sub { color: var(--ma-gray); font-size: .75rem; font-weight: 500; letter-spacing: .08em; }
+    .sidebar .nav-link { position: relative; color: rgba(237, 242, 244, .75); border-radius: var(--ma-radius-control); padding: .55rem .9rem; font-weight: 500; }
+    .sidebar .nav-link::before { content: ""; position: absolute; left: 0; top: 22%; bottom: 22%; width: 3px; border-radius: 3px; background: transparent; }
+    .sidebar .nav-link:hover, .sidebar .nav-link.active, .sidebar .nav-pills .nav-link.active { color: var(--ma-platinum); background: rgba(237, 242, 244, .10); }
+    .sidebar .nav-link.active::before { background: var(--ma-red); }
+    .sidebar .nav-link:focus-visible { outline-color: var(--ma-red); }
+    .sidebar .ma-me { color: var(--ma-gray); border-top: 1px solid rgba(141, 153, 174, .3); font-size: .85rem; }
+    .sidebar .ma-me #me-name { color: var(--ma-platinum); font-weight: 600; }
+    .sidebar .ma-me a { color: var(--ma-gray); }
+    .sidebar .ma-me a:hover { color: var(--ma-platinum); }
+
+    /* ---- 卡片 / 表格 / 清單 ---- */
+    .card { border: 1px solid var(--ma-border) !important; border-radius: var(--ma-radius-card); background: var(--ma-white); box-shadow: none !important; }
+    .card-header { background: var(--ma-white) !important; border-bottom: 1px solid var(--ma-divider); border-radius: var(--ma-radius-card) var(--ma-radius-card) 0 0 !important; padding: .9rem 1.25rem; font-weight: 600; color: var(--ma-ink); }
+    .card > .table-responsive:last-child, .card > .list-group:last-child { border-radius: 0 0 var(--ma-radius-card) var(--ma-radius-card); overflow: hidden; }
+    .table { --bs-table-color: var(--ma-ink); --bs-table-border-color: var(--ma-divider); --bs-table-hover-bg: var(--ma-row-hover); --bs-table-hover-color: var(--ma-ink); }
+    .table > thead.table-light, .table-light { --bs-table-bg: var(--ma-platinum); --bs-table-color: var(--ma-ink); --bs-table-border-color: var(--ma-divider); }
+    .table thead th { font-weight: 600; font-size: .85rem; letter-spacing: .01em; white-space: nowrap; border-bottom-width: 1px; }
+    .table td, .table th { padding: .7rem 1rem; }
+    .list-group { --bs-list-group-border-color: var(--ma-divider); --bs-list-group-color: var(--ma-ink); }
+    .list-group-item + .list-group-item { border-top-color: var(--ma-divider); }
+    .list-group:not(.list-group-flush) { border-radius: var(--ma-radius-card); overflow: hidden; }
+    .breadcrumb { --bs-breadcrumb-divider-color: var(--ma-gray); }
+    .breadcrumb-item.active { color: var(--ma-gray-text); }
+
+    /* ---- 按鈕 ---- */
+    .btn { border-radius: var(--ma-radius-control); font-weight: 500; white-space: nowrap; }
+    .btn-brand, .btn-primary { --bs-btn-bg: var(--ma-ink); --bs-btn-border-color: var(--ma-ink); --bs-btn-color: #fff; --bs-btn-hover-bg: var(--ma-ink-hover); --bs-btn-hover-border-color: var(--ma-ink-hover); --bs-btn-hover-color: #fff; --bs-btn-active-bg: var(--ma-ink); --bs-btn-active-border-color: var(--ma-ink); --bs-btn-active-color: #fff; --bs-btn-disabled-bg: var(--ma-gray); --bs-btn-disabled-border-color: var(--ma-gray); --bs-btn-disabled-color: #fff; }
+    .btn-outline-secondary, .btn-outline-success, .btn-outline-primary, .btn-outline-dark {
+      --bs-btn-color: var(--ma-ink); --bs-btn-border-color: var(--ma-ink); --bs-btn-bg: var(--ma-white);
+      --bs-btn-hover-bg: var(--ma-ink); --bs-btn-hover-border-color: var(--ma-ink); --bs-btn-hover-color: #fff;
+      --bs-btn-active-bg: var(--ma-ink); --bs-btn-active-border-color: var(--ma-ink); --bs-btn-active-color: #fff;
+      --bs-btn-disabled-color: var(--ma-gray); --bs-btn-disabled-border-color: var(--ma-gray);
+      border-width: 1.5px;
+    }
+    .btn-danger { --bs-btn-bg: var(--ma-red-strong); --bs-btn-border-color: var(--ma-red-strong); --bs-btn-color: #fff; --bs-btn-hover-bg: #B8031F; --bs-btn-hover-border-color: #B8031F; --bs-btn-hover-color: #fff; --bs-btn-active-bg: #B8031F; --bs-btn-active-border-color: #B8031F; --bs-btn-active-color: #fff; }
+    .btn-outline-danger { --bs-btn-color: var(--ma-red-strong); --bs-btn-border-color: var(--ma-red-strong); --bs-btn-bg: var(--ma-white); --bs-btn-hover-bg: var(--ma-red-strong); --bs-btn-hover-border-color: var(--ma-red-strong); --bs-btn-hover-color: #fff; --bs-btn-active-bg: var(--ma-red-strong); --bs-btn-active-border-color: var(--ma-red-strong); --bs-btn-active-color: #fff; border-width: 1.5px; }
+    .btn-link { --bs-btn-color: var(--ma-ink); --bs-btn-hover-color: var(--ma-red-strong); text-decoration: none; }
+    .btn-close:focus { box-shadow: none; }
+
+    /* ---- 表單 ---- */
+    .form-control, .form-select { border-color: var(--ma-border); border-radius: var(--ma-radius-control); color: var(--ma-ink); }
+    .form-control::placeholder { color: var(--ma-gray); }
+    .form-control:disabled, .form-select:disabled { background: var(--ma-platinum); color: var(--ma-gray-text); }
+    .form-label { font-weight: 500; font-size: .9rem; color: var(--ma-ink); }
+    .form-text { color: var(--ma-gray-text); }
+    .form-check-input { border-color: var(--ma-gray); }
+    .form-check-input:checked { background-color: var(--ma-ink); border-color: var(--ma-ink); }
+    .input-group > .form-control, .input-group > .form-select, .input-group > .btn { border-radius: var(--ma-radius-control); }
+    .input-group > :not(:first-child) { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+    .input-group > :not(:last-child) { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+
+    /* ---- 分頁籤 ---- */
+    .nav-tabs { --bs-nav-tabs-border-color: var(--ma-divider); --bs-nav-link-color: var(--ma-gray-text); --bs-nav-link-hover-color: var(--ma-ink); --bs-nav-tabs-link-active-color: var(--ma-ink); --bs-nav-tabs-link-active-bg: transparent; --bs-nav-tabs-link-active-border-color: transparent; }
+    .nav-tabs .nav-link { border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: 500; padding: .55rem .9rem; border-radius: 0; }
+    .nav-tabs .nav-link:hover { border-color: transparent; isolation: auto; }
+    .nav-tabs .nav-link.active { border-bottom-color: var(--ma-red); font-weight: 600; }
+
+    /* ---- 徽章：不用綠 / 黃，靠明度與圖示區分 ---- */
+    .badge { font-weight: 600; border-radius: 999px; padding: .35em .7em; letter-spacing: .01em; }
+    .text-bg-success { background: var(--ma-ink) !important; color: #fff !important; }
+    .badge.text-bg-success::before { content: "✓"; margin-right: .3em; font-weight: 700; }
+    .text-bg-warning { background: var(--ma-white) !important; color: var(--ma-ink) !important; box-shadow: inset 0 0 0 1.5px var(--ma-ink); }
+    .text-bg-danger { background: var(--ma-red-strong) !important; color: #fff !important; }
+    .text-bg-secondary { background: var(--ma-gray) !important; color: #fff !important; }
+    .text-bg-info { background: var(--ma-platinum) !important; color: var(--ma-ink) !important; }
+    .badge.text-bg-light { background: var(--ma-white) !important; color: var(--ma-gray-text) !important; border-color: var(--ma-border) !important; font-weight: 500; }
+
+    /* ---- 提示 / 對話框 / Toast ---- */
+    .alert { border-radius: var(--ma-radius-control); border: 1px solid var(--ma-border); }
+    .alert-secondary, .alert-info { --bs-alert-bg: var(--ma-platinum); --bs-alert-color: var(--ma-ink); --bs-alert-border-color: var(--ma-border); }
+    .alert-success { --bs-alert-bg: var(--ma-platinum); --bs-alert-color: var(--ma-ink); --bs-alert-border-color: var(--ma-ink); }
+    .alert-warning { --bs-alert-bg: var(--ma-white); --bs-alert-color: var(--ma-ink); --bs-alert-border-color: var(--ma-border); border-left: 3px solid var(--ma-red-strong); }
+    .alert-danger { --bs-alert-bg: var(--ma-white); --bs-alert-color: var(--ma-red-strong); --bs-alert-border-color: var(--ma-red-strong); }
+    .modal-content { border: 1px solid var(--ma-border); border-radius: var(--ma-radius-card); }
+    .modal-header, .modal-footer { border-color: var(--ma-divider); }
+    .modal-title { font-weight: 600; }
+    .toast { border-radius: var(--ma-radius-control); }
+    .toast.text-bg-success { background: var(--ma-ink) !important; }
+    .toast.text-bg-danger { background: var(--ma-red-strong) !important; }
+
+    /* ---- 儀表板統計卡 ---- */
+    .stat-card { position: relative; overflow: hidden; color: var(--ma-ink); }
+    .stat-card:hover { text-decoration: none; border-color: var(--ma-gray) !important; }
+    .stat-card .stat-card__ecg { position: absolute; left: 14px; top: 12px; width: 56px; height: auto; opacity: .35; pointer-events: none; }
+    .stat-card .stat-card__ecg polyline { stroke: var(--ma-gray); }
+    .stat-card .card-body { padding-top: 2.4rem; }
+    .stat-card .stat-card__label { color: var(--ma-gray-text); font-size: .875rem; font-weight: 500; }
+    .stat-card .stat-card__value { color: var(--ma-ink); font-weight: 600; font-size: 2.5rem; line-height: 1.1; letter-spacing: -.02em; }
+
+    main.ma-main { padding: 1.75rem 2rem; }
+    @media (max-width: 767.98px) { .sidebar { min-height: auto; } main.ma-main { padding: 1.25rem 1rem; } }
   </style>
   {% block head %}{% endblock %}
 </head>
 <body>
 <div id="gate" class="d-flex align-items-center justify-content-center" style="min-height: 100vh;">
   <div class="text-center">
-    <div class="spinner-border text-secondary" role="status"></div>
-    <p class="mt-3 text-secondary">正在確認登入狀態…</p>
+    <svg class="ma-pulse" viewBox="22 62 124 84" aria-hidden="true" focusable="false">
+      <polyline points="30,104 62,104 78,72 98,138 116,88 126,104 138,104" pathLength="100" fill="none" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"></polyline>
+    </svg>
+    <p class="mt-3 text-secondary mb-0" role="status">正在確認登入狀態…</p>
   </div>
 </div>
 
 <div id="shell" class="container-fluid d-none">
   <div class="row">
     <nav class="col-md-3 col-lg-2 sidebar p-3 d-flex flex-column" aria-label="後台選單">
-      <a class="text-white text-decoration-none fw-bold fs-5 mb-3 d-block" href="{{ url_for('admin_pages.dashboard') }}">MediAgent+ 後台</a>
+      <a class="ma-logo mb-4 mt-1 d-flex" href="{{ url_for('admin_pages.dashboard') }}" aria-label="MediAgent+ 後台">
+        <svg class="ma-logo__ecg" viewBox="22 62 124 84" aria-hidden="true" focusable="false">
+          <polyline points="30,104 62,104 78,72 98,138 116,88 126,104 138,104" fill="none" stroke="#8D99AE" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"></polyline>
+        </svg>
+        <span class="ma-logo__word">mediagent<svg class="ma-logo__cross" viewBox="0 0 30 30" aria-hidden="true" focusable="false"><rect x="0" y="9" width="30" height="12" rx="3.6" fill="#EF233C"></rect><rect x="9" y="0" width="12" height="30" rx="3.6" fill="#EF233C"></rect></svg></span>
+        <span class="visually-hidden">MediAgent+ 後台</span>
+      </a>
+      <div class="ma-logo__sub text-uppercase mb-2 px-2">院方後台</div>
       <ul class="nav nav-pills flex-column gap-1">
         <li class="nav-item"><a class="nav-link {{ 'active' if active == 'dashboard' }}" href="{{ url_for('admin_pages.dashboard') }}">儀表板</a></li>
         <li class="nav-item" data-perm="patient:read"><a class="nav-link {{ 'active' if active == 'patients' }}" href="{{ url_for('admin_pages.patients') }}">病人資料</a></li>
@@ -37,14 +209,14 @@
         <li class="nav-item" data-perm="audit:read"><a class="nav-link {{ 'active' if active == 'audit' }}" href="{{ url_for('admin_pages.audit') }}">稽核紀錄</a></li>
         <li class="nav-item"><a class="nav-link {{ 'active' if active == 'permissions' }}" href="{{ url_for('admin_pages.permissions') }}">權限矩陣</a></li>
       </ul>
-      <div class="mt-auto pt-3 border-top border-light border-opacity-25 small text-white-50">
-        <div id="me-name" class="text-white"></div>
+      <div class="ma-me mt-auto pt-3">
+        <div id="me-name"></div>
         <div id="me-role"></div>
         <div id="me-hospital"></div>
-        <a href="#" id="logout" class="text-white-50 d-inline-block mt-2">登出</a>
+        <a href="#" id="logout" class="d-inline-block mt-2">登出</a>
       </div>
     </nav>
-    <main class="col-md-9 col-lg-10 p-4">
+    <main class="col-md-9 col-lg-10 ma-main">
       <div id="toast-area" class="toast-container position-fixed top-0 end-0 p-3"></div>
       {% block content %}{% endblock %}
     </main>

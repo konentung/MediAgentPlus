@@ -4,18 +4,48 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>後台登入 - MediAgent+</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
-    body { min-height: 100vh; background: linear-gradient(160deg, #1f3d36 0%, #2f6f62 100%); font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", "Microsoft JhengHei", sans-serif; }
-    .btn-line { background: #06c755; border-color: #06c755; color: #fff; font-weight: 600; }
-    .btn-line:hover { background: #05b34c; border-color: #05b34c; color: #fff; }
+    :root {
+      --ma-ink: #2B2D42; --ma-gray: #8D99AE; --ma-gray-text: #6B7489; --ma-platinum: #EDF2F4; --ma-white: #FFFFFF;
+      --ma-red: #EF233C; --ma-red-strong: #D90429; --ma-border: #DDE3E8;
+      --bs-body-color: var(--ma-ink);
+      --bs-body-font-family: "Inter", -apple-system, BlinkMacSystemFont, "PingFang TC", "Microsoft JhengHei", sans-serif;
+      --bs-link-color: var(--ma-ink); --bs-link-color-rgb: 43, 45, 66;
+      --bs-link-hover-color: var(--ma-red-strong); --bs-link-hover-color-rgb: 217, 4, 41;
+      --bs-secondary-rgb: 107, 116, 137; --bs-secondary-color: var(--ma-gray-text);
+      --bs-border-color: var(--ma-border); --bs-border-radius: 10px;
+    }
+    body { min-height: 100vh; background: var(--ma-ink); color: var(--ma-ink); }
+    :focus-visible { outline: 2px solid var(--ma-red); outline-offset: 2px; }
+    .login-card { width: 100%; max-width: 420px; background: var(--ma-white); border: 1px solid var(--ma-border); border-radius: 16px; }
+    .login-logo { width: 96px; height: 96px; display: block; margin: 0 auto; }
+    .login-word { font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-weight: 600; font-size: 1.2rem; letter-spacing: -.01em; color: var(--ma-ink); }
+    .login-word .plus { color: var(--ma-red-strong); }
+    h1 { font-weight: 600; color: var(--ma-ink); }
+    code { color: var(--ma-ink); background: var(--ma-platinum); padding: .1em .35em; border-radius: 6px; font-size: .9em; }
+    .alert { border-radius: 10px; }
+    .alert-warning { --bs-alert-bg: var(--ma-white); --bs-alert-color: var(--ma-ink); --bs-alert-border-color: var(--ma-border); border-left: 3px solid var(--ma-red-strong); }
+    /* LINE 官方綠是唯一允許的非品牌色 */
+    .btn-line { background: #06C755; border-color: #06C755; color: #fff; font-weight: 600; border-radius: 10px; }
+    .btn-line:hover, .btn-line:focus { background: #05B34C; border-color: #05B34C; color: #fff; }
+    .login-foot { color: var(--ma-gray); font-size: .8rem; }
   </style>
 </head>
 <body class="d-flex align-items-center justify-content-center p-3">
-  <main class="card border-0 shadow-lg" style="width: 100%; max-width: 420px;">
-    <div class="card-body p-4 p-md-5 text-center">
-      <div class="text-secondary small mb-1">MediAgent+</div>
-      <h1 class="h4 fw-bold mb-3">院方後台登入</h1>
+  <main class="login-card">
+    <div class="p-4 p-md-5 text-center">
+      <svg class="login-logo mb-3" viewBox="0 0 200 200" role="img" aria-label="MediAgent+">
+        <circle cx="100" cy="100" r="99" fill="#FFFFFF" stroke="#EDF2F4" stroke-width="2"></circle>
+        <polyline points="30,104 62,104 78,72 98,138 116,88 126,104 138,104" fill="none" stroke="#2B2D42" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"></polyline>
+        <rect x="146" y="97" width="30" height="14" rx="4" fill="#D90429"></rect>
+        <rect x="154" y="89" width="14" height="30" rx="4" fill="#D90429"></rect>
+      </svg>
+      <div class="login-word mb-3">mediagent<span class="plus">+</span></div>
+      <h1 class="h4 mb-3">院方後台登入</h1>
       <p class="text-secondary small mb-4">請使用已由院所管理員指派角色的 LINE 帳號登入。登入後會回到 <code>{{ next_path }}</code>。</p>
 
       {% if error %}

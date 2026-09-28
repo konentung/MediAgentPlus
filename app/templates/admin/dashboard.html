@@ -5,33 +5,36 @@
 <h1 class="h4 mb-4">儀表板</h1>
 <div class="row g-3">
   <div class="col-sm-6 col-lg-4" data-perm="patient:read">
-    <a class="card border-0 shadow-sm text-decoration-none text-body h-100" href="{{ url_for('admin_pages.patients') }}?status=pending">
+    <a class="card stat-card text-decoration-none h-100" href="{{ url_for('admin_pages.patients') }}?status=pending">
+      <svg class="stat-card__ecg" viewBox="22 62 124 84" aria-hidden="true" focusable="false"><polyline points="30,104 62,104 78,72 98,138 116,88 126,104 138,104" fill="none" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>
       <div class="card-body">
-        <div class="text-secondary small">待核對病人</div>
-        <div class="display-6 fw-bold" id="stat-pending">—</div>
+        <div class="stat-card__label">待核對病人</div>
+        <div class="stat-card__value" id="stat-pending">—</div>
       </div>
     </a>
   </div>
   <div class="col-sm-6 col-lg-4" data-perm="patient:read">
-    <a class="card border-0 shadow-sm text-decoration-none text-body h-100" href="{{ url_for('admin_pages.patients') }}?status=active">
+    <a class="card stat-card text-decoration-none h-100" href="{{ url_for('admin_pages.patients') }}?status=active">
+      <svg class="stat-card__ecg" viewBox="22 62 124 84" aria-hidden="true" focusable="false"><polyline points="30,104 62,104 78,72 98,138 116,88 126,104 138,104" fill="none" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>
       <div class="card-body">
-        <div class="text-secondary small">到期追蹤事項</div>
-        <div class="display-6 fw-bold" id="stat-followups">—</div>
+        <div class="stat-card__label">到期追蹤事項</div>
+        <div class="stat-card__value" id="stat-followups">—</div>
       </div>
     </a>
   </div>
   <div class="col-sm-6 col-lg-4" data-perm="handoff:accept">
-    <a class="card border-0 shadow-sm text-decoration-none text-body h-100" href="{{ url_for('admin_pages.handoffs') }}">
+    <a class="card stat-card text-decoration-none h-100" href="{{ url_for('admin_pages.handoffs') }}">
+      <svg class="stat-card__ecg" viewBox="22 62 124 84" aria-hidden="true" focusable="false"><polyline points="30,104 62,104 78,72 98,138 116,88 126,104 138,104" fill="none" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>
       <div class="card-body">
-        <div class="text-secondary small">待接真人客服工單</div>
-        <div class="display-6 fw-bold" id="stat-handoffs">—</div>
+        <div class="stat-card__label">待接真人客服工單</div>
+        <div class="stat-card__value" id="stat-handoffs">—</div>
       </div>
     </a>
   </div>
 </div>
 
-<div class="card border-0 shadow-sm mt-4" data-perm="patient:read">
-  <div class="card-header bg-white fw-bold">最新待核對病人</div>
+<div class="card mt-4" data-perm="patient:read">
+  <div class="card-header">最新待核對病人</div>
   <div class="table-responsive">
     <table class="table table-hover mb-0 align-middle">
       <thead class="table-light"><tr><th>姓名</th><th>手機</th><th>填表人</th><th>送出時間</th><th></th></tr></thead>
