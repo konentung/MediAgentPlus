@@ -6,8 +6,12 @@ from collections.abc import Sequence
 from typing import Any
 
 from linebot.v3.messaging import (
+    CameraAction,
+    CameraRollAction,
     FlexContainer,
     FlexMessage,
+    LocationAction,
+    LocationMessage,
     PostbackAction,
     QuickReply,
     QuickReplyItem,
@@ -45,6 +49,26 @@ class MessageBuilder:
     @staticmethod
     def uri_item(label: str, uri: str) -> QuickReplyItem:
         return QuickReplyItem(action=URIAction(label=label, uri=uri))
+
+    @staticmethod
+    def camera_item(label: str = "📷 拍照") -> QuickReplyItem:
+        """LINE 內建相機（只在手機版 LINE 顯示）。"""
+        return QuickReplyItem(action=CameraAction(label=label))
+
+    @staticmethod
+    def camera_roll_item(label: str = "🖼 從相簿選") -> QuickReplyItem:
+        return QuickReplyItem(action=CameraRollAction(label=label))
+
+    @staticmethod
+    def location_item(label: str = "📍 分享位置") -> QuickReplyItem:
+        """LINE 內建位置分享，不需要任何地圖服務金鑰。"""
+        return QuickReplyItem(action=LocationAction(label=label))
+
+    @staticmethod
+    def location(title: str, address: str, latitude: float, longitude: float) -> LocationMessage:
+        return LocationMessage(
+            title=title[:100], address=address[:100], latitude=latitude, longitude=longitude
+        )
 
     @staticmethod
     def button_bubble(

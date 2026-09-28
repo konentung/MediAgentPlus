@@ -76,14 +76,14 @@ def test_hospital_admin_can_edit_own_hospital_only(client, make_user, auth_heade
         len(
             client.get("/api/v1/admin/hospitals?all=1", headers=auth_header(superadmin)).get_json()[
                 "data"
-            ]
+            ]["items"]
         )
         == 2
     )
 
 
 def test_staff_can_list_hospitals_but_end_user_cannot(client, make_user, auth_header):
-    agent = make_user(Role.CS_AGENT, hospital_id="H1")
+    agent = make_user(Role.HOSPITAL_STAFF, hospital_id="H1")
     assert client.get("/api/v1/admin/hospitals", headers=auth_header(agent)).status_code == 200
     patient = make_user(Role.PATIENT)
     assert client.get("/api/v1/admin/hospitals", headers=auth_header(patient)).status_code == 403
@@ -99,23 +99,6 @@ def test_unknown_hospital_is_rejected_everywhere(client, make_user, auth_header)
         headers=auth_header(superadmin),
     )
     assert resp.status_code == 422
-    # 病人選了不存在的院所
-    patient = make_user()
-    resp = client.put(
-        "/api/v1/liff/intake/steps/6",
-        json={"preferred_hospital_id": "NOPE", "partial": True},
-        headers=auth_header(patient),
-    )
-    assert resp.status_code == 422
-
-
-def test_hospital_cli(app, capsys):
-    runner = app.test_cli_runner()
-    result = runner.invoke(args=["hospital", "add", "H9", "第九診所", "--region", "台中市"])
-    assert result.exit_code == 0, result.output
-    assert "H9: 第九診所" in result.output
-    result = runner.invoke(args=["hospital", "list"])
-    assert "H9" in result.output and "第一醫院" in result.output
 
 
 NHI_CSV = (
@@ -143,7 +126,7 @@ def test_import_csv_nhi_format_and_upsert(client, make_user, auth_header):
 
     rows = {
         h["id"]: h
-        for h in client.get("/api/v1/admin/hospitals", headers=headers).get_json()["data"]
+        for h in client.get("/api/v1/admin/hospitals", headers=headers).get_json()["data"]["items"]
     }
     ntuh = rows["0401180014"]
     assert ntuh["capacity_tier"] == "medical_center" and ntuh["region"] == "臺北市"
@@ -178,11 +161,3 @@ def test_import_json_rows_template_format_and_permission(client, make_user, auth
         "/api/v1/admin/hospitals/import/template", headers=auth_header(superadmin)
     )
     assert template.status_code == 200 and "id,name,region" in template.get_data(as_text=True)
-
-
-def test_hospital_import_cli(app, tmp_path):
-    csv_path = tmp_path / "h.csv"
-    csv_path.write_text("id,name,region\nH8,第八醫院,台南市\n", encoding="utf-8")
-    result = app.test_cli_runner().invoke(args=["hospital", "import", str(csv_path)])
-    assert result.exit_code == 0, result.output
-    assert "新增 1" in result.output

@@ -1,0 +1,217 @@
+{% extends "liff/base.html" %}
+
+{% block title %}處方箋 - MediAgent+{% endblock %}
+
+{% block content %}
+<header class="d-flex align-items-center justify-content-between mb-3">
+  <h1 class="h5 brand mb-0">處方箋內容</h1>
+  <span class="badge" id="status-badge"></span>
+</header>
+
+<div class="card shadow-sm border-0 mb-3" id="photo-card">
+  <div class="card-body">
+    <button type="button" class="btn btn-outline-secondary btn-sm w-100" id="btn-photo">顯示原始照片</button>
+    <img id="photo" class="img-fluid rounded mt-2 d-none" alt="處方箋照片">
+  </div>
+</div>
+
+<form id="form" novalidate>
+  <div class="card shadow-sm border-0 mb-3">
+    <div class="card-body">
+      <div class="row g-2">
+        <div class="col-12">
+          <label class="form-label small mb-1">開立院所</label>
+          <input class="form-control" name="hospital_name" maxlength="100">
+        </div>
+        <div class="col-6">
+          <label class="form-label small mb-1">開立日期</label>
+          <input class="form-control" type="date" name="issued_on">
+        </div>
+        <div class="col-6">
+          <label class="form-label small mb-1">給藥天數</label>
+          <input class="form-control" type="number" min="0" max="3650" name="days_supply">
+        </div>
+        <div class="col-12">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" role="switch" id="chronic" name="is_chronic_refill">
+            <label class="form-check-label small" for="chronic">慢性病連續處方箋</label>
+          </div>
+        </div>
+        <div class="col-6 chronic-only">
+          <label class="form-label small mb-1">第幾次</label>
+          <input class="form-control" type="number" min="1" max="12" name="refill_seq">
+        </div>
+        <div class="col-6 chronic-only">
+          <label class="form-label small mb-1">共幾次</label>
+          <input class="form-control" type="number" min="1" max="12" name="refill_total">
+        </div>
+      </div>
+      <div id="warnings" class="mt-2"></div>
+    </div>
+  </div>
+
+  <div class="d-flex align-items-center justify-content-between mb-2">
+    <h2 class="h6 fw-bold mb-0">藥品清單</h2>
+    <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-add">＋ 新增一項</button>
+  </div>
+  <div id="items"></div>
+
+  <p class="small text-secondary mt-3">以上依處方箋內容整理，用藥疑問請洽藥師或原院所。</p>
+
+  <div class="d-grid gap-2 mt-3 mb-4">
+    <button type="submit" class="btn btn-brand" id="btn-save">儲存修改</button>
+    <button type="button" class="btn btn-outline-success" id="btn-confirm">確認內容無誤</button>
+    <a class="btn btn-outline-primary" id="btn-reminder">依此處方建立服藥提醒</a>
+    <button type="button" class="btn btn-outline-danger btn-sm" id="btn-discard">刪除這張處方</button>
+  </div>
+</form>
+
+<template id="item-template">
+  <div class="card border-0 shadow-sm mb-2 item">
+    <div class="card-body py-2">
+      <div class="row g-2">
+        <div class="col-12">
+          <input class="form-control" data-field="drug_name" placeholder="藥名（必填）" maxlength="150" required>
+        </div>
+        <div class="col-4">
+          <input class="form-control form-control-sm" data-field="dose_text" placeholder="每次用量" maxlength="50">
+        </div>
+        <div class="col-4">
+          <select class="form-select form-select-sm" data-field="frequency_code"></select>
+        </div>
+        <div class="col-4">
+          <select class="form-select form-select-sm" data-field="timing"><option value="">時機</option></select>
+        </div>
+        <div class="col-4">
+          <input class="form-control form-control-sm" type="number" min="0" max="3650" data-field="duration_days" placeholder="天數">
+        </div>
+        <div class="col-8">
+          <input class="form-control form-control-sm" data-field="instructions" placeholder="其他醫囑" maxlength="200">
+        </div>
+      </div>
+      <div class="d-flex justify-content-between align-items-center mt-1">
+        <small class="text-secondary raw"></small>
+        <button type="button" class="btn btn-link btn-sm text-danger p-0 btn-remove">移除</button>
+      </div>
+    </div>
+  </div>
+</template>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var RULES = {{ rules_json | safe }};
+  var ID = {{ prescription_id | tojson }};
+  var BASE = "/api/v1/liff/prescriptions/" + ID;
+  var STATUS = { draft: ["待確認", "text-bg-warning"], confirmed: ["已確認", "text-bg-success"] };
+  var api, current;
+
+  function q(sel, root) { return (root || document).querySelector(sel); }
+
+  function fillSelect(select, options, withEmpty) {
+    options.forEach(function (o) {
+      var opt = document.createElement("option"); opt.value = o.code; opt.textContent = o.label; select.appendChild(opt);
+    });
+  }
+
+  function addItem(item) {
+    var node = q("#item-template").content.firstElementChild.cloneNode(true);
+    fillSelect(q('[data-field="frequency_code"]', node), RULES.frequencies);
+    fillSelect(q('[data-field="timing"]', node), RULES.timings);
+    item = item || {};
+    node.querySelectorAll("[data-field]").forEach(function (el) {
+      var v = item[el.dataset.field]; if (v !== undefined && v !== null) el.value = v;
+    });
+    if (!item.frequency_code) q('[data-field="frequency_code"]', node).value = "other";
+    var raw = [];
+    if (item.drug_name_raw && item.drug_name_raw !== item.drug_name) raw.push("辨識原文：" + item.drug_name_raw);
+    if (item.category) raw.push(item.category);
+    if (typeof item.confidence === "number" && item.confidence < 0.7) raw.push("⚠ 信心較低，請核對");
+    q(".raw", node).textContent = raw.join("　");
+    node._extra = { drug_name_raw: item.drug_name_raw, nhi_code: item.nhi_code, category: item.category, confidence: item.confidence, quantity: item.quantity };
+    q(".btn-remove", node).addEventListener("click", function () { node.remove(); });
+    q("#items").appendChild(node);
+  }
+
+  function collectItems() {
+    return Array.prototype.map.call(document.querySelectorAll("#items .item"), function (node) {
+      var item = Object.assign({}, node._extra);
+      node.querySelectorAll("[data-field]").forEach(function (el) { item[el.dataset.field] = el.value || null; });
+      return item;
+    });
+  }
+
+  function render(p) {
+    current = p;
+    var s = STATUS[p.status] || [p.status, "text-bg-secondary"];
+    q("#status-badge").textContent = s[0]; q("#status-badge").className = "badge " + s[1];
+    var f = q("#form");
+    f.hospital_name.value = p.hospital_name || "";
+    f.issued_on.value = p.issued_on || "";
+    f.days_supply.value = p.days_supply || "";
+    f.is_chronic_refill.checked = !!p.is_chronic_refill;
+    f.refill_seq.value = p.refill_seq || ""; f.refill_total.value = p.refill_total || "";
+    toggleChronic();
+    q("#items").innerHTML = "";
+    (p.items || []).forEach(addItem);
+    var w = q("#warnings"); w.innerHTML = "";
+    (p.warnings || []).forEach(function (t) {
+      var div = document.createElement("div"); div.className = "alert alert-warning py-1 px-2 small mb-1"; div.textContent = "⚠ " + t; w.appendChild(div);
+    });
+    q("#btn-confirm").classList.toggle("d-none", p.status === "confirmed");
+    q("#btn-reminder").href = "/liff/reminders?prescription=" + ID;
+    q("#photo-card").classList.toggle("d-none", !p.has_image);
+  }
+
+  function toggleChronic() {
+    var on = q("#chronic").checked;
+    document.querySelectorAll(".chronic-only").forEach(function (el) { el.classList.toggle("d-none", !on); });
+  }
+
+  function body() {
+    var f = q("#form");
+    return {
+      hospital_name: f.hospital_name.value, issued_on: f.issued_on.value || null,
+      days_supply: f.days_supply.value || null, is_chronic_refill: f.is_chronic_refill.checked,
+      refill_seq: f.refill_seq.value || null, refill_total: f.refill_total.value || null,
+      items: collectItems()
+    };
+  }
+
+  async function save() {
+    try {
+      render(await api(BASE, { method: "PATCH", body: body() }));
+      LiffApp.toast("已儲存", "success");
+      return true;
+    } catch (err) { LiffApp.toast(err.message, "danger"); return false; }
+  }
+
+  LiffApp.boot(async function (ctx) {
+    api = ctx.api;
+    render(await api(BASE));
+    q("#chronic").addEventListener("change", toggleChronic);
+    q("#btn-add").addEventListener("click", function () { addItem(); });
+    q("#form").addEventListener("submit", function (e) { e.preventDefault(); save(); });
+    q("#btn-confirm").addEventListener("click", async function () {
+      if (!(await save())) return;
+      try { render(await api(BASE + "/confirm", { method: "POST" })); LiffApp.toast("已確認，可回 LINE 找藥局或建立提醒", "success"); }
+      catch (err) { LiffApp.toast(err.message, "danger"); }
+    });
+    q("#btn-discard").addEventListener("click", async function () {
+      if (!confirm("確定刪除這張處方？照片與辨識內容都會移除。")) return;
+      try { await api(BASE, { method: "DELETE" }); q("#page").innerHTML = '<div class="alert alert-secondary">已刪除，請關閉此視窗。</div>'; }
+      catch (err) { LiffApp.toast(err.message, "danger"); }
+    });
+    q("#btn-photo").addEventListener("click", async function () {
+      var img = q("#photo");
+      if (!img.classList.contains("d-none")) { img.classList.add("d-none"); return; }
+      // 圖片端點需要 Authorization header，用 fetch 取回後轉成 blob URL
+      var resp = await fetch(BASE + "/image", { headers: { Authorization: "Bearer " + sessionStorage.getItem("access_token"), "ngrok-skip-browser-warning": "1" } });
+      if (!resp.ok) { LiffApp.toast("無法載入照片", "danger"); return; }
+      img.src = URL.createObjectURL(await resp.blob()); img.classList.remove("d-none");
+    });
+  });
+})();
+</script>
+{% endblock %}

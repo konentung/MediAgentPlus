@@ -39,9 +39,9 @@
     unbound: { label: "未填寫", badge: "text-bg-secondary", hint: "填寫基本資料並經院所核對後，即可使用個人化衛教與服藥提醒。" },
     pending: { label: "等待院所核對", badge: "text-bg-warning", hint: "資料已送出、目前唯讀，院所核對身份後會透過 LINE 通知您。" },
     verified: { label: "已驗證", badge: "text-bg-success", hint: "您可以使用所有個人化功能。資料為唯讀，需要修改請於就診時告知院所人員。" },
-    locked: { label: "已鎖定", badge: "text-bg-danger", hint: "帳號因資料異常暫時鎖定，請透過主選單「找真人」聯絡客服。" }
+    locked: { label: "已鎖定", badge: "text-bg-danger", hint: "帳號因資料異常暫時鎖定，請於就診時向院所人員說明，由院方核對後解除。" }
   };
-  var SUMMARY_KEYS = [["full_name", "姓名"], ["national_id", "身分證"], ["phone", "手機"], ["preferred_hospital_id", "常去院所"]];
+  var SUMMARY_KEYS = [["full_name", "姓名"], ["national_id", "身分證"], ["phone", "手機"], ["preferred_hospital_id", "就醫院所（已向院所確認）"]];
 
   LiffApp.boot(async function (ctx) {
     var status = STATUS[ctx.principal.binding_status] || STATUS.unbound;

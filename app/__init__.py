@@ -7,7 +7,6 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from app.admin_pages import admin_pages_bp
 from app.api.v1 import api_v1_bp
-from app.cli import register_cli
 from app.core.container import ServiceContainer
 from app.core.error_handlers import register_error_handlers
 from app.core.logging import configure_logging
@@ -16,6 +15,7 @@ from app.liff_pages import liff_pages_bp
 from app.line.dispatcher import EventDispatcher
 from app.line.webhook import line_bp
 from app.pages import pages_bp
+from app.scheduler import init_scheduler
 from config import get_config
 
 
@@ -32,8 +32,8 @@ def create_app(config_name: str | None = None, container: ServiceContainer | Non
     )
     _register_blueprints(app)
     register_error_handlers(app)
-    register_cli(app)
     _register_security(app)
+    init_scheduler(app)
     return app
 
 

@@ -118,9 +118,8 @@ def test_guest_can_fill_and_submit(client, container, make_user, auth_header):
 
     # 身分證不落明碼、回前端只給遮罩
     row = db.session.get(PatientProfileModel, user.id)
-    assert row.national_id_encrypted and "A123456789" not in row.national_id_encrypted
+    assert row.national_id_fingerprint and "A123456789" not in row.national_id_fingerprint
     assert row.national_id_last4 == "6789"
-    assert container.cipher.decrypt(row.national_id_encrypted) == "A123456789"
     profile = client.get("/api/v1/liff/intake", headers=headers).get_json()["data"]["data"]
     assert profile["national_id"] == "******6789"
     assert profile["drug_allergies"][0]["substance"] == "Penicillin"
@@ -230,7 +229,7 @@ def test_liff_pages_render(client):
     resp = client.get("/liff/intake?hospital=H1")
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
-    assert "基本資料填寫" in html and '"H1"' in html and "填表人與病人身份" in html
+    assert "基本資料填寫" in html and "填表人與病人身份" in html
     assert client.get("/liff/settings").status_code == 200
 
 

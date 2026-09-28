@@ -15,6 +15,10 @@ dependencies = [
   "gunicorn>=23,<27",
   "cryptography>=43,<46",
   "redis>=5,<7",
+  "pydantic>=2.6,<3",
+  "jieba>=0.42,<1",
+  "openai>=1.50,<4",
+  "pgvector>=0.3,<1",
 ]
 
 [project.optional-dependencies]

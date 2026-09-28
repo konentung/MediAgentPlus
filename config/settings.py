@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from datetime import timedelta
 
 from dotenv import load_dotenv
@@ -29,7 +30,8 @@ class BaseConfig:
     SECRET_KEY = _env("SECRET_KEY", "dev-secret-key")
     # 信任的 reverse proxy 層數（ngrok / nginx），讓 request.remote_addr 拿到真實 IP；0 = 不信任
     TRUSTED_PROXY_COUNT = int(_env("TRUSTED_PROXY_COUNT", "0"))
-    MAX_CONTENT_LENGTH = 50 * 1024 * 1024
+    # 128MB：後台上傳健保用藥開放資料 CSV（約 96MB）
+    MAX_CONTENT_LENGTH = 128 * 1024 * 1024
     LOG_LEVEL = _env("LOG_LEVEL", "INFO")
 
     # ---- PostgreSQL ----
@@ -63,12 +65,49 @@ class BaseConfig:
     JWT_SECRET_KEY = _env("JWT_SECRET_KEY") or SECRET_KEY
     JWT_ALGORITHM = "HS256"
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(seconds=int(_env("JWT_ACCESS_EXPIRES_SECONDS", "3600")))
-    JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=int(_env("JWT_REFRESH_EXPIRES_DAYS", "30")))
+    # 沒有 refresh token：到期就重新登入。院方後台角色給較長效期（預設 8 小時）
+    JWT_STAFF_ACCESS_TOKEN_EXPIRES = timedelta(
+        seconds=int(_env("JWT_STAFF_ACCESS_EXPIRES_SECONDS", str(8 * 3600)))
+    )
 
     # ---- 病人資料欄位加密（身分證字號）----
     # Fernet 金鑰，產生方式見 .env.example。
     # 未設定時由 SECRET_KEY 衍生，僅供開發；正式環境必填（見 ProductionConfig.REQUIRED_KEYS）。
     PATIENT_DATA_KEY = _env("PATIENT_DATA_KEY")
+
+    # ---- OpenAI（對話助理與處方辨識）----
+    OPENAI_API_KEY = _env("OPENAI_API_KEY")
+    AI_MODEL = _env("AI_MODEL") or None  # 對話，預設 gpt-4.1-mini
+    OCR_MODEL = _env("OCR_MODEL") or None  # 處方辨識（看圖），預設 gpt-4.1
+    # 知識庫語意檢索用的向量模型；留空只用關鍵字檢索
+    EMBEDDING_MODEL = _env("EMBEDDING_MODEL", "text-embedding-3-small")
+    AI_TIMEOUT_SECONDS = int(_env("AI_TIMEOUT_SECONDS", "60"))
+    OCR_TIMEOUT_SECONDS = int(_env("OCR_TIMEOUT_SECONDS", "90"))
+    MEDIA_ROOT = _env("MEDIA_ROOT", "var/media")  # 處方箋照片（加密後）存放目錄
+
+    # ---- AI 對話助理 ----
+    AI_ENABLED = _env("AI_ENABLED", "true").lower() in ("1", "true", "yes")  # 關閉時退回關鍵字比對
+    AI_HISTORY_TURNS = int(_env("AI_HISTORY_TURNS", "6"))  # 帶進 prompt 的最近對話輪數
+    AI_HISTORY_TTL_SECONDS = int(_env("AI_HISTORY_TTL_SECONDS", "1800"))
+    KNOWLEDGE_TOP_K = int(_env("KNOWLEDGE_TOP_K", "4"))  # 每次檢索帶幾個知識片段
+
+    # ---- 服藥提醒 ----
+    REMINDER_WINDOW_MINUTES = int(_env("REMINDER_WINDOW_MINUTES", "15"))  # cron 允許的延遲
+    REFILL_REMINDER_DAYS_BEFORE = int(_env("REFILL_REMINDER_DAYS_BEFORE", "3"))  # 慢箋提前幾天提醒
+
+    # ---- 急診動態分流（健保署急診即時訊息，cron 每 15 分鐘 `flask triage poll`）----
+    NHI_ER_API_URL = _env(
+        "NHI_ER_API_URL", "https://info.nhi.gov.tw/api/inae4000/inae4001s01/SQL0002"
+    )
+    NHI_ER_TIMEOUT_SECONDS = int(_env("NHI_ER_TIMEOUT_SECONDS", "20"))
+    TRIAGE_STALE_MINUTES = int(_env("TRIAGE_STALE_MINUTES", "30"))  # 超過就視為過舊、查詢時即時補抓
+    TRIAGE_RETENTION_DAYS = int(_env("TRIAGE_RETENTION_DAYS", "30"))  # 快照保留天數
+
+    # ---- 程序內排程（服藥提醒推播、急診資料抓取），取代外部 cron ----
+    SCHEDULER_ENABLED = _env("SCHEDULER_ENABLED", "true").lower() in {"1", "true", "yes"}
+    # 系統管理員的 LINE userId（逗號分隔）：這些人登入 / 加好友時自動成為 SUPER_ADMIN，
+    # 其他角色都在後台「人員與角色」指派
+    SUPER_ADMIN_LINE_USER_IDS = _env("SUPER_ADMIN_LINE_USER_IDS", "")
 
 
 class DevelopmentConfig(BaseConfig):
@@ -95,6 +134,9 @@ class TestingConfig(BaseConfig):
     JWT_SECRET_KEY = "test-jwt-secret"
     PATIENT_DATA_KEY = ""  # 由 SECRET_KEY 衍生
     RATELIMIT_ENABLED = False
+    SCHEDULER_ENABLED = False
+    OPENAI_API_KEY = "test-openai-key"  # 測試以 FakeLlmClient / FakeVisionClient 替換，不會真的呼叫
+    MEDIA_ROOT = os.path.join(tempfile.gettempdir(), "mediagent-test-media")
 
 
 class ProductionConfig(BaseConfig):
@@ -109,6 +151,7 @@ class ProductionConfig(BaseConfig):
         "LINE_LOGIN_CHANNEL_SECRET",
         "LIFF_ID",
         "PATIENT_DATA_KEY",
+        "OPENAI_API_KEY",
     )
 
     @classmethod

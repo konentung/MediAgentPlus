@@ -1,4 +1,4 @@
-"""LIFF 專用端點：登入換 JWT、病人自填表（intake）、個人資料。
+"""LIFF 專用端點：登入換 JWT、病人自填表（intake）、個人資料、意見回饋。
 
 前端流程：
   liff.init({liffId}) → liff.getIDToken() → POST /api/v1/liff/auth → 取得 JWT
@@ -7,7 +7,7 @@
 表單流程（頁面在 /liff/intake，見 app/liff_pages.py）：
   GET  /api/v1/liff/intake              schema + 已填資料 + 進度
   PUT  /api/v1/liff/intake/steps/<n>    存單一步驟（body 帶 partial=true 為草稿）
-  POST /api/v1/liff/intake/submit       全表驗證 → 快照 → binding_status=PENDING
+  POST /api/v1/liff/intake/submit       全表驗證 → 存一份原始資料 → binding_status=PENDING
 """
 
 from __future__ import annotations
@@ -25,6 +25,12 @@ from app.core.exceptions import ValidationError
 from app.core.ratelimit import rate_limit
 from app.core.responses import ok
 from app.domain.enums import Permission
+from app.services.feedback_service import CATEGORIES as FEEDBACK_CATEGORIES
+
+
+def feedback_categories() -> list[dict[str, str]]:
+    return [{"value": k, "label": v} for k, v in FEEDBACK_CATEGORIES.items()]
+
 
 liff_bp = Blueprint("liff", __name__, url_prefix="/liff")
 
@@ -47,12 +53,8 @@ def liff_auth():
         identity.line_user_id, identity.display_name, identity.picture_url
     )
     principal = container.users.to_principal(user)
-    tokens = container.auth_sessions.start(
-        principal,
-        provider="liff",
-        user_agent=request.user_agent.string,
-        ip_address=request.remote_addr,
-    )
+    # 沒有 refresh token：到期後前端重新 liff.init() 換一張即可
+    tokens = container.jwt.issue(principal)
     return ok({"tokens": tokens.to_dict(), "principal": principal.to_dict()})
 
 
@@ -96,6 +98,30 @@ def intake_save_step(step_number: int):
 @require_permission(Permission.INTAKE_WRITE_OWN)
 def intake_submit():
     return ok(get_container().intake.submit(current_principal()))
+
+
+@liff_bp.get("/feedback")
+@require_permission(Permission.FEEDBACK_SUBMIT)
+def feedback_list():
+    """表單頁的類別選項與自己送過的回饋。"""
+    container = get_container()
+    return ok(
+        {
+            "categories": feedback_categories(),
+            "items": container.feedback.list_mine(current_principal()),
+        }
+    )
+
+
+@liff_bp.post("/feedback")
+@require_permission(Permission.FEEDBACK_SUBMIT)
+@rate_limit("feedback_submit", limit=10, per_seconds=3600, by="user")
+def feedback_submit():
+    """意見回饋：任何登入的 LINE 使用者都能送，不需填過病人表單。"""
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        raise ValidationError("請以 JSON 物件送出")
+    return ok(get_container().feedback.submit(current_principal(), body))
 
 
 @liff_bp.get("/profile")

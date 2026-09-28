@@ -1,4 +1,8 @@
-"""稽核紀錄：誰在什麼時候對哪位病人做了高敏感操作（例如讀取身分證明碼、鎖定 / 解鎖帳號）。"""
+"""稽核紀錄：誰在什麼時候對哪位病人做了高敏感操作（目前是鎖定 / 解鎖帳號）。
+
+動作代碼在 `PatientRecordService` 寫入處定義（`patient.lock` / `patient.unlock`），
+後台稽核頁依院所查看。
+"""
 
 from __future__ import annotations
 

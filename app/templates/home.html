@@ -48,14 +48,13 @@
 
     if (!token) { showAnonymous(); return; }
 
-    // access_token 只是快照，是否仍有效以 /auth/me 為準
+    // access_token 可能已過期，是否仍有效以 /auth/me 為準
     fetch("{{ url_for('api_v1.auth.me') }}", { headers: { Authorization: "Bearer " + token } })
       .then(function (resp) { return resp.ok ? resp.json() : Promise.reject(resp.status); })
       .then(function (body) {
         document.getElementById("display-name").textContent = body.data.display_name || "LINE 使用者";
         document.getElementById("role").textContent = body.data.role;
-        var staffRoles = ["cs_agent", "medical_staff", "hospital_admin", "super_admin"];
-        document.getElementById("admin-entry").hidden = staffRoles.indexOf(body.data.role) < 0;
+        document.getElementById("admin-entry").hidden = !body.data.is_staff;
         signedIn.hidden = false;
       })
       .catch(function () {
@@ -65,11 +64,7 @@
 
     document.getElementById("logout").addEventListener("click", function (event) {
       event.preventDefault();
-      var refresh = null;
-      try { refresh = sessionStorage.getItem("refresh_token"); } catch (err) { /* ignore */ }
-      if (refresh) {
-        navigator.sendBeacon("/api/v1/auth/logout", new Blob([JSON.stringify({ refresh_token: refresh })], { type: "application/json" }));
-      }
+      // 沒有伺服器端 session：登出就是清掉本機 token
       try { sessionStorage.clear(); } catch (err) { /* ignore */ }
       showAnonymous();
     });

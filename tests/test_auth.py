@@ -12,19 +12,17 @@ from app.domain.principal import Principal
 
 
 def test_jwt_roundtrip():
-    svc = JwtService("s", "HS256", timedelta(minutes=5), timedelta(days=1))
-    pair = svc.issue_pair(Principal(user_id="u1", role=Role.PATIENT, line_user_id="L1"))
-    claims = svc.decode(pair.access_token)
+    svc = JwtService("s", "HS256", timedelta(minutes=5))
+    issued = svc.issue(Principal(user_id="u1", role=Role.PATIENT, line_user_id="L1"))
+    claims = svc.decode(issued.access_token)
     assert claims["sub"] == "u1" and claims["role"] == "patient"
-    with pytest.raises(AuthenticationError):
-        svc.decode(pair.refresh_token, expected_type="access")
 
 
 def test_jwt_expired():
-    svc = JwtService("s", "HS256", timedelta(seconds=-1), timedelta(days=1))
-    pair = svc.issue_pair(Principal(user_id="u1", role=Role.GUEST))
+    svc = JwtService("s", "HS256", timedelta(seconds=-1))
+    issued = svc.issue(Principal(user_id="u1", role=Role.GUEST))
     with pytest.raises(AuthenticationError):
-        svc.decode(pair.access_token)
+        svc.decode(issued.access_token)
 
 
 def test_me_requires_token(client):

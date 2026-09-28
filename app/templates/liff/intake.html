@@ -59,8 +59,7 @@
 <script>
 (function () {
   var STEPS = JSON.parse(document.getElementById("intake-schema").textContent);
-  var HOSPITAL_FROM_URL = {{ hospital_id | tojson }};
-  var state = { index: 0, data: {}, completed: [], api: null, submitted: false, hospitals: [], readOnly: false };
+  var state = { index: 0, data: {}, completed: [], api: null, submitted: false, readOnly: false };
   var els = {
     form: document.getElementById("step-form"),
     title: document.getElementById("step-title"),
@@ -105,12 +104,7 @@
     if (field.type === "select") {
       var sel = el("select", { class: "form-select", name: name, id: "f-" + name });
       sel.appendChild(el("option", { value: "", text: "請選擇" }));
-      // 動態選項（院所清單）：沒填過時預選院所 QR / 連結帶入的代碼
-      var options = field.options_source === "hospitals"
-        ? state.hospitals.map(function (h) { return { value: h.id, label: h.name + (h.region ? "（" + h.region + "）" : "") }; })
-        : field.options;
-      if (field.options_source === "hospitals" && !value && HOSPITAL_FROM_URL) value = HOSPITAL_FROM_URL;
-      options.forEach(function (o) {
+      field.options.forEach(function (o) {
         var opt = el("option", { value: o.value, text: o.label });
         if (o.value === value) opt.selected = true;
         sel.appendChild(opt);
@@ -388,7 +382,6 @@
   LiffApp.boot(async function (ctx) {
     state.api = ctx.api;
     var init = await ctx.api("/api/v1/liff/intake");
-    state.hospitals = await ctx.api("/api/v1/liff/hospitals");
     state.data = init.data || {};
     state.completed = init.completed_steps || [];
     state.readOnly = !!init.read_only;
@@ -400,7 +393,7 @@
       els.banner.classList.remove("d-none");
     } else if (init.binding_status === "locked") {
       els.banner.className = "alert alert-danger small";
-      els.banner.textContent = "帳號已鎖定，請透過主選單「找真人」聯絡客服。";
+      els.banner.textContent = "帳號已鎖定，請於就診時向院所人員說明，由院方核對後解除。";
       els.banner.classList.remove("d-none");
     }
     // 唯讀從第 1 步開始瀏覽；可編輯時從第一個尚未完成的步驟開始

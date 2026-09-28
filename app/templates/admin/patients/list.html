@@ -10,6 +10,21 @@
   </form>
 </div>
 
+<div class="card border-0 shadow-sm mb-3" data-perm="patient:verify">
+  <div class="card-body">
+    <h2 class="h6 fw-bold mb-1">新增病人</h2>
+    <p class="small text-secondary mb-2">病人加好友填完表後不會自動出現在這裡。請用病人的手機號碼，或姓名加身分證末四碼找到本人，加入本院後系統會推播 LINE 請病人自己確認「有在本院就醫」，確認後才能核對建檔。</p>
+    <form class="row g-2 align-items-end" id="claim-form">
+      <div class="col-sm-3"><label class="form-label small mb-0">手機號碼</label><input class="form-control form-control-sm" name="phone" inputmode="tel" placeholder="09xxxxxxxx"></div>
+      <div class="col-auto small text-secondary pb-1">或</div>
+      <div class="col-sm-3"><label class="form-label small mb-0">姓名</label><input class="form-control form-control-sm" name="name"></div>
+      <div class="col-sm-2"><label class="form-label small mb-0">身分證末四碼</label><input class="form-control form-control-sm" name="last4" maxlength="4" inputmode="numeric"></div>
+      <div class="col-auto"><button class="btn btn-sm btn-brand" type="submit">尋找</button></div>
+    </form>
+    <div id="claim-results" class="mt-3 d-none"></div>
+  </div>
+</div>
+
 <ul class="nav nav-tabs mb-3" id="status-tabs" role="tablist">
   <li class="nav-item"><a class="nav-link" href="#" data-status="pending">待核對</a></li>
   <li class="nav-item"><a class="nav-link" href="#" data-status="active">已建檔</a></li>
@@ -21,7 +36,7 @@
   <div class="table-responsive">
     <table class="table table-hover align-middle mb-0">
       <thead class="table-light">
-        <tr><th>姓名</th><th>身分證末四碼</th><th>出生日期</th><th>手機</th><th>填表人</th><th>常去院所</th><th>病歷號</th><th>狀態</th><th>送出時間</th><th></th></tr>
+        <tr><th>姓名</th><th>身分證末四碼</th><th>出生日期</th><th>手機</th><th>填表人</th><th>就醫院所</th><th>病歷號</th><th>狀態</th><th>送出時間</th><th></th></tr>
       </thead>
       <tbody id="rows"><tr><td colspan="10" class="text-center text-secondary py-4">載入中…</td></tr></tbody>
     </table>
@@ -57,7 +72,7 @@ Admin.boot(async function (ctx) {
         "<td>" + Admin.esc(p.birth_date) + "</td>" +
         "<td>" + Admin.esc(p.phone) + "</td>" +
         "<td>" + (p.filler_relation === "family" ? "家屬代填" : "本人") + "</td>" +
-        "<td>" + Admin.esc(p.preferred_hospital_name || Admin.hospitalName(p.preferred_hospital_id)) + "</td>" +
+        "<td>" + (p.preferred_hospital_id ? Admin.esc(p.preferred_hospital_name || Admin.hospitalName(p.preferred_hospital_id)) + (p.hospital_confirmed ? ' <span class="badge text-bg-success">病人已確認</span>' : ' <span class="badge text-bg-warning">待病人確認</span>') : '<span class="text-secondary">未指定</span>') + "</td>" +
         "<td>" + Admin.esc(p.medical_record_no || "—") + "</td>" +
         '<td><span class="badge ' + (BADGE[p.binding_status] || "text-bg-secondary") + '">' + Admin.esc(Admin.label("binding_statuses", p.binding_status)) + "</span></td>" +
         "<td class='small text-secondary'>" + Admin.fmtDate(p.submitted_at) + "</td>" +
@@ -72,6 +87,38 @@ Admin.boot(async function (ctx) {
   document.getElementById("search-form").addEventListener("submit", function (e) {
     e.preventDefault(); state.q = searchInput.value.trim(); load();
   });
+  // 新增病人：精準比對還沒被任何院所新增的病人 → 加入本院並推播 LINE 請病人確認
+  if (ctx.can("patient:verify")) {
+    var claimForm = document.getElementById("claim-form"), claimBox = document.getElementById("claim-results");
+    claimForm.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      var f = claimForm.elements;
+      var qs = f.phone.value.trim() ? "phone=" + encodeURIComponent(f.phone.value.trim())
+        : "name=" + encodeURIComponent(f.name.value.trim()) + "&last4=" + encodeURIComponent(f.last4.value.trim());
+      try {
+        var found = await ctx.api("/api/v1/admin/patients/unclaimed?" + qs);
+        claimBox.classList.remove("d-none");
+        if (!found.length) { claimBox.innerHTML = '<div class="text-secondary small">找不到符合的病人：可能還沒填表送出、資料不一致，或已由其他院所新增。</div>'; return; }
+        claimBox.innerHTML = '<div class="table-responsive"><table class="table table-sm align-middle mb-0"><thead class="table-light"><tr><th>姓名</th><th>身分證末四碼</th><th>出生日期</th><th>手機</th><th>填表人</th><th>送出時間</th><th></th></tr></thead><tbody>' +
+          found.map(function (p) {
+            return "<tr><td class='fw-semibold'>" + Admin.esc(p.full_name) + "</td><td>****" + Admin.esc(p.national_id_last4) + "</td><td>" + Admin.esc(p.birth_date) + "</td><td>" + Admin.esc(p.phone) + "</td><td>" + (p.filler_relation === "family" ? "家屬代填" : "本人") + "</td><td class='small text-secondary'>" + Admin.fmtDate(p.submitted_at) + "</td>" +
+              '<td class="text-end"><button class="btn btn-sm btn-brand" data-claim="' + Admin.esc(p.user_id) + '">加入本院並請病人確認</button></td></tr>';
+          }).join("") + "</tbody></table></div>";
+        claimBox.querySelectorAll("[data-claim]").forEach(function (b) {
+          b.addEventListener("click", async function () {
+            b.disabled = true;
+            try {
+              await ctx.api("/api/v1/admin/patients/" + b.getAttribute("data-claim") + "/request-hospital-confirmation", { method: "POST", body: {} });
+              Admin.toast("已加入本院並推播給病人，病人在 LINE 上確認後即可核對建檔");
+              claimBox.classList.add("d-none"); claimForm.reset();
+              state.status = "pending"; await load();
+            } catch (err) { Admin.toast(err.message, "danger"); b.disabled = false; }
+          });
+        });
+      } catch (err) { Admin.toast(err.message, "danger"); }
+    });
+  }
+
   await load();
 });
 </script>

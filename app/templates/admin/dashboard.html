@@ -20,11 +20,11 @@
       </div>
     </a>
   </div>
-  <div class="col-sm-6 col-lg-4" data-perm="handoff:accept">
-    <a class="card border-0 shadow-sm text-decoration-none text-body h-100" href="{{ url_for('admin_pages.handoffs') }}">
+  <div class="col-sm-6 col-lg-4" data-perm="feedback:manage">
+    <a class="card border-0 shadow-sm text-decoration-none text-body h-100" href="{{ url_for('admin_pages.feedback') }}">
       <div class="card-body">
-        <div class="text-secondary small">待接真人客服工單</div>
-        <div class="display-6 fw-bold" id="stat-handoffs">—</div>
+        <div class="text-secondary small">待處理意見回饋</div>
+        <div class="display-6 fw-bold" id="stat-feedback">—</div>
       </div>
     </a>
   </div>
@@ -48,7 +48,7 @@ Admin.boot(async function (ctx) {
   var stats = await ctx.api("/api/v1/admin/dashboard");
   document.getElementById("stat-pending").textContent = stats.pending_patients;
   document.getElementById("stat-followups").textContent = stats.due_follow_ups;
-  document.getElementById("stat-handoffs").textContent = stats.open_handoffs;
+  document.getElementById("stat-feedback").textContent = stats.open_feedback;
 
   var rows = await ctx.api("/api/v1/admin/patients?status=pending");
   var tbody = document.getElementById("recent-pending");

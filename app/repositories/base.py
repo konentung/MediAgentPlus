@@ -1,38 +1,6 @@
-"""Repository 共用基底：in-memory 泛型儲存，供尚未接上資料庫前使用。"""
+"""Repository 共用工具。"""
 
 from __future__ import annotations
-
-from collections.abc import Callable, Iterator
-from typing import Generic, TypeVar
-
-T = TypeVar("T")
-
-
-class InMemoryStore(Generic[T]):
-    """以 dict 模擬資料表，鍵值由 key_fn 決定。"""
-
-    def __init__(self, key_fn: Callable[[T], str]) -> None:
-        self._key_fn = key_fn
-        self._rows: dict[str, T] = {}
-
-    def get(self, key: str) -> T | None:
-        return self._rows.get(key)
-
-    def save(self, row: T) -> T:
-        self._rows[self._key_fn(row)] = row
-        return row
-
-    def delete(self, key: str) -> None:
-        self._rows.pop(key, None)
-
-    def find_one(self, predicate: Callable[[T], bool]) -> T | None:
-        return next((row for row in self._rows.values() if predicate(row)), None)
-
-    def __iter__(self) -> Iterator[T]:
-        return iter(list(self._rows.values()))
-
-    def __len__(self) -> int:
-        return len(self._rows)
 
 
 def row_to_dict(row: object, *, exclude: tuple[str, ...] = ()) -> dict:
@@ -53,3 +21,14 @@ def row_to_dict(row: object, *, exclude: tuple[str, ...] = ()) -> dict:
             value = float(value)
         result[column.key] = value
     return result
+
+
+def paginate(stmt, page: int, per_page: int) -> tuple[list[dict], int]:
+    """後台表格分頁：回傳 (該頁列, 符合條件的總筆數)。stmt 需已含 where / order_by。"""
+    from app.extensions import db
+
+    total = db.session.execute(
+        db.select(db.func.count()).select_from(stmt.order_by(None).subquery())
+    ).scalar_one()
+    rows = db.session.execute(stmt.offset((page - 1) * per_page).limit(per_page)).scalars()
+    return [row_to_dict(r) for r in rows], int(total)

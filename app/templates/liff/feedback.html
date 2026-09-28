@@ -1,0 +1,140 @@
+{% extends "liff/base.html" %}
+
+{% block title %}意見回饋 - MediAgent+{% endblock %}
+
+{% block content %}
+<header class="mb-3">
+  <h1 class="h5 brand mb-1">意見回饋</h1>
+  <p class="small text-secondary mb-0">功能問題、內容有誤或任何建議都可以留言，院方與開發團隊會看。這裡沒有真人客服，緊急狀況請撥 119。</p>
+</header>
+
+<form id="feedback-form" class="card shadow-sm border-0 mb-3" novalidate>
+  <div class="card-body">
+    <div class="mb-3">
+      <label class="form-label" for="category">類別</label>
+      <select class="form-select" id="category" name="category" required></select>
+    </div>
+    <div class="mb-3">
+      <label class="form-label" for="content">內容</label>
+      <textarea class="form-control" id="content" name="content" rows="5" maxlength="2000" required placeholder="請描述遇到的狀況或建議，至少 5 個字"></textarea>
+      <div class="form-text text-end"><span id="content-count">0</span> / 2000</div>
+    </div>
+    <div class="mb-3">
+      <label class="form-label" for="contact">聯絡方式（選填）</label>
+      <input class="form-control" id="contact" name="contact" maxlength="120" placeholder="電話或 Email，需要回覆時才填">
+    </div>
+    <div class="alert alert-danger d-none" id="form-error" role="alert"></div>
+    <div class="d-grid">
+      <button class="btn btn-brand" type="submit" id="btn-submit">送出</button>
+    </div>
+  </div>
+</form>
+
+<div class="card shadow-sm border-0 mb-3 d-none" id="done-card">
+  <div class="card-body text-center">
+    <div class="fs-1">✅</div>
+    <p class="fw-bold mb-1">已收到你的回饋，謝謝！</p>
+    <p class="small text-secondary mb-3">院方或開發團隊看過後會在後台標記處理；有留聯絡方式才會主動聯繫。</p>
+    <div class="d-grid gap-2">
+      <button class="btn btn-outline-secondary" type="button" id="btn-another">再填一則</button>
+      <button class="btn btn-brand" type="button" id="btn-close">回到 LINE</button>
+    </div>
+  </div>
+</div>
+
+<div class="card shadow-sm border-0 d-none" id="history-card">
+  <div class="card-body">
+    <h2 class="h6 fw-bold">我送出的回饋</h2>
+    <ul class="list-group list-group-flush small" id="history"></ul>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var STATUS_LABEL = { open: "待處理", resolved: "已處理" };
+  var categories = {};
+
+  function renderHistory(items) {
+    var card = document.getElementById("history-card");
+    var list = document.getElementById("history");
+    list.innerHTML = "";
+    if (!items.length) { card.classList.add("d-none"); return; }
+    items.forEach(function (f) {
+      var li = document.createElement("li");
+      li.className = "list-group-item px-0";
+      var head = document.createElement("div");
+      head.className = "d-flex justify-content-between text-secondary";
+      head.textContent = (categories[f.category] || f.category) + " · " + (f.created_at || "").slice(0, 10);
+      var badge = document.createElement("span");
+      badge.className = "badge " + (f.status === "open" ? "text-bg-warning" : "text-bg-success");
+      badge.textContent = STATUS_LABEL[f.status] || f.status;
+      head.appendChild(badge);
+      var body = document.createElement("div");
+      body.style.whiteSpace = "pre-wrap";
+      body.textContent = f.content;
+      li.appendChild(head); li.appendChild(body);
+      list.appendChild(li);
+    });
+    card.classList.remove("d-none");
+  }
+
+  LiffApp.boot(async function (ctx) {
+    var form = document.getElementById("feedback-form");
+    var select = document.getElementById("category");
+    var content = document.getElementById("content");
+    var errorBox = document.getElementById("form-error");
+
+    async function load() {
+      var data = await ctx.api("/api/v1/liff/feedback");
+      select.innerHTML = "";
+      data.categories.forEach(function (c) {
+        categories[c.value] = c.label;
+        var opt = document.createElement("option");
+        opt.value = c.value; opt.textContent = c.label;
+        select.appendChild(opt);
+      });
+      renderHistory(data.items || []);
+    }
+
+    content.addEventListener("input", function () {
+      document.getElementById("content-count").textContent = content.value.length;
+    });
+
+    form.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      errorBox.classList.add("d-none");
+      var btn = document.getElementById("btn-submit");
+      btn.disabled = true;
+      try {
+        await ctx.api("/api/v1/liff/feedback", {
+          method: "POST",
+          body: { category: select.value, content: content.value.trim(), contact: document.getElementById("contact").value.trim() }
+        });
+        form.classList.add("d-none");
+        document.getElementById("done-card").classList.remove("d-none");
+        await load();
+      } catch (err) {
+        errorBox.textContent = err.message || "送出失敗，請稍後再試";
+        errorBox.classList.remove("d-none");
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById("btn-another").addEventListener("click", function () {
+      form.reset();
+      document.getElementById("content-count").textContent = "0";
+      document.getElementById("done-card").classList.add("d-none");
+      form.classList.remove("d-none");
+    });
+    document.getElementById("btn-close").addEventListener("click", function () {
+      if (window.liff && liff.isInClient && liff.isInClient()) liff.closeWindow(); else window.history.back();
+    });
+
+    await load();
+  });
+})();
+</script>
+{% endblock %}

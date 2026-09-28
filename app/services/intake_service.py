@@ -33,7 +33,7 @@ from app.line.client import LineMessagingClient
 from app.line.messages.builder import MessageBuilder as M
 from app.repositories.patient_repository import (
     PROFILE_META_KEYS,
-    NationalIdCipherText,
+    NationalIdDigest,
     PatientRepository,
 )
 from app.repositories.user_repository import UserRepository
@@ -91,6 +91,9 @@ class IntakeService:
         data = {k: v for k, v in profile.items() if k not in PROFILE_META_KEYS}
         last4 = profile.get("national_id_last4")
         data["national_id"] = f"******{last4}" if last4 else None
+        # 就醫院所不是表單欄位：由院方送確認請求、病人在 LINE 上按「是」後寫入
+        data["preferred_hospital_id"] = profile.get("preferred_hospital_id")
+        data["hospital_confirmed"] = bool(profile.get("hospital_confirmed_at"))
         data["completed_steps"] = profile.get("completed_steps") or []
         data["submitted_at"] = profile.get("submitted_at")
         return data
@@ -111,11 +114,11 @@ class IntakeService:
         existing = self._patients.get_profile(principal.user_id) or {}
 
         skip: set[str] = set()
-        national_id: NationalIdCipherText | None = None
+        national_id: NationalIdDigest | None = None
         raw_id = payload.get("national_id")
         if step.number == IDENTITY_STEP:
             if isinstance(raw_id, str) and _MASKED_ID.match(raw_id):
-                # 前端回傳遮罩字串代表沒有改動，沿用既有加密值
+                # 前端回傳遮罩字串代表沒有改動，沿用既有的末四碼與指紋
                 payload = {**payload, "national_id": None}
                 if existing.get("national_id_fingerprint"):
                     skip.add("national_id")
@@ -123,10 +126,8 @@ class IntakeService:
         cleaned = validate_step(step, payload, partial=partial, skip_required=frozenset(skip))
 
         if cleaned.get("national_id"):
-            national_id = self._encrypt_national_id(principal.user_id, cleaned["national_id"])
-            cleaned["national_id"] = None  # 明碼不落 DB、不回前端
-        if cleaned.get("preferred_hospital_id"):
-            self._hospitals.require_active(cleaned["preferred_hospital_id"])
+            national_id = self._digest_national_id(principal.user_id, cleaned["national_id"])
+            cleaned["national_id"] = None  # 明碼只用來算指紋與末四碼，不落 DB、不回前端
 
         try:
             profile = self._patients.save_step(
@@ -174,18 +175,41 @@ class IntakeService:
         )
         return {"submission": submission, "binding_status": BindingStatus.PENDING.value}
 
+    def confirm_hospital(
+        self, principal: Principal, hospital_id: str, *, accepted: bool
+    ) -> dict[str, Any]:
+        """病人在 LINE 上回答「是否在某院所就醫」（院方在後台勾選病人後推播的按鈕）。
+        送出後（唯讀）也能回答，這是院方核對的前提。
+
+        接受：指定該院所並記下確認時間；否認：若目前指定的是這家就清掉。回傳院所資料供回覆文案用。
+        """
+        if not principal.is_authenticated:
+            raise AuthorizationError("請先登入")
+        if principal.is_locked:
+            raise AuthorizationError("帳號已鎖定，請聯絡院所協助處理")
+        hospital = self._hospitals.require_active(hospital_id)
+        profile = self._patients.get_profile(principal.user_id)
+        if not profile or not profile.get("submitted_at"):
+            raise ValidationError("請先填寫並送出基本資料")
+        if accepted:
+            self._patients.set_hospital(principal.user_id, hospital_id, confirmed=True)
+        elif profile.get("preferred_hospital_id") == hospital_id:
+            self._patients.set_hospital(principal.user_id, None, confirmed=False)
+        return hospital
+
     def _ensure_can_edit(self, principal: Principal) -> None:
         if not principal.is_authenticated:
             raise AuthorizationError("請先登入")
         if principal.is_locked:
-            raise AuthorizationError("帳號已鎖定，請聯絡真人客服協助處理")
+            raise AuthorizationError("帳號已鎖定，請於就診時向院所人員說明")
         if principal.binding_status in READ_ONLY_STATUSES:
             raise AuthorizationError(
                 "資料已送出，目前只能檢視；需要修改請聯絡院所",
                 details={"binding_status": principal.binding_status.value, "read_only": True},
             )
 
-    def _encrypt_national_id(self, user_id: str, plaintext: str) -> NationalIdCipherText:
+    def _digest_national_id(self, user_id: str, plaintext: str) -> NationalIdDigest:
+        """明碼 → 末四碼 + HMAC 指紋（金鑰 `PATIENT_DATA_KEY`）。系統不保存可還原的身分證字號。"""
         fingerprint = self._cipher.fingerprint(plaintext)
         owner = self._patients.find_user_id_by_fingerprint(fingerprint)
         if owner is not None and owner != user_id:
@@ -193,11 +217,7 @@ class IntakeService:
             # 家屬與病人本人各自用自己的 LINE 填同一位病人是合理情境，鎖定會誤傷；
             # 真正的冒用由院方核對身份時判斷，必要時用後台「鎖定」。
             raise ConflictError(NATIONAL_ID_CONFLICT_MESSAGE)
-        return NationalIdCipherText(
-            encrypted=self._cipher.encrypt(plaintext),
-            last4=plaintext[-4:],
-            fingerprint=fingerprint,
-        )
+        return NationalIdDigest(last4=plaintext[-4:], fingerprint=fingerprint)
 
     def _notify(self, principal: Principal, text: str) -> None:
         """推播失敗只記 log：狀態已寫入 DB，不能因為 LINE API 暫時失敗讓整個請求變 500。"""

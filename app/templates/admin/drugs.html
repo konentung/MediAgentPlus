@@ -1,0 +1,121 @@
+{% extends "admin/base.html" %}
+{% block title %}藥品{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4 mb-0">藥品</h1>
+  <span class="small text-secondary" id="drug-stats">—</span>
+</div>
+<p class="small text-secondary">
+  健保署「健保用藥品項」主檔，供 LINE 藥名查詢、處方箋辨識後的藥名對照與 ATC 類別顯示。唯讀參考資料，只有系統管理員能匯入。
+</p>
+
+<div class="card border-0 shadow-sm mb-3">
+  <div class="card-body">
+    <form class="d-flex gap-2 mb-3" id="filter-form" role="search">
+      <input class="form-control" id="filter-q" placeholder="篩選：藥品代號 / 英文名 / 中文名 / 成分，例如 Paroxetine">
+      <button class="btn btn-outline-secondary text-nowrap" type="submit">篩選</button>
+      <button class="btn btn-outline-secondary text-nowrap" type="reset">清除</button>
+    </form>
+    <div class="table-responsive">
+      <table class="table table-sm table-hover align-middle mb-0">
+        <thead class="table-light"><tr><th>藥品代號</th><th>英文名稱</th><th>中文名稱</th><th>成分</th><th>劑型</th><th>ATC</th><th>類別</th></tr></thead>
+        <tbody id="table-body"></tbody>
+      </table>
+    </div>
+    <p class="small text-secondary mt-3 mb-0 d-none" id="table-empty">沒有符合的藥品。</p>
+    <div id="pagination"></div>
+  </div>
+</div>
+
+<div class="card border-0 shadow-sm mb-3" data-perm="reference_data:manage">
+  <div class="card-header bg-white fw-bold">匯入健保用藥 CSV（系統管理員）</div>
+  <div class="card-body">
+    <p class="small text-secondary">
+      健保署「健保用藥品項」檔（欄位：藥品代號、藥品英文名稱、藥品中文名稱、成分、劑型、ATC代碼、有效迄日），
+      同一藥品代號只保留有效迄日最新的一列；重新上傳會以代號更新既有資料，可重跑。
+      檔案約 96MB：伺服器端匯入只要幾秒，時間幾乎都花在上傳，<b>經 ngrok 等外部網址上傳會很慢甚至中斷，請直接用本機網址（例如 <code>http://localhost:5001/admin/drugs</code>）操作</b>。
+    </p>
+    <form id="import-form">
+      <div class="row g-2 align-items-end">
+        <div class="col-md-8">
+          <label class="form-label fw-bold small" for="import-file">健保用藥 CSV</label>
+          <input class="form-control form-control-sm" id="import-file" type="file" name="file" accept=".csv,text/csv" required>
+        </div>
+        <div class="col-md-4">
+          <button class="btn btn-sm btn-brand w-100" id="import-submit" type="submit">匯入藥品</button>
+        </div>
+      </div>
+      <div class="mt-3 d-none" id="import-progress">
+        <div class="progress" role="progressbar" aria-label="上傳進度" aria-valuemin="0" aria-valuemax="100" style="height: .5rem;">
+          <div class="progress-bar" id="import-bar" style="width: 0%"></div>
+        </div>
+        <div class="small text-secondary mt-1" id="import-status"></div>
+      </div>
+      <div class="alert small mt-3 mb-0 d-none" id="import-result"></div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+Admin.boot(async function (ctx) {
+  var statsEl = document.getElementById("drug-stats"), body = document.getElementById("table-body");
+  var empty = document.getElementById("table-empty"), pager = document.getElementById("pagination");
+  var filterForm = document.getElementById("filter-form"), filterQ = document.getElementById("filter-q");
+  var state = { q: "", page: 1 };
+
+  async function load() {
+    var data = await ctx.api("/api/v1/admin/drugs?q=" + encodeURIComponent(state.q) + "&page=" + state.page);
+    statsEl.textContent = "共 " + data.total + " 筆";
+    empty.classList.toggle("d-none", data.total > 0);
+    body.innerHTML = data.items.map(function (d) {
+      return "<tr><td><code>" + Admin.esc(d.nhi_code) + "</code></td><td>" + Admin.esc(d.name_en) + "</td><td>" + Admin.esc(d.name_zh || "—") +
+        "</td><td class='small'>" + Admin.esc(d.ingredient || "—") + "</td><td>" + Admin.esc(d.dosage_form || "—") +
+        "</td><td>" + Admin.esc(d.atc_code || "—") + "</td><td>" + Admin.esc(d.category || "—") + "</td></tr>";
+    }).join("");
+    Admin.pagination(pager, data, function (page) { state.page = page; load().catch(function (err) { Admin.toast(err.message, "danger"); }); });
+  }
+
+  filterForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    state.q = filterQ.value.trim(); state.page = 1;
+    load().catch(function (err) { Admin.toast(err.message, "danger"); });
+  });
+  filterForm.addEventListener("reset", function () {
+    state.q = ""; state.page = 1;
+    load().catch(function (err) { Admin.toast(err.message, "danger"); });
+  });
+
+  // 匯入：XHR 上傳顯示進度，上傳完成後才是伺服器匯入（幾秒）
+  var form = document.getElementById("import-form");
+  if (form) {
+    var btn = document.getElementById("import-submit"), progress = document.getElementById("import-progress");
+    var bar = document.getElementById("import-bar"), status = document.getElementById("import-status"), result = document.getElementById("import-result");
+    function setProgress(pct, text) { bar.style.width = pct + "%"; status.textContent = text; }
+    form.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      var file = form.elements.file.files[0];
+      if (!file) return;
+      var sizeMB = (file.size / 1048576).toFixed(1);
+      btn.disabled = true; result.classList.add("d-none"); progress.classList.remove("d-none");
+      setProgress(0, "上傳中 0%（" + sizeMB + " MB）");
+      try {
+        var r = await Admin.upload("/api/v1/admin/drugs/import", file, function (pct) {
+          setProgress(pct, pct < 100 ? "上傳中 " + pct + "%（" + sizeMB + " MB）" : "上傳完成，伺服器匯入中…");
+        });
+        result.className = "alert alert-success small mt-3 mb-0";
+        result.textContent = "新增 " + r.created + "、更新 " + r.updated + "、略過 " + r.skipped;
+        form.reset();
+        state.page = 1; await load();
+      } catch (err) {
+        result.className = "alert alert-danger small mt-3 mb-0"; result.textContent = err.message;
+      } finally { btn.disabled = false; progress.classList.add("d-none"); }
+    });
+  }
+
+  await load();
+});
+</script>
+{% endblock %}

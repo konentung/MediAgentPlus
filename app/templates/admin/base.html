@@ -31,8 +31,11 @@
       <ul class="nav nav-pills flex-column gap-1">
         <li class="nav-item"><a class="nav-link {{ 'active' if active == 'dashboard' }}" href="{{ url_for('admin_pages.dashboard') }}">儀表板</a></li>
         <li class="nav-item" data-perm="patient:read"><a class="nav-link {{ 'active' if active == 'patients' }}" href="{{ url_for('admin_pages.patients') }}">病人資料</a></li>
-        <li class="nav-item" data-perm="handoff:accept"><a class="nav-link {{ 'active' if active == 'handoffs' }}" href="{{ url_for('admin_pages.handoffs') }}">真人客服工單</a></li>
+        <li class="nav-item" data-perm="feedback:manage"><a class="nav-link {{ 'active' if active == 'feedback' }}" href="{{ url_for('admin_pages.feedback') }}">意見回饋</a></li>
         <li class="nav-item" data-perm="staff:manage"><a class="nav-link {{ 'active' if active == 'staff' }}" href="{{ url_for('admin_pages.staff') }}">人員與角色</a></li>
+        <li class="nav-item"><a class="nav-link {{ 'active' if active == 'knowledge' }}" href="{{ url_for('admin_pages.knowledge') }}">AI 知識庫</a></li>
+        <li class="nav-item"><a class="nav-link {{ 'active' if active == 'pharmacies' }}" href="{{ url_for('admin_pages.pharmacies') }}">藥局</a></li>
+        <li class="nav-item"><a class="nav-link {{ 'active' if active == 'drugs' }}" href="{{ url_for('admin_pages.drugs') }}">藥品</a></li>
         <li class="nav-item" data-perm="hospital:settings"><a class="nav-link {{ 'active' if active == 'settings' }}" href="{{ url_for('admin_pages.settings') }}">院所設定</a></li>
         <li class="nav-item" data-perm="audit:read"><a class="nav-link {{ 'active' if active == 'audit' }}" href="{{ url_for('admin_pages.audit') }}">稽核紀錄</a></li>
         <li class="nav-item"><a class="nav-link {{ 'active' if active == 'permissions' }}" href="{{ url_for('admin_pages.permissions') }}">權限矩陣</a></li>
@@ -55,25 +58,19 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
   // 後台共用：sessionStorage 內的 JWT → /api/v1/auth/me → 依權限顯示選單；資料請求都帶 Bearer。
+  // 沒有 refresh token：access token 到期（院方預設 8 小時）就導回登入頁重新登入。
   window.Admin = (function () {
     var CHOICES = JSON.parse(document.getElementById("admin-choices").textContent);
-    var tokens = { access: null, refresh: null };
+    var tokens = { access: null };
     var me = null;
     var hospitals = {};  // id → 院所物件，boot 時載入
 
     function readTokens() {
-      try {
-        tokens.access = sessionStorage.getItem("access_token");
-        tokens.refresh = sessionStorage.getItem("refresh_token");
-      } catch (err) { /* ignore */ }
+      try { tokens.access = sessionStorage.getItem("access_token"); } catch (err) { /* ignore */ }
     }
 
-    // 導到後台登入頁：帶上目前頁面（登入後回來）與原因（顯示提示）
+    // 導到後台登入頁：帶上目前頁面（登入後回來）與原因（顯示提示）。登出 = 清掉本機 token
     function toLogin(reason) {
-      // 主動登出時先撤銷伺服器端的 session（含 LINE token），再清本機
-      if (!reason && tokens.refresh) {
-        navigator.sendBeacon("/api/v1/auth/logout", new Blob([JSON.stringify({ refresh_token: tokens.refresh })], { type: "application/json" }));
-      }
       try { sessionStorage.clear(); } catch (err) { /* ignore */ }
       var next = window.location.pathname + window.location.search;
       var url = "{{ url_for('admin_pages.login') }}?next=" + encodeURIComponent(next);
@@ -81,23 +78,7 @@
       window.location.replace(url);
     }
 
-    async function refresh() {
-      if (!tokens.refresh) return false;
-      var resp = await fetch("/api/v1/auth/refresh", {
-        method: "POST", headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "1" },
-        body: JSON.stringify({ refresh_token: tokens.refresh })
-      });
-      if (!resp.ok) return false;
-      var pair = (await resp.json()).data;
-      tokens.access = pair.access_token; tokens.refresh = pair.refresh_token;
-      try {
-        sessionStorage.setItem("access_token", pair.access_token);
-        sessionStorage.setItem("refresh_token", pair.refresh_token);
-      } catch (err) { /* ignore */ }
-      return true;
-    }
-
-    async function api(path, options, retried) {
+    async function api(path, options) {
       options = options || {};
       var headers = Object.assign({ "Content-Type": "application/json", Accept: "application/json", "ngrok-skip-browser-warning": "1" }, options.headers || {});
       if (tokens.access) headers.Authorization = "Bearer " + tokens.access;
@@ -106,7 +87,6 @@
         body: options.body && typeof options.body !== "string" ? JSON.stringify(options.body) : options.body
       }));
       if (resp.status === 401) {
-        if (!retried && await refresh()) return api(path, options, true);
         toLogin("expired");
         return new Promise(function () {});
       }
@@ -118,6 +98,62 @@
         throw error;
       }
       return body.data;
+    }
+
+    // multipart 上傳（CSV / JSONL）：用 XHR 才拿得到上傳進度；onProgress(percent) 可省略。
+    // 大檔（例如 96MB 的健保用藥）經 ngrok 上傳會很慢，沒有進度使用者會以為當掉。
+    function upload(path, file, onProgress, fields) {
+      return new Promise(function (resolve, reject) {
+        var data = new FormData();
+        data.append("file", file);
+        Object.keys(fields || {}).forEach(function (key) { data.append(key, fields[key]); });
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", path);
+        xhr.setRequestHeader("Authorization", "Bearer " + tokens.access);
+        xhr.setRequestHeader("Accept", "application/json");
+        xhr.setRequestHeader("ngrok-skip-browser-warning", "1");
+        xhr.upload.onprogress = function (e) {
+          if (onProgress && e.lengthComputable) onProgress(Math.round(e.loaded * 100 / e.total));
+        };
+        xhr.onerror = function () { reject(new Error("連線中斷，檔案沒有送達伺服器")); };
+        xhr.onload = function () {
+          if (xhr.status === 401) { toLogin("expired"); return; }
+          var body = null;
+          try { body = JSON.parse(xhr.responseText); } catch (err) { /* 不是 JSON（例如 proxy 的錯誤頁） */ }
+          if (xhr.status >= 200 && xhr.status < 300 && body) { resolve(body.data); return; }
+          reject(new Error(body && body.error ? body.error.message : "上傳失敗（HTTP " + xhr.status + "）"));
+        };
+        xhr.send(data);
+      });
+    }
+
+    // 表格分頁：把 API 回的 {page, pages, total, per_page} 畫成 Bootstrap pagination，點頁碼呼叫 onPage(page)
+    function pagination(container, data, onPage) {
+      container.innerHTML = "";
+      if (!data.total) return;
+      var first = (data.page - 1) * data.per_page + 1, last = Math.min(data.page * data.per_page, data.total);
+      var info = document.createElement("div");
+      info.className = "small text-secondary";
+      info.textContent = "第 " + first + "–" + last + " 筆，共 " + data.total + " 筆（" + data.page + " / " + data.pages + " 頁）";
+      var ul = document.createElement("ul");
+      ul.className = "pagination pagination-sm mb-0";
+      function item(label, page, disabled, active) {
+        var li = document.createElement("li");
+        li.className = "page-item" + (disabled ? " disabled" : "") + (active ? " active" : "");
+        var a = document.createElement("a");
+        a.className = "page-link"; a.href = "#"; a.textContent = label;
+        a.addEventListener("click", function (e) { e.preventDefault(); if (!disabled && !active) onPage(page); });
+        li.appendChild(a); ul.appendChild(li);
+      }
+      item("上一頁", data.page - 1, data.page <= 1, false);
+      // 目前頁前後各 2 頁，加頭尾
+      var start = Math.max(1, data.page - 2), end = Math.min(data.pages, data.page + 2);
+      if (start > 1) { item("1", 1, false, false); if (start > 2) item("…", 0, true, false); }
+      for (var p = start; p <= end; p++) item(String(p), p, false, p === data.page);
+      if (end < data.pages) { if (end < data.pages - 1) item("…", 0, true, false); item(String(data.pages), data.pages, false, false); }
+      item("下一頁", data.page + 1, data.page >= data.pages, false);
+      container.className = "d-flex flex-wrap justify-content-between align-items-center gap-2 mt-3";
+      container.appendChild(info); container.appendChild(ul);
     }
 
     function can(permission) { return me && me.permissions.indexOf(permission) >= 0; }
@@ -191,14 +227,15 @@
       try {
         me = await api("/api/v1/auth/me");
       } catch (err) { toLogin("expired"); return; }
-      var staffRoles = ["cs_agent", "medical_staff", "hospital_admin", "super_admin"];
-      if (staffRoles.indexOf(me.role) < 0) { toLogin("not_staff"); return; }
+      // 不是院方人員就不進後台，也不顯示登入頁，直接回首頁
+      if (!me.is_staff) { window.location.replace({{ url_for("pages.home") | tojson }}); return; }
       document.getElementById("gate").classList.add("d-none");
       document.querySelectorAll("[data-perm]").forEach(function (item) {
         if (!can(item.getAttribute("data-perm"))) item.classList.add("d-none");
       });
       try {
-        (await api("/api/v1/admin/hospitals" + (me.role === "super_admin" ? "?all=1" : ""))).forEach(function (h) { hospitals[h.id] = h; });
+        // 只載入醫院層級（約幾百家）供下拉選單與名稱顯示；診所有上萬家，不在這裡載
+        (await api("/api/v1/admin/hospitals/options")).forEach(function (h) { hospitals[h.id] = h; });
       } catch (err) { /* 院所清單載不到不影響其他頁面 */ }
       document.getElementById("me-name").textContent = me.display_name || me.user_id;
       document.getElementById("me-role").textContent = label("roles", me.role);
@@ -212,7 +249,7 @@
       }
     }
 
-    return { boot: boot, api: api, can: can, label: label, esc: esc, fmtDate: fmtDate, toast: toast, formData: formData, options: options, choices: CHOICES, hospitalName: hospitalName, hospitalOptions: hospitalOptions };
+    return { boot: boot, api: api, upload: upload, pagination: pagination, can: can, label: label, esc: esc, fmtDate: fmtDate, toast: toast, formData: formData, options: options, choices: CHOICES, hospitalName: hospitalName, hospitalOptions: hospitalOptions };
   })();
 </script>
 {% block scripts %}{% endblock %}
