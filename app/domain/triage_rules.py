@@ -125,6 +125,64 @@ def sort_key(row: dict[str, Any]) -> tuple[int, float, str]:
     return (LEVEL_RANK[row["level"]], row["score"], row["hospital_name"])
 
 
+# 找附近診所的科別對應：衛福部「醫療機構與人員基本資料」的科別用詞 ← 模型 / 使用者可能的說法。
+# 家醫科與內科的問題，掛「西醫一般科」的診所也能看，一併納入。
+DEPARTMENT_ALIASES: dict[str, tuple[str, ...]] = {
+    "家庭醫學科": ("家醫科", "家醫", "家庭醫學"),
+    "內科": (
+        "一般內科",
+        "心臟內科",
+        "胸腔內科",
+        "腸胃科",
+        "胃腸科",
+        "肝膽腸胃科",
+        "新陳代謝科",
+        "內分泌科",
+        "腎臟科",
+        "感染科",
+        "風濕免疫科",
+        "血液腫瘤科",
+    ),
+    "兒科": ("小兒科",),
+    "神經科": ("神經內科",),
+    "外科": ("一般外科", "大腸直腸外科", "胸腔外科", "心臟血管外科"),
+    "耳鼻喉科": ("耳鼻喉",),
+    "精神科": ("身心科", "精神醫學科", "身心醫學科"),
+    "牙醫一般科": ("牙科", "牙醫"),
+    "中醫一般科": ("中醫",),
+    "急診醫學科": ("急診",),
+    "西醫一般科": ("一般科",),
+}
+GENERAL_PRACTICE = ("西醫一般科",)
+GENERAL_PRACTICE_FOR = ("家庭醫學科", "內科")
+
+
+def department_terms(text: str | None) -> tuple[str, ...]:
+    """AI 建議的科別 → 院所主檔可比對的科別名稱（可能多個）。認不得的原樣回傳。"""
+    query = (text or "").strip().replace("臺", "台")
+    if not query:
+        return ()
+    canonical = next(
+        (
+            name
+            for name, aliases in DEPARTMENT_ALIASES.items()
+            if query == name or query in aliases or any(a in query for a in aliases)
+        ),
+        None,
+    )
+    if canonical is None:
+        if query.endswith("內科"):
+            canonical = "內科"
+        elif query.endswith("外科"):
+            canonical = "外科"
+        else:
+            return (query,)
+    terms = (canonical,)
+    if canonical in GENERAL_PRACTICE_FOR:
+        terms += GENERAL_PRACTICE
+    return terms
+
+
 def public_rules() -> dict[str, Any]:
     """給 LIFF 看板 / 後台顯示門檻說明。"""
     return {

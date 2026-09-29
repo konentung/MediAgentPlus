@@ -1,7 +1,9 @@
 """知識庫（RAG 檢索來源）：文件與斷詞後的片段。
 
 `hospital_id` 為 NULL 代表全系統通用，否則只對該院所的病人檢索得到。
+`department` 是衛教文章所屬科別（來自依科別分類的 txt 檔名），檢索時同科別的片段加權。
 片段由 `KnowledgeService` 依 `app/domain/retrieval.py` 切段與斷詞後寫入：
+- `heading` / `kind`：片段所在的標題路徑（章 › 節）與型態（text / list / table / qa），顯示與除錯用
 - `tokens`：jieba 斷詞結果（SQLite 測試環境的記憶體 BM25 用）
 - `search_vector`：同一組 tokens 的 tsvector（PostgreSQL 全文檢索，GIN 索引）
 - `embedding`：OpenAI 向量（PostgreSQL 用 pgvector；SQLite 存 JSON 供測試）
@@ -40,6 +42,7 @@ class KnowledgeDocumentModel(db.Model, TimestampMixin):
     hospital_id: Mapped[str | None] = mapped_column(
         String(32), ForeignKey("hospitals.id", ondelete="SET NULL"), index=True
     )
+    department: Mapped[str | None] = mapped_column(String(50), index=True)  # 科別（衛教 txt 檔名）
     content: Mapped[str] = mapped_column(Text, nullable=False)
     tags: Mapped[list | None] = mapped_column(JsonColumn)
     source: Mapped[str | None] = mapped_column(String(500), index=True)  # 檔名 / 網址，匯入時去重
@@ -70,6 +73,8 @@ class KnowledgeChunkModel(db.Model, TimestampMixin):
         index=True,
     )
     seq: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    heading: Mapped[str | None] = mapped_column(String(200))  # 標題路徑「章 › 節」
+    kind: Mapped[str] = mapped_column(String(8), default="text", nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     tokens: Mapped[list | None] = mapped_column(JsonColumn)
     search_vector: Mapped[object | None] = mapped_column(SearchVectorColumn)
@@ -77,12 +82,14 @@ class KnowledgeChunkModel(db.Model, TimestampMixin):
 
 
 class KnowledgeJobModel(db.Model, TimestampMixin):
-    """後台觸發的長時間維護工作（衛教 JSONL 匯入、向量計算），在背景執行緒跑，這裡存進度與結果。"""
+    """後台觸發的長時間維護工作（衛教 txt 匯入 / 重建片段 / 向量計算），在背景執行緒跑。"""
 
     __tablename__ = "knowledge_jobs"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
-    kind: Mapped[str] = mapped_column(String(32), nullable=False)  # health_education / embed
+    kind: Mapped[str] = mapped_column(
+        String(32), nullable=False
+    )  # department_txt / rechunk / embed
     status: Mapped[str] = mapped_column(
         String(16), default="queued", nullable=False
     )  # queued / running / succeeded / failed

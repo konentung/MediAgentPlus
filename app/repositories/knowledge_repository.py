@@ -27,14 +27,28 @@ class KnowledgeRepository(Protocol):
     def create(self, **values: Any) -> dict[str, Any]: ...
     def create_many(self, documents: list[dict[str, Any]]) -> None: ...
     def update(self, document_id: str, **changes: Any) -> dict[str, Any]: ...
+    def update_many(self, documents: list[dict[str, Any]]) -> None: ...
     def delete(self, document_id: str) -> None: ...
+    def document_ids(self) -> list[str]: ...
     def replace_chunks(self, document_id: str, chunks: list[dict[str, Any]]) -> None: ...
+    def delete_chunks_many(self, document_ids: list[str]) -> None: ...
     def add_chunks_many(self, items: list[tuple[str, list[dict[str, Any]]]]) -> None: ...
     def search_keyword(
-        self, query: str, tokens: list[str], *, hospital_ids: list[str | None], limit: int
+        self,
+        query: str,
+        tokens: list[str],
+        *,
+        hospital_ids: list[str | None],
+        limit: int,
+        department: str | None = None,
     ) -> list[dict[str, Any]]: ...
     def search_vector(
-        self, vector: list[float], *, hospital_ids: list[str | None], limit: int
+        self,
+        vector: list[float],
+        *,
+        hospital_ids: list[str | None],
+        limit: int,
+        department: str | None = None,
     ) -> list[dict[str, Any]]: ...
     def pending_embeddings(self, limit: int) -> list[dict[str, Any]]: ...
     def set_embeddings(self, pairs: list[tuple[str, list[float]]]) -> None: ...
@@ -55,9 +69,12 @@ _HIT_COLUMNS = (
     CHUNK.id,
     CHUNK.document_id,
     CHUNK.content,
+    CHUNK.heading,
+    CHUNK.kind,
     DOC.title,
     DOC.category,
     DOC.hospital_id,
+    DOC.department,
     DOC.source,
     DOC.meta,
 )
@@ -68,13 +85,20 @@ def _hit(row: Any, score: float) -> dict[str, Any]:
         "id": row.id,
         "document_id": row.document_id,
         "content": row.content,
+        "heading": row.heading,
+        "kind": row.kind,
         "title": row.title,
         "category": row.category,
         "hospital_id": row.hospital_id,
+        "department": row.department,
         "source": row.source,
         "meta": row.meta or {},
         "score": round(float(score), 4),
     }
+
+
+def _department_filter(stmt: Any, department: str | None) -> Any:
+    return stmt.where(DOC.department == department) if department else stmt
 
 
 class SqlAlchemyKnowledgeRepository:
@@ -132,11 +156,19 @@ class SqlAlchemyKnowledgeRepository:
         db.session.commit()
         return row_to_dict(row)
 
+    def update_many(self, documents: list[dict[str, Any]]) -> None:
+        """批次更新（每筆含 id），一次 commit；匯入時同網址的文件重匯用。"""
+        db.session.execute(db.update(DOC), documents)
+        db.session.commit()
+
     def delete(self, document_id: str) -> None:
         row = db.session.get(DOC, document_id)
         if row is not None:
             db.session.delete(row)
             db.session.commit()
+
+    def document_ids(self) -> list[str]:
+        return list(db.session.execute(db.select(DOC.id).order_by(DOC.created_at)).scalars())
 
     # ---- 片段 ----
 
@@ -146,6 +178,8 @@ class SqlAlchemyKnowledgeRepository:
             "document_id": document_id,
             "seq": seq,
             "content": chunk["content"],
+            "heading": (chunk.get("heading") or None),
+            "kind": chunk.get("kind") or "text",
             "tokens": tokens,
         }
         if chunk.get("embedding"):
@@ -160,6 +194,11 @@ class SqlAlchemyKnowledgeRepository:
             db.session.add(CHUNK(**self._chunk_values(document_id, seq, chunk)))
         db.session.commit()
 
+    def delete_chunks_many(self, document_ids: list[str]) -> None:
+        if document_ids:
+            db.session.execute(db.delete(CHUNK).where(CHUNK.document_id.in_(document_ids)))
+            db.session.commit()
+
     def add_chunks_many(self, items: list[tuple[str, list[dict[str, Any]]]]) -> None:
         for document_id, chunks in items:
             for seq, chunk in enumerate(chunks):
@@ -169,8 +208,15 @@ class SqlAlchemyKnowledgeRepository:
     # ---- 檢索 ----
 
     def search_keyword(
-        self, query: str, tokens: list[str], *, hospital_ids: list[str | None], limit: int
+        self,
+        query: str,
+        tokens: list[str],
+        *,
+        hospital_ids: list[str | None],
+        limit: int,
+        department: str | None = None,
     ) -> list[dict[str, Any]]:
+        """關鍵字檢索；`department` 有值時只在該科別的文件內找（Service 用它做加權排序）。"""
         if not tokens:
             return []
         if self._is_postgres:
@@ -185,16 +231,25 @@ class SqlAlchemyKnowledgeRepository:
                 .order_by(rank.desc())
                 .limit(limit)
             )
+            stmt = _department_filter(stmt, department)
             return [_hit(row, row.score) for row in db.session.execute(stmt)]
         index, chunks = self._bm25_index(hospital_ids)
-        return [
+        # SQLite：BM25 是全庫索引，科別在結果過濾，所以多取幾倍再截
+        top_k = limit * 5 if department else limit
+        hits = [
             _hit(chunks[chunk_id], score)
-            for chunk_id, score in index.search(query, top_k=limit)
-            if chunk_id in chunks
+            for chunk_id, score in index.search(query, top_k=top_k)
+            if chunk_id in chunks and (not department or chunks[chunk_id].department == department)
         ]
+        return hits[:limit]
 
     def search_vector(
-        self, vector: list[float], *, hospital_ids: list[str | None], limit: int
+        self,
+        vector: list[float],
+        *,
+        hospital_ids: list[str | None],
+        limit: int,
+        department: str | None = None,
     ) -> list[dict[str, Any]]:
         if not vector:
             return []
@@ -209,12 +264,14 @@ class SqlAlchemyKnowledgeRepository:
                 .order_by(distance)
                 .limit(limit)
             )
+            stmt = _department_filter(stmt, department)
             return [_hit(row, 1 - row.distance) for row in db.session.execute(stmt)]
         stmt = (
             db.select(*_HIT_COLUMNS, CHUNK.embedding)
             .join(DOC, DOC.id == CHUNK.document_id)
             .where(DOC.active.is_(True), _scope_filter(hospital_ids), CHUNK.embedding.is_not(None))
         )
+        stmt = _department_filter(stmt, department)
         scored = [
             (row, cosine(vector, row.embedding))
             for row in db.session.execute(stmt)
@@ -243,14 +300,15 @@ class SqlAlchemyKnowledgeRepository:
 
     def pending_embeddings(self, limit: int) -> list[dict[str, Any]]:
         stmt = (
-            db.select(CHUNK.id, CHUNK.content, DOC.title)
+            db.select(CHUNK.id, CHUNK.content, DOC.title, DOC.department)
             .join(DOC, DOC.id == CHUNK.document_id)
             .where(CHUNK.embedding.is_(None))
             .order_by(CHUNK.document_id, CHUNK.seq)
             .limit(limit)
         )
         return [
-            {"id": r.id, "content": r.content, "title": r.title} for r in db.session.execute(stmt)
+            {"id": r.id, "content": r.content, "title": r.title, "department": r.department}
+            for r in db.session.execute(stmt)
         ]
 
     def set_embeddings(self, pairs: list[tuple[str, list[float]]]) -> None:

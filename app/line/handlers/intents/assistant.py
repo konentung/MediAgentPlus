@@ -1,7 +1,7 @@
 """自由文字 → AI 助理（RAG + 事件判斷）→ 套用既有 LINE 模組回應。
 
 `ConversationService.decide()` 回 `AssistantDecision`；這裡只做「事件 → 模組」的對應：
-  emergency  → 緊急畫面（撥 119 + 最近急救責任醫院）
+  emergency  → 緊急畫面（撥 119 + 最近急救責任醫院）；冷卻期間內只回模型的一句話 + 同樣的按鈕
   hospital   → FindHospitalHandler（請分享位置，依距離推薦）
   medication → MedicationHandler（有藥名就查藥；否則選單）
   pharmacy   → 找附近藥局；reminder / human / intake → 對應模組
@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from app.core.exceptions import ExternalServiceError
 from app.domain.assistant_schema import AssistantDecision
 from app.domain.enums import Intent
+from app.line import emergency
 from app.line.context import BotContext
 from app.line.handlers.intents.base import IntentHandler
 from app.line.intents import TEXT_KEYWORDS
@@ -67,6 +68,9 @@ class AssistantHandler(IntentHandler):
         liff_intake = ctx.liff_url("/intake")
         event = decision.event
         if decision.risk == "emergency" or event == "emergency":
+            if decision.answer and emergency.recently_notified(ctx):
+                return [M.text(decision.answer, quick_replies=common.emergency_items())]
+            emergency.mark_notified(ctx)
             lead = [M.text(decision.answer)] if decision.answer else []
             return lead + common.emergency_messages()
 
@@ -126,7 +130,13 @@ class AssistantHandler(IntentHandler):
                     quick_replies=msg.action_items(actions, liff_intake) or None,
                 )
             ]
-        return msg.answer_messages(decision.answer, actions, liff_intake, decision.sources)
+        return msg.answer_messages(
+            decision.answer,
+            actions,
+            liff_intake,
+            decision.sources,
+            department=slots.department if event == "symptom" else None,
+        )
 
     def _run(self, ctx: BotContext, intent: Intent, params: dict[str, str]) -> list:
         """執行既有模組並收集它的回覆（不直接送出）。"""

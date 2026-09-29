@@ -221,6 +221,59 @@ def test_find_clinics_postback(post_line_event, container):
     assert "同縣市" in str(messages[0].contents.to_dict())
 
 
+def test_find_clinics_without_location_asks_then_uses_shared_position(post_line_event, container):
+    """AI 的「附近診所」按鈕沒有縣市：先請分享位置（記下科別），位置訊息回來再依科別找。"""
+    container.hospital_repo.create(
+        id="C1",
+        name="大安家醫診所",
+        region="台北市",
+        address="台北市大安區信義路三段1號",
+        capacity_tier="clinic",
+        departments="家庭醫學科",
+    )
+    container.hospital_repo.create(
+        id="C2",
+        name="大安牙醫診所",
+        region="台北市",
+        address="台北市大安區信義路三段2號",
+        capacity_tier="clinic",
+        departments="牙醫一般科",
+    )
+    post_line_event(
+        _event(
+            "postback",
+            postback={
+                "data": postback_data(Intent.FIND_HOSPITAL, action="clinics", department="家醫科")
+            },
+        )
+    )
+    _, messages = container.line_client.replies[-1]
+    assert "有家醫科的診所" in messages[0].text
+    assert messages[0].quick_reply.items[0].action.type == "location"
+    state = container.conversation_state.peek("U1")
+    assert state.action == "await_location" and state.payload == {
+        "for": "clinics",
+        "department": "家醫科",
+    }
+    post_line_event(
+        _event(
+            "message",
+            message={
+                "type": "location",
+                "id": "m2",
+                "title": "我的位置",
+                "address": "台北市大安區信義路三段10號",
+                "latitude": 25.033,
+                "longitude": 121.543,
+            },
+        )
+    )
+    _, messages = container.line_client.replies[-1]
+    text = str(messages[0].contents.to_dict())
+    assert "大安家醫診所" in text and "大安牙醫診所" not in text and "有家醫科" in text
+    assert container.conversation_state.peek("U1") is None
+
+
 # ---- 後台與公開 API ----
 
 
@@ -359,16 +412,64 @@ def test_nearby_clinics_by_distance(container):
     container.hospital_repo.create(
         id="C3", name="無座標診所", region="台北市", address="台北市大安區z", capacity_tier="clinic"
     )
+    container.hospital_repo.create(
+        id="R1",
+        name="隔壁區域醫院",
+        region="台北市",
+        address="台北市大安區w",
+        capacity_tier="regional",
+        lat=25.0335,
+        lng=121.5435,
+    )
+    # 同區的診所（不管有沒有座標）都要列；診所排在區域醫院前面、有距離的排前面；遠方不列
     result = container.triage.nearby_clinics("台北市", "大安區", lat=25.033, lng=121.543)
-    assert result["scope"] == "distance" and [h["name"] for h in result["hospitals"]] == [
-        "隔壁診所"
-    ]
-    # 10 km 內沒有座標院所 → 退回鄉鎮市區比對
-    result = container.triage.nearby_clinics("台北市", "大安區", lat=23.0, lng=120.2)
-    assert result["scope"] == "district" and {h["name"] for h in result["hospitals"]} == {
+    assert result["scope"] == "nearby" and [h["name"] for h in result["hospitals"]] == [
         "隔壁診所",
         "無座標診所",
-    }
+        "隔壁區域醫院",
+    ]
+    assert (
+        result["hospitals"][0]["distance_km"] == 0.2 and "distance_km" not in result["hospitals"][1]
+    )
+    # 座標離很遠但地址在大安區：仍以鄉鎮市區為準
+    result = container.triage.nearby_clinics("台北市", "大安區", lat=23.0, lng=120.2)
+    assert [h["name"] for h in result["hospitals"]] == ["隔壁診所", "無座標診所", "隔壁區域醫院"]
+
+
+def test_nearby_clinics_filters_by_department(container):
+    container.hospital_repo.create(
+        id="C1",
+        name="家醫診所",
+        region="台北市",
+        address="台北市大安區a",
+        capacity_tier="clinic",
+        departments="家庭醫學科,內科",
+    )
+    container.hospital_repo.create(
+        id="C2",
+        name="一般科診所",
+        region="台北市",
+        address="台北市大安區b",
+        capacity_tier="clinic",
+        departments="西醫一般科",
+    )
+    container.hospital_repo.create(
+        id="C3",
+        name="牙醫診所",
+        region="台北市",
+        address="台北市大安區c",
+        capacity_tier="clinic",
+        departments="牙醫一般科",
+    )
+    # AI 說「家醫科」→ 對應衛福部用詞「家庭醫學科」，一般科診所也能看但排後面
+    result = container.triage.nearby_clinics("台北市", "大安區", department="家醫科")
+    assert result["department_matched"] is True
+    assert [h["name"] for h in result["hospitals"]] == ["家醫診所", "一般科診所"]
+    assert result["department_terms"] == ["家庭醫學科", "西醫一般科"]
+    # 沒有該科 → 放寬成不限科別、標示沒對到
+    result = container.triage.nearby_clinics("台北市", "大安區", department="皮膚科")
+    assert result["department_matched"] is False and len(result["hospitals"]) == 3
+    assert container.triage.nearby_clinics("台北市", "大安區")["department_matched"] is False
 
 
 def test_public_board_by_location_and_hospital_import_with_coords(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.domain.enums import Intent, Permission
+from app.line import emergency
 from app.line.context import BotContext
 from app.line.handlers.intents.base import IntentHandler
 from app.line.messages import common
@@ -34,3 +35,4 @@ class EmergencyHandler(IntentHandler):
 
     def handle(self, ctx: BotContext, params: dict[str, str]) -> None:
         ctx.reply(common.emergency_messages())
+        emergency.mark_notified(ctx)  # 冷卻：同一段對話不再重傳

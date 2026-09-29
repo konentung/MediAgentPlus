@@ -63,7 +63,8 @@ SYSTEM_PROMPT = """你是「MediAgent+」醫療照護 LINE 機器人的對話助
    answer 一句話說明目前沒有真人客服、可留下意見回饋或聯絡原院所。
 
 病況諮詢（event=symptom）：
-10. 依片段判斷「可能需要掛哪一科」填入 slots.department（例如 家醫科、神經內科；片段沒提就留空），
+10. 依片段判斷「可能需要掛哪一科」填入 slots.department（用衛福部科別名稱：家庭醫學科、內科、外科、
+    兒科、婦產科、骨科、眼科、耳鼻喉科、皮膚科、泌尿科、神經科、精神科、復健科；片段沒提就留空），
     並用 risk 分級：none=可先自我照護、watch=建議近日就近到診所看診、urgent=請儘快到急診。
     answer 先講分級結論與科別，再列該注意的重點；actions 依分級選：watch → find_clinic（附近診所），
     urgent → find_hospital（急診看板），none → 視情況。
@@ -142,10 +143,13 @@ class ConversationService:
         for hid in (principal.hospital_id, profile.get("preferred_hospital_id")):
             if hid and hid not in hospital_ids:
                 hospital_ids.append(hid)
-        patient_block, diagnosis = self._patient_block(principal, profile)
-        # 出院衛教問題通常不會寫出診斷名稱（「我回家要注意什麼」），檢索時補上診斷才找得到對應衛教
+        patient_block, diagnosis, department = self._patient_block(principal, profile)
+        # 出院衛教問題通常不會寫出診斷名稱（「我回家要注意什麼」），檢索時補上診斷才找得到對應衛教；
+        # 最近就診的科別拿來替同科別的衛教片段加權（不硬過濾）
         query = f"{text} {diagnosis}" if diagnosis and _asks_care(text) else text
-        hits = self._knowledge.retrieve(query, hospital_ids=hospital_ids, top_k=self._top_k)
+        hits = self._knowledge.retrieve(
+            query, hospital_ids=hospital_ids, top_k=self._top_k, department=department
+        )
         live: list[str] = []
         er_block = self._er_block(text, profile)
         if er_block:
@@ -192,16 +196,18 @@ class ConversationService:
 
     def _patient_block(
         self, principal: Principal, profile: dict[str, Any]
-    ) -> tuple[str | None, str | None]:
+    ) -> tuple[str | None, str | None, str | None]:
         """已驗證病人：最近一次就診（科別 / 診斷 / 出院代碼）+ 慢性病 → 衛教個人化脈絡。
 
-        回 (區塊文字, 診斷摘要)；未驗證或沒有院方紀錄回 (None, None)，模型會改走通用版。
+        回 (區塊文字, 診斷摘要, 就診科別)；未驗證或沒有院方紀錄回 (None, None, None)，
+        模型會改走通用版。科別另外用來替同科別的衛教片段加權。
         """
         if not (principal.is_verified and principal.user_id and self._records):
-            return None, None
+            return None, None, None
         encounter = self._records.latest_encounter(principal.user_id)
         lines: list[str] = []
         diagnosis = ""
+        department = (encounter or {}).get("department") or None
         if encounter:
             diagnosis = "、".join(
                 d.get("description") or d.get("icd10_code") or ""
@@ -223,8 +229,8 @@ class ConversationService:
         if chronic:
             lines.append("慢性病：" + "、".join(str(c) for c in chronic))
         if not lines:
-            return None, None
-        return "\n".join(f"・{line}" for line in lines), diagnosis or None
+            return None, None, None
+        return "\n".join(f"・{line}" for line in lines), diagnosis or None, department
 
     def _er_block(self, text: str, profile: dict[str, Any]) -> str | None:
         """訊息或住址提到的縣市 → 該縣市急診看板摘要（用已存的資料，不即時抓）。"""

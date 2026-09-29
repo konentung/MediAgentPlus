@@ -10,7 +10,7 @@
     /admin/pharmacies         藥局（開放資料查詢；系統管理員可匯入藥局 CSV）
     /admin/drugs              藥品（健保用藥主檔查詢；系統管理員可匯入健保用藥 CSV）
     /admin/knowledge          知識庫（AI 助理 RAG 的檢索來源）：文件維護、Markdown 匯入、試搜；
-                              系統管理員另有「系統資料匯入」（衛教 JSONL 匯入、計算向量，背景工作）
+                              系統管理員另有「系統資料匯入」（衛教 txt / 重建片段 / 算向量）
     /admin/permissions        權限矩陣（查閱）
     /admin/audit              稽核紀錄（鎖定 / 解鎖帳號）
 
@@ -35,7 +35,7 @@ admin_pages_bp = Blueprint("admin_pages", __name__, url_prefix="/admin")
 # 權限的中文說明（院所設定頁的權限矩陣用）；新增 Permission 時要一起補，tests 會檢查
 PERMISSION_DESCRIPTIONS: dict[Permission, str] = {
     Permission.CONSULT_SYMPTOM: "病況諮詢（我不舒服）",
-    Permission.CONSULT_HOSPITAL: "找醫院、院所查詢與壅塞燈號",
+    Permission.CONSULT_HOSPITAL: "急診動態分流（找醫院、壅塞燈號）",
     Permission.CONSULT_MEDICATION_ONCE: "藥物諮詢單次查詢（去哪拿藥）",
     Permission.CONSULT_EDUCATION_GENERIC: "通用版衛教內容",
     Permission.FEEDBACK_SUBMIT: "送出意見回饋（不需填過病人表單）",

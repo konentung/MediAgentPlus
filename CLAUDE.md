@@ -39,12 +39,14 @@ flask --app wsgi db upgrade              # 套用 migration
 改 `.env` 需重啟，**環境變數會被 `.env` 蓋掉**，一次性腳本要用 `create_app("testing")` 而不是 `FLASK_ENV=testing`。
 
 **沒有 CLI、沒有 cron**（2026-09-28 移除 `app/cli.py`）：所有資料維護都在後台 `/admin/*` 做（院所 / 人員角色 / 藥局藥品 CSV /
-知識庫 Markdown、衛教 JSONL、算向量）。定時工作由 `app/scheduler.py`（APScheduler，`create_app()` 內啟動）執行：
+知識庫 Markdown、衛教 txt、重建片段、算向量）。定時工作由 `app/scheduler.py`（APScheduler，`create_app()` 內啟動）執行：
 每 5 分鐘 `ReminderService.run_due()`、每 15 分鐘 `TriageService.poll()`；多 worker 用 Redis `SET NX` 鎖去重，
 `SCHEDULER_ENABLED=false` 關閉（測試環境預設關）。第一位 SUPER_ADMIN 由 `.env` 的 `SUPER_ADMIN_LINE_USER_IDS`
 （LINE userId，逗號分隔）指定，這些人登入 / 加好友時 `UserService.get_or_create_by_line()` 自動升級；其餘角色在後台指派。
 Rich Menu 在 LINE Official Account Manager 建立，六格動作設「文字」且文字等於 `TEXT_KEYWORDS`（我不舒服 / 找醫院 /
-我剛出院 / 去哪拿藥 / 服藥提醒 / 意見回饋），六格定義在 `app/line/handlers/intents/menu.py` 的 `DEFAULT_CELLS`。
+我剛出院 / 去哪拿藥 / 服藥提醒 / 意見回饋；**刻意口語化**，機器人語氣，正式名稱 病況諮詢 / 急診動態分流 / 衛教諮詢 /
+藥物諮詢 / 服藥小幫手 只當別名，2026-09-28 決定），六格定義在 `app/line/handlers/intents/menu.py` 的 `DEFAULT_CELLS`。
+加好友訊息只有「填寫基本資料」一個按鈕（2026-09-28 拿掉「先逛逛就好」）。
 `FLASK_ENV=testing` 使用 `TestingConfig`，內含假的 LINE / JWT 憑證，SQLite in-memory 佔位。
 
 ## 架構重點
@@ -72,7 +74,8 @@ Rich Menu 在 LINE Official Account Manager 建立，六格動作設「文字」
 
 Enum 欄位（`Role`/`BindingStatus`）一律用 `sa.Enum(..., native_enum=False)` 存成 VARCHAR，不用原生 Postgres enum type —— 這樣新增列舉值（例如未來新角色）只要改 Python enum + migration 加欄位資料，不必下 `ALTER TYPE`。除了 `Role`（會持續變動，刻意不加 CHECK constraint）之外都保留 CHECK constraint。之後若有 JSON 欄位，用 `JSONB().with_variant(JSON(), "sqlite")` 讓測試環境的 SQLite 也能跑。`Hospital` 實體已存在（`app/models/hospital.py`，`hospitals.id` 就是人可讀的院所代碼，例如 `H1`），其他表的 `hospital_id` 都是指向它的外鍵，應用層另由 `HospitalService.require_active()` 在寫入時確認院所啟用中。SUPER_ADMIN 在後台「院所設定」新增或用 CSV 匯入（支援自家範本與健保署「特約醫事機構」開放資料欄位，對應表在 `HospitalService.IMPORT_COLUMN_ALIASES`，藥局等非院所列自動略過）；HOSPITAL_ADMIN 只能改自己院所的名稱 / 電話 / 地址。
 
-改動模型後：`flask --app wsgi db migrate -m "..."` 產生 migration（需要連得到 `DATABASE_URL` 指到的資料庫，本機用 pgAdmin 或 `createdb` 建立）→ **人工檢查**產生的檔案（autogenerate 對 Enum/JSONB 這類型別不一定抓得對）→ `flask --app wsgi db upgrade`。歷次 migration 已於 2026-09-28 統整為單一版本 `0001_initial.py`（含 `CREATE EXTENSION vector`），舊資料庫用 `db stamp --purge 0001_initial` 對齊。`pytest` 全程走 in-memory SQLite（`TestingConfig`，`StaticPool` 讓整個 engine 共用一條連線），不需要真的 PostgreSQL，`tests/conftest.py` 的 `app`/`client` fixture 會在每次測試維持一個 app context（供測試直接呼叫 repository）但在每次送出 HTTP 請求時暫時 pop/push，避免 Flask 沿用同一個 app context 造成 `flask.g`（含暫存的 `Principal`）跨請求殘留。
+改動模型後：`flask --app wsgi db migrate -m "..."` 產生 migration（需要連得到 `DATABASE_URL` 指到的資料庫，本機用 pgAdmin 或 `createdb` 建立）→ **人工檢查**產生的檔案（autogenerate 對 Enum/JSONB 這類型別不一定抓得對）→ `flask --app wsgi db upgrade`。歷次 migration 已於 2026-09-28 統整為單一版本 `0001_initial.py`（含 `CREATE EXTENSION vector`，**PostgreSQL 伺服器必須先裝 pgvector 擴充套件**，pip 的 `pgvector` 只是 Python 型別），之後的變更另開版本（`0002_hospital_departments`、`0003_knowledge_department`）；舊資料庫用 `db stamp --purge 0001_initial` 對齊。
+**revision id 不能超過 32 字元**（`alembic_version.version_num` 是 VARCHAR(32)，超過會在最後一步回滾整個 upgrade）。`pytest` 全程走 in-memory SQLite（`TestingConfig`，`StaticPool` 讓整個 engine 共用一條連線），不需要真的 PostgreSQL，`tests/conftest.py` 的 `app`/`client` fixture 會在每次測試維持一個 app context（供測試直接呼叫 repository）但在每次送出 HTTP 請求時暫時 pop/push，避免 Flask 沿用同一個 app context 造成 `flask.g`（含暫存的 `Principal`）跨請求殘留。
 
 ### 病人自填表與院方後台（取代原本的綁定流程 B1–B9）
 
@@ -123,7 +126,7 @@ Enum 欄位（`Role`/`BindingStatus`）一律用 `sa.Enum(..., native_enum=False
 
 設計文件 `docs/ai-assistant-design.md`。AI 只用 OpenAI API（`OPENAI_API_KEY`），沒有其他後端。**確定進入點不經 AI**：
 Rich Menu / Quick Reply / Flex 按鈕的 postback、圖片、位置訊息，以及**完全等於** `TEXT_KEYWORDS` 的文字
-（主選單 / 選單 / menu、我不舒服、找醫院、我剛出院、去哪拿藥、服藥提醒、意見回饋、設定；
+（主選單 / 選單 / menu、我不舒服、找醫院、我剛出院、去哪拿藥、服藥提醒、意見回饋、設定與正式名稱別名；
 `keyword_intent()` 去頭尾空白、不分大小寫）都直接走功能。另外兩個不等模型：紅旗關鍵字 `EMERGENCY_KEYWORDS`
 直接進緊急畫面（安全層）、「等藥名」狀態的文字當藥名查詢。**只有不是關鍵字的自由文字**才交給 AI 判斷事件再套用模組，
 程式裡不寫規則式的意圖猜測。
@@ -137,23 +140,39 @@ Rich Menu / Quick Reply / Flex 按鈕的 postback、圖片、位置訊息，以�
   → PostgreSQL tsvector 全文檢索，GIN 索引）+ 語意（`OpenAiClient.embed()`，`EMBEDDING_MODEL` 預設 `text-embedding-3-small`，
   pgvector `vector(1536)` + HNSW 索引），各取 20 個候選後 `rrf_fuse()` 合併、同一份文件最多 2 個片段
   （`KnowledgeService.retrieve()`、`SqlAlchemyKnowledgeRepository.search_keyword / search_vector`）。
-  SQLite（測試）用記憶體 `BM25Index` 與 Python 餘弦；沒有向量或查詢向量失敗時只用關鍵字。片段用 `chunk_text()` 切約 400 字，
-  `tokens` / `search_vector` / `embedding` 都存 DB；向量由後台「計算向量」補算（只算 NULL 的，可重跑）。
+  SQLite（測試）用記憶體 `BM25Index` 與 Python 餘弦；沒有向量或查詢向量失敗時只用關鍵字。
+  `retrieve(department=)` 有科別時再多兩個「只在該科別內」的排序清單一起 RRF → **同科別加權、不硬過濾**
+  （科別分類正確率約 9 成）；科別來源是已驗證病人最近就診的科別（`ConversationService._patient_block()`）。
+  `tokens` / `search_vector` / `embedding` 都存 DB；向量輸入 = `科別 › 標題 + 片段`，由後台「計算向量」補算（只算 NULL 的，可重跑）。
   SQLite 的 `embedding` 用 `JSON(none_as_null=True)`，否則 None 會存成 `'null'` 字串、`IS NULL` 濾不掉。
-- **知識庫** `knowledge_documents` / `knowledge_chunks`（`app/models/knowledge.py`）：`hospital_id` 空 = 通用；院所文件只有
+- **切段（2026-09-29 重寫為結構感知 recursive chunking）** `app/domain/retrieval.py` 的 `chunk_document()`：
+  `clean_lines()` 先去樣板行（Qrcode / 麵包屑 / 日期 / 目錄頁 / 與標題重複的行 / 語料級統計出的導覽列
+  `collect_boilerplate()`：只算每篇頭尾 15 行內、在一串短行中出現 ≥ 30 篇且占比 ≥ 0.8 的短行）→ 空行切 block →
+  `_classify()` 認 標題（`#`、壹、一、（一）、1.、≤20 字無句尾標點的短行；編號行後面接同家族編號行就是條列不是標題）/
+  條列（連續同家族 + 以「：」結尾的引言）/ 表格（連續 6 個 ≤ 25 字短 block，多數以句號結尾則是一句一行的條列）/ 問答（Q + 下一段）
+  → 超過硬上限（目標 400 × 1.5）的 block 依 換行 → 句號 → 逗號 遞迴下探、不在句中切 → 同一小節內貪婪合併到 400、
+  相鄰片段重疊最後一句 → 不到 80 字的尾巴併回前一段。每個片段前綴標題路徑「章 › 節：內文」，另存 `knowledge_chunks.heading` / `kind`
+  （text / list / table / qa）。改規則後在後台按「重建片段」（`KnowledgeJobService` kind `rechunk`，向量會清掉要重算）。
+  實測（25,642 篇）：112,590 個片段、中位數 331 字、不到 80 字 0.1%、超過 600 字 0.03%。
+- **知識庫** `knowledge_documents` / `knowledge_chunks`（`app/models/knowledge.py`，migration `0003_knowledge_department`
+  加了 `department` / `heading` / `kind`）：`hospital_id` 空 = 通用；院所文件只有
   常去院所 / 所屬院所是它的使用者檢索得到。`source`（檔名或網址）與 `content_hash` 去重，`meta` 存出處
-  （`hospital_name` / `level` / `topics` / `forms`）。後台 `/admin/knowledge`（列表、編輯、Markdown 多檔匯入、試搜），
+  （`hospital_name` / `level` / `department` / `source_category` / `imported_from`）。後台 `/admin/knowledge`（列表、編輯、Markdown 多檔匯入、試搜），
   API `/api/v1/admin/knowledge*`：讀取 = 院方角色，寫入 = `EDUCATION_CONTENT_MANAGE`（綁自己院所），通用文件只有 SUPER_ADMIN。
   種子 `data/knowledge/*.md`（front matter：title / category / tags / hospital_id），用後台「匯入 Markdown」上傳。分類在 `KnowledgeService.CATEGORIES`。`data/` 整個目錄不進版控。
 - **後台系統資料匯入**（`/admin/knowledge` 只有 SUPER_ADMIN 看得到的卡片，權限 `REFERENCE_DATA_MANAGE`）：
-  衛教 JSONL 匯入與計算向量都要跑幾分鐘，由 `KnowledgeJobService`（`app/services/knowledge_job_service.py`）
+  衛教 txt 匯入、重建片段、計算向量都要跑幾分鐘，由 `KnowledgeJobService`（`app/services/knowledge_job_service.py`）
   建 `knowledge_jobs` 列後交給 `spawn`（容器預設開 daemon 執行緒 + app context）執行，進度寫回 `progress`，
   頁面每 3 秒輪詢 `GET /api/v1/admin/knowledge/jobs`；同一時間只允許一個工作，超過 30 分鐘沒更新的視為中斷。
-  上傳檔暫存 `MEDIA_ROOT/knowledge-imports/`，跑完即刪。測試以 `container.knowledge_jobs.spawn = lambda fn: fn()` 同步執行。
-- **衛教內文資料** `data/衛教內文資料/health_education_content.jsonl`（全台 129 家醫院官網衛教，35,784 篇，
-  說明見該目錄 README）：`KnowledgeService.import_health_education()` 只收內文 ≥ 200 字、中文比例 ≥ 0.4、有 `topics`
-  分類（`--all` 全收）、內文 SHA-1 不重複的文章，`clean_text()` 去掉 PDF 抽字的 NUL / 私有區符號，
-  批次 500 篇一次 commit；一律通用文件、出處在 `meta`。目前匯入 13,742 篇 / 41,737 片段。只有 SUPER_ADMIN 能在後台匯入。
+  上傳檔暫存 `MEDIA_ROOT/knowledge-imports/<job_id>/`，跑完即刪。測試以 `container.knowledge_jobs.spawn = lambda fn: fn()` 同步執行。
+- **衛教內文資料（2026-09-29 改以「依科別分類」的 txt 為準，原 JSONL 匯入器移除）**：
+  `衛教內文_依科別分類/01_心臟內科.txt … 57_未分類.txt`（每科一檔、篇與篇用 60 個 `=` 分隔、四行檔頭
+  標題 / 醫院（層級）/ 來源分類 / 網址，由 `分類腳本.py` 從原 JSONL 產生，正確率約 9 成）。
+  `KnowledgeService.import_department_files()`：檔名決定 `knowledge_documents.department`（「非衛教」整檔略過、
+  「未分類」照收但科別留空）；只收內文 ≥ 200 字、中文比例 ≥ 0.4、內文 SHA-1 不重複；**同網址的文件更新**（補科別、重切）
+  而不是略過，所以可重跑；`tags` = [科別]、出處在 `meta`（hospital_name / level / source_category / imported_from）。
+  兩遍掃描（先統計樣板行再匯入），批次 500 篇一次 commit，結果回報片段長度分佈（`chunk_stats()`）。
+  後台一次選多個 txt 上傳（`POST /api/v1/admin/knowledge/jobs/department-import`，`Admin.upload()` 多檔 + 進度）。
 - **決策格式單一來源** `app/domain/assistant_schema.py`（`AssistantDecision`：event / risk / answer / slots / actions /
   citations / needs_clarification）。模型只回這個結構，**不決定訊息長相**。
 - **脈絡** `ConversationService.build_context()`：使用者狀態（綁定 / 住址）、最近對話（存 `conversation_state` store，
@@ -194,8 +213,17 @@ Rich Menu / Quick Reply / Flex 按鈕的 postback、圖片、位置訊息，以�
   （`distance_km`）、`recommended` = 最近且未壅塞的一家，回 Flex + 該醫院的 `LocationMessage`（可導航）；院所主檔沒座標時回
   「座標尚未建置」+ 119；急診快照是空的（健保署 API 抓不到）時回 `unavailable=True` → 「資料暫時無法取得」+ 119 +
   找附近診所（縣市 / 鄉鎮市區由地址或 `nearest_district()` 反推）。AI 的 `hospital` 事件不論有沒有提到縣市都走這條。
-  「非急症：找附近診所」`nearby_clinics(city, district, lat, lng)`：有座標 → 10 km 內依距離，否則 `hospitals` 主檔
-  （`capacity_tier` clinic / district / regional）依縣市 + 鄉鎮市區。距離用 `app/utils/geo.py` 的 Haversine，不用地圖服務。
+  「非急症：找附近診所」`nearby_clinics(city, district, lat, lng, department)`：`hospitals` 主檔（`capacity_tier`
+  clinic / district / regional）先依地址比對同鄉鎮市區（沒有退到同縣市），有座標的算距離並補 10 km 內有座標的院所；
+  排序診所 → 地區 → 區域醫院、再依距離、名稱。**院所主檔的診所大多沒座標**（衛福部資料沒提供），所以不能只看有座標的。
+  `department` = AI 症狀諮詢建議的科別（`slots.department` → 「附近診所」postback 帶 `department=`），
+  用 `triage_rules.department_terms()` 對應衛福部科別用詞（家醫科 → 家庭醫學科 + 西醫一般科、神經內科 → 神經科…）
+  比對 `hospitals.departments`（逗號分隔），一家都沒有再放寬不限科別（`department_matched=False`）。
+  按鈕沒帶縣市 / 座標時 `FindHospitalHandler` 先請分享位置（狀態 `AWAIT_LOCATION` `for=clinics` + `department`）。
+  距離用 `app/utils/geo.py` 的 Haversine，不用地圖服務。
+- **院所科別** `hospitals.departments`：來自衛福部「醫療機構與人員基本資料」CSV（`data/醫療機構與人員基本資料_*.csv`，
+  欄名 機構代碼 / 機構名稱 / 縣市區名 / 地址 / 科別）在後台「院所設定」匯入；該檔沒有層級欄位，診所從名稱認、
+  醫院層級留空不覆蓋既有值，所以先匯健保署特約機構檔（層級）再匯這份（科別）。migration `0002_hospital_departments`。
 - **院所座標** `hospitals.lat / lng`：種子檔 `data/er_hospitals.csv`，在後台「院所設定」用 CSV 匯入；
   匯入 CSV / 後台 PATCH 都接受 `lat,lng`（`parse_coords` 驗證）。
 - **公開 API / LIFF**：`GET /api/v1/triage/board?lat=&lng=`（依距離）或 `?area=01`（縣市看板，只給 LIFF 切換與 AI 脈絡用）、
@@ -204,7 +232,7 @@ Rich Menu / Quick Reply / Flex 按鈕的 postback、圖片、位置訊息，以�
 
 ### LINE 層慣例
 
-- Postback data 統一用 querystring `intent=<Intent>&key=value`，以 `postback_data()` 產生、`IntentRequest.from_postback()` 解析。文字關鍵字對照在 `app/line/intents.py` 的 `TEXT_KEYWORDS`（完全相等才命中，`keyword_intent()`），是不依賴 AI 的確定進入點；「主選單」→ `MenuHandler` 列出功能按鈕（不含意見回饋）；紅旗關鍵字 `EMERGENCY_KEYWORDS` 命中直接導向緊急畫面。
+- Postback data 統一用 querystring `intent=<Intent>&key=value`，以 `postback_data()` 產生、`IntentRequest.from_postback()` 解析。文字關鍵字對照在 `app/line/intents.py` 的 `TEXT_KEYWORDS`（完全相等才命中，`keyword_intent()`），是不依賴 AI 的確定進入點；「主選單」→ `MenuHandler` 列出功能按鈕（不含意見回饋）；紅旗關鍵字 `EMERGENCY_KEYWORDS`（`is_emergency_text()`，包含比對）命中直接導向緊急畫面，但有 10 分鐘冷卻（`app/line/emergency.py`，`conversation_state` 的 `<line_user_id>:emergency` key）：送過緊急畫面後同一人再打含紅旗的字不再短路、交給 AI 依脈絡判斷，AI 仍判 emergency 只回一句話 + 119 / 找醫院按鈕，避免反覆重傳同一則。
 - 新增意圖：加 `Intent` 列舉值 → 繼承 `IntentHandler`（設 `intent`、`required_permission`、`requires_verified`）→ 在 `IntentRouter.default()` 註冊。新增事件類型：繼承 `EventHandler` 設 `event_type` → 在 `EventDispatcher.default()` 註冊。
 - 訊息文案集中在 `app/line/messages/`，透過 `MessageBuilder` 組 Flex / QuickReply；`BotContext.reply()` 自動截到 LINE 上限 5 則。
 - SDK 事件模型是 pydantic v1：`FollowEvent` 需要 `follow.isUnblocked`，測試 payload 缺欄位會被解析成 `UnknownEvent` 而靜默略過。

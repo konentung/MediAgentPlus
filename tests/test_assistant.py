@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import io
-import json
 from pathlib import Path
 
+import pytest
 from linebot.v3.messaging import FlexMessage, TextMessage
 
 from app.core.exceptions import ExternalServiceError
 from app.domain.enums import BindingStatus, Intent, Role
-from app.domain.retrieval import BM25Index, chunk_text, tokenize
+from app.domain.retrieval import (
+    BM25Index,
+    chunk_document,
+    chunk_text,
+    clean_lines,
+    collect_boilerplate,
+    tokenize,
+)
 from app.services.knowledge_service import parse_markdown
 from tests.test_webhook import _event
 
@@ -55,6 +62,75 @@ def test_chunk_text_keeps_headings_with_paragraphs():
     text = "# 標題\n\n## 小節一\n\n第一段內容。\n\n## 小節二\n\n第二段內容。"
     chunks = chunk_text(text, max_chars=20)
     assert chunks[0].startswith("小節一：第一段") and chunks[1].startswith("小節二：第二段")
+
+
+def test_chunk_document_heading_path_lists_tables_and_noise():
+    text = (
+        "人工髖關節照護\n\n首頁 > 衛教園地 > 衛教單張\n\nQrcode\n\n108-12-09\n\n"
+        "手術後須維持正確的姿勢，執行復健運動。\n\n"
+        "一、注意事項\n\n（一）飲食\n\n多攝取高蛋白質食物，以促進傷口癒合。\n\n"
+        "（二）活動\n\n有下列情況請儘快就醫：\n\n1. 傷口紅腫熱痛。\n\n2. 發燒超過 38 度。\n\n"
+        "二、常見問題\n\nQ：多久可以洗澡？\n\n拆線後兩天可以淋浴，不要泡澡。\n\n"
+        "項目\n\n數值\n\n血壓\n\n120\n\n心跳\n\n72\n\n體溫\n\n36.5\n\n"
+        "1. 高血壓\n\n2. 糖尿病\n\n3. 腎臟病\n\n以上為常見的危險因子。"
+    )
+    chunks = chunk_document(text, title="人工髖關節照護", max_chars=60)
+    joined = "\n".join(c.content for c in chunks)
+    # 標題重複行、麵包屑、Qrcode、日期都不在片段裡；min_chars 很小，所以每段獨立
+    for noise in ("首頁", "Qrcode", "108-12-09", "人工髖關節照護："):
+        assert noise not in joined
+    by_heading = {c.heading: c for c in chunks}
+    assert by_heading["注意事項 › 飲食"].content.startswith("注意事項 › 飲食：多攝取高蛋白質")
+    care = by_heading["注意事項 › 活動"]
+    assert (
+        care.kind == "list" and "有下列情況請儘快就醫：\n1. 傷口紅腫熱痛。\n2. 發燒" in care.content
+    )
+    qa = next(c for c in chunks if c.kind == "qa")
+    assert qa.heading == "常見問題" and "Q：多久可以洗澡？\n拆線後兩天" in qa.content
+    # 表格攤平成「｜」分隔（跟前一段合併時 kind 沿用前一段）
+    assert any("項目｜數值｜血壓｜120｜心跳｜72｜體溫｜36.5" in c.content for c in chunks)
+    table = chunk_document("表格\n\n" + "\n\n".join(["項目", "數值", "血壓", "120", "心跳", "72"]))
+    assert len(table) == 1 and table[0].kind == "table"
+    # 連續的「1. 2. 3.」短行是條列不是標題
+    risk = next(c for c in chunks if "1. 高血壓" in c.content)
+    assert risk.kind == "list" and "以上為常見的危險因子" in risk.content
+    assert all(c.heading != "高血壓" for c in chunks)
+
+
+def test_chunk_document_recursive_split_overlap_and_min_merge():
+    sentences = [f"第{i}句說明服藥後要注意的事情與觀察重點。" for i in range(1, 41)]
+    text = "以下是服藥後的注意事項。\n\n服藥注意\n\n" + "".join(sentences) + "\n\n結尾。"
+    chunks = chunk_document(text, max_chars=200)
+    assert len(chunks) > 3
+    for c in chunks:
+        assert len(c.content) <= 300 and c.content.rstrip().endswith(
+            "。"
+        )  # 硬上限 1.5 倍、句界收尾
+    # 相鄰片段重疊最後一句
+    first_tail = chunks[0].content.rstrip().split("。")[-2] + "。"
+    assert chunks[1].content.startswith("服藥注意：" + first_tail)
+    # 太短的尾巴（結尾。）併回前一段而不是自成一段
+    assert "結尾。" in chunks[-1].content and len(chunks[-1].content) > 40
+    # 太短的開頭段落把第二段併進來（沿用第一段沒有標題），其餘都在「服藥注意」小節
+    assert chunks[0].heading == "" and "服藥注意：第1句" in chunks[0].content
+    assert all(c.heading == "服藥注意" for c in chunks[1:])
+
+
+def test_collect_boilerplate_keeps_section_headings():
+    paragraph = "血壓要每天早晚各量一次，量之前先靜坐五分鐘，記錄在血壓手冊帶回診時給醫師看。"
+    docs = [
+        ["衛教資訊", "聯絡我們", "", "注意事項", paragraph, "", "參考來源", "聯絡我們"]
+        for _ in range(40)
+    ]
+    boilerplate = collect_boilerplate(docs)
+    assert {
+        "衛教資訊",
+        "聯絡我們",
+        "參考來源",
+    } <= boilerplate  # 頁尾「參考來源」後面接導覽，也是樣板
+    assert "注意事項" not in boilerplate and paragraph not in boilerplate
+    lines = clean_lines("\n".join(docs[0]), boilerplate=boilerplate)
+    assert lines == ["注意事項", paragraph]
 
 
 def test_parse_markdown_front_matter():
@@ -270,6 +346,43 @@ def test_ai_emergency_event_uses_emergency_module(post_line_event, container):
     assert messages[1].quick_reply.items[0].action.label == "撥打 119"
 
 
+def test_emergency_card_not_repeated_within_cooldown(post_line_event, container):
+    """紅旗關鍵字用包含比對，接著描述「胸痛好一點了」不該每句都重傳緊急畫面：
+    冷卻期間內改交給 AI 依脈絡判斷。"""
+    from app.line.messages.common import EMERGENCY_TEXT
+
+    _text(post_line_event, "我胸痛")
+    assert container.llm_client.calls == []
+    assert container.line_client.replies[-1][1][0].text == EMERGENCY_TEXT
+
+    _text(post_line_event, "胸痛好一點了，頭痛怎麼辦")
+    assert len(container.llm_client.calls) == 1  # 交給 AI，不再短路
+    _, messages = container.line_client.replies[-1]
+    assert messages[0].text != EMERGENCY_TEXT and "家醫科" in messages[0].text
+
+    # AI 仍判斷 emergency：只回它的一句話 + 119 / 找醫院按鈕，不重貼固定文案
+    _text(post_line_event, "我覺得要叫 119")
+    _, messages = container.line_client.replies[-1]
+    assert len(messages) == 1 and messages[0].text == "請立即撥打 119。"
+    assert messages[0].quick_reply.items[0].action.label == "撥打 119"
+
+    # 冷卻過期（或別的使用者）→ 再次短路
+    container.conversation_state.clear("U1:emergency")
+    _text(post_line_event, "我胸痛")
+    assert container.line_client.replies[-1][1][0].text == EMERGENCY_TEXT
+    _text(post_line_event, "我胸痛", user_id="U2")
+    assert container.line_client.replies[-1][1][0].text == EMERGENCY_TEXT
+
+
+def test_emergency_cooldown_keeps_other_states(post_line_event, container):
+    """冷卻旗標用獨立 key，不會蓋掉等照片 / 等位置這類對話狀態。"""
+    _text(post_line_event, "找醫院")
+    assert container.conversation_state.peek("U1").action == "await_location"
+    _text(post_line_event, "我覺得要叫 119")
+    assert container.conversation_state.peek("U1:emergency") is not None
+    assert container.conversation_state.peek("U1") is None  # 改打字聊別的，等位置狀態照舊丟掉
+
+
 def test_hospital_event_asks_for_location_even_with_city(post_line_event, container):
     """找醫院只認使用者位置：AI 就算抓到縣市，也只會請對方分享位置。"""
     container.triage.poll()
@@ -324,6 +437,7 @@ def test_symptom_answer_with_actions_and_urgent_adds_119(post_line_event, contai
     items = messages[0].quick_reply.items
     assert [i.action.label for i in items] == ["🏠 附近診所", "🏥 找醫院"]
     assert "action=clinics" in items[0].action.data
+    assert "department=" in items[0].action.data  # 建議的科別帶進找診所
     _text(post_line_event, "我很喘")
     _, messages = container.line_client.replies[-1]
     labels = [i.action.label for i in messages[0].quick_reply.items]
@@ -442,128 +556,217 @@ def test_text_clears_pending_photo_state_but_keeps_location(post_line_event, con
     assert container.conversation_state.peek("U1").action == PENDING_LOCATION
 
 
-# ---- 衛教 JSONL 匯入與混合檢索 ----
+# ---- 衛教 txt 匯入（依科別）與混合檢索 ----
 
-HEALTH_ED_RECORDS = [
-    {
-        "id": "a1",
-        "title": "了解肝癌",
-        "text": "肝癌是台灣常見的癌症之一。\n\n高風險族群包括 B 型肝炎、C 型肝炎帶原者與肝硬化病人，建議每六個月做一次腹部超音波與甲型胎兒蛋白檢查。\n\n預防方式：接種 B 型肝炎疫苗、避免飲酒、控制體重。",
-        "chars": 120,
-        "hospitalName": "中國醫藥大學附設醫院",
-        "hospitalCode": "0401200011",
-        "level": "醫學中心",
-        "topics": ["癌症/腫瘤", "腸胃/肝膽"],
-        "forms": ["疾病介紹"],
-        "category": "衛教單張",
-        "format": "html",
-        "url": "https://www.cmuh.cmu.edu.tw/HealthEdus/Detail?no=1",
-    },
-    {
-        "id": "a2",
-        "title": "糖尿病足部照護",
-        "text": "糖尿病病人每天要檢查足部有沒有傷口、水泡或顏色改變。\n\n洗腳後要擦乾趾縫，剪指甲要平剪不要剪太短，不要赤腳走路。\n\n若傷口三天沒有好轉或出現紅腫熱痛，請儘快回診新陳代謝科。",
-        "chars": 110,
-        "hospitalName": "台大醫院",
-        "hospitalCode": "0401180014",
-        "level": "醫學中心",
-        "topics": ["內分泌/新陳代謝"],
-        "forms": ["居家照護"],
-        "category": "衛教資訊",
-        "format": "pdf",
-        "url": "https://www.ntuh.gov.tw/edu/2",
-    },
-    {  # 與 a2 內文相同（他院轉載）→ 重複略過
-        "id": "a3",
-        "title": "糖尿病足部照護（轉載）",
-        "text": "糖尿病病人每天要檢查足部有沒有傷口、水泡或顏色改變。\n\n洗腳後要擦乾趾縫，剪指甲要平剪不要剪太短，不要赤腳走路。\n\n若傷口三天沒有好轉或出現紅腫熱痛，請儘快回診新陳代謝科。",
-        "hospitalName": "某某醫院",
-        "hospitalCode": "9999",
-        "level": "地區醫院",
-        "topics": ["內分泌/新陳代謝"],
-        "forms": [],
-        "url": "https://example.org/dup",
-    },
-    {  # 英文頁面 → 略過
-        "id": "a4",
-        "title": "Contact Information",
-        "text": "Extra! Extra! September is Military Personnel Month. " * 5,
-        "hospitalName": "國軍醫院",
-        "hospitalCode": "0502",
-        "topics": [],
-        "forms": [],
-        "url": "https://example.org/en",
-    },
-    {  # 太短 → 略過
-        "id": "a5",
-        "title": "醫師停診公告",
-        "text": "本週三停診。",
-        "hospitalName": "博仁醫院",
-        "hospitalCode": "1501",
-        "topics": ["其他"],
-        "forms": [],
-        "url": "https://example.org/short",
-    },
-    {  # 沒有主題分類 → 預設略過，--all 才匯入
-        "id": "a6",
-        "title": "院內停車資訊",
-        "text": "本院停車場位於地下二樓，就醫民眾憑當日掛號單可享三小時免費停車，超過每小時三十元；假日車位有限，建議搭乘大眾運輸。"
-        * 2,
-        "hospitalName": "台大醫院",
-        "hospitalCode": "0401180014",
-        "topics": [],
-        "forms": [],
-        "url": "https://www.ntuh.gov.tw/parking",
-    },
-]
+_SEP = "=" * 60
+_HYPERTENSION = (
+    "高血壓居家照護\n\n首頁 > 衛教資訊 > 衛教單張\n\nQrcode\n\n"
+    "高血壓病人要規律服藥並每天量血壓，血壓控制好可以減少中風與心肌梗塞的風險。\n\n"
+    "一、每天量血壓\n\n早晚各量一次，量之前先靜坐五分鐘，記錄在血壓手冊帶回診時給醫師看。\n\n"
+    "二、飲食與生活\n\n少鹽少油，每週運動三次、每次三十分鐘，戒菸並避免熬夜。\n\n"
+    "三、什麼情況要就醫\n\n有下列情況請儘快就醫：\n\n1. 血壓超過 180/110 且頭痛。\n\n2. 胸痛或呼吸困難。"
+)
+_CATHETER = (
+    "心導管檢查是從手腕或鼠蹊部的血管放入細管到心臟，檢查冠狀動脈有沒有狹窄，必要時同時放支架。\n\n"
+    "檢查前一晚午夜後禁食，慢性病藥物依醫師指示服用，抗凝血劑要先告知醫師。\n\n"
+    "Q：檢查後多久可以下床？\n\n手腕穿刺約四小時、鼠蹊部穿刺約八到十二小時，依護理師指示活動。\n\n"
+    "檢查後穿刺處若出血、腫脹或手腳冰冷發麻，請立即告知醫護人員。"
+)
+_DIABETIC_FOOT = (
+    "糖尿病病人每天要檢查足部有沒有傷口、水泡或顏色改變。\n\n"
+    "洗腳後要擦乾趾縫，剪指甲要平剪不要剪太短，不要赤腳走路。\n\n"
+    "若傷口三天沒有好轉或出現紅腫熱痛，請儘快回診新陳代謝科。"
+)
 
 
-def _write_jsonl(tmp_path, records):
-    path = tmp_path / "he.jsonl"
-    path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in records), encoding="utf-8")
-    return path
+def _record(title, hospital, level, url, text, category="衛教資訊 > 衛教單張"):
+    return f"{_SEP}\n標題：{title}\n醫院：{hospital}（{level}）\n來源分類：{category}\n網址：{url}\n\n{text}\n\n"
 
 
-def test_health_education_import_filters_and_dedupes(container, make_user, tmp_path):
-    actor = _system_actor(container, make_user)
-    path = _write_jsonl(tmp_path, HEALTH_ED_RECORDS)
-    result = container.knowledge.import_health_education(actor, path, min_chars=60)
-    assert result == {"created": 2, "skipped": 3, "duplicates": 1, "read": 6}
-    docs = {d["title"]: d for d in container.knowledge.list(actor)}
-    doc = docs["了解肝癌"]
-    assert doc["category"] == "education" and doc["hospital_id"] is None
-    assert doc["meta"]["hospital_name"] == "中國醫藥大學附設醫院"
-    assert doc["meta"]["topics"] == ["癌症/腫瘤", "腸胃/肝膽"] and doc["tags"] == [
-        "癌症/腫瘤",
-        "腸胃/肝膽",
-        "疾病介紹",
-    ]
-    assert doc["source"].startswith("https://www.cmuh.cmu.edu.tw")
-    assert container.knowledge.stats()["documents"] == 2
-
-    # 重跑：同網址略過，不會重複
-    again = container.knowledge.import_health_education(actor, path, min_chars=60)
-    assert again["created"] == 0 and container.knowledge.stats()["documents"] == 2
-    # --all 把沒分類的也收進來；非系統管理員不能匯入
-    result = container.knowledge.import_health_education(
-        actor, path, min_chars=60, classified_only=False
+DEPARTMENT_FILES = {
+    "01_心臟內科.txt": "【心臟內科】共 5 篇衛教\n來源：台灣醫院官網衛教專區\n\n"
+    + _record(
+        "高血壓居家照護", "台大醫院", "醫學中心", "https://www.ntuh.gov.tw/edu/1", _HYPERTENSION
     )
-    assert result["created"] == 1
-    from app.core.exceptions import AuthorizationError
+    + _record(
+        "心導管檢查須知",
+        "中國醫藥大學附設醫院",
+        "醫學中心",
+        "https://www.cmuh.cmu.edu.tw/HealthEdus/Detail?no=2",
+        _CATHETER,
+    )
+    # 與第一篇內文相同（他院轉載）→ 重複略過
+    + _record(
+        "高血壓居家照護（轉載）", "某某醫院", "地區醫院", "https://example.org/dup", _HYPERTENSION
+    )
+    # 太短 → 略過
+    + _record("醫師停診公告", "博仁醫院", "地區醫院", "https://example.org/short", "本週三停診。")
+    # 英文頁面 → 略過
+    + _record(
+        "Contact Information",
+        "國軍醫院",
+        "區域醫院",
+        "https://example.org/en",
+        "Extra! Extra! September is Military Personnel Month. " * 5,
+    ),
+    "57_未分類.txt": "【未分類】共 1 篇衛教\n\n"
+    + _record(
+        "糖尿病足部照護", "台大醫院", "醫學中心", "https://www.ntuh.gov.tw/edu/2", _DIABETIC_FOOT
+    ),
+    # 非衛教整檔略過
+    "56_非衛教（院務消息、活動、醫師介紹）.txt": "【非衛教】共 1 篇\n\n"
+    + _record(
+        "本院榮獲醫療品質獎", "台大醫院", "醫學中心", "https://example.org/news", "本院榮獲…" * 40
+    ),
+}
+
+
+def _write_department_files(tmp_path, files=DEPARTMENT_FILES):
+    paths = []
+    for name, content in files.items():
+        path = tmp_path / name
+        path.write_text(content, encoding="utf-8")
+        paths.append(path)
+    return paths
+
+
+def _import_departments(container, actor, tmp_path, **kwargs):
+    return container.knowledge.import_department_files(
+        actor, _write_department_files(tmp_path), min_chars=60, **kwargs
+    )
+
+
+def test_department_import_filters_dedupes_and_updates(container, make_user, tmp_path):
+    actor = _system_actor(container, make_user)
+    result = _import_departments(container, actor, tmp_path)
+    assert {
+        k: result[k] for k in ("files", "read", "created", "updated", "skipped", "duplicates")
+    } == {
+        "files": 2,
+        "read": 6,
+        "created": 3,
+        "updated": 0,
+        "skipped": 2,
+        "duplicates": 1,
+    }
+    assert result["chunks"]["count"] >= 3 and result["chunks"]["over_hard_max"] == 0
+    docs = {d["title"]: d for d in container.knowledge.list(actor)}
+    doc = docs["高血壓居家照護"]
+    assert doc["category"] == "education" and doc["hospital_id"] is None
+    assert doc["department"] == "心臟內科" and doc["tags"] == ["心臟內科"]
+    assert doc["meta"]["hospital_name"] == "台大醫院" and doc["meta"]["level"] == "醫學中心"
+    assert doc["meta"]["imported_from"] == "01_心臟內科.txt"
+    assert doc["source"] == "https://www.ntuh.gov.tw/edu/1"
+    foot = docs["糖尿病足部照護"]
+    assert foot["department"] is None and foot["tags"] == []
+    assert container.knowledge.stats()["documents"] == 3
+
+    # 片段：麵包屑 / Qrcode 清掉、標題路徑前綴、條列成組
+    chunks = container.knowledge_repo.pending_embeddings(100)
+    contents = [c["content"] for c in chunks]
+    assert not any("Qrcode" in c or "首頁" in c for c in contents)
+    hits = container.knowledge.retrieve("血壓要怎麼量")
+    assert hits[0]["title"] == "高血壓居家照護" and hits[0]["department"] == "心臟內科"
+    # 短小節併成一段時，小節名變成行內前綴；條列跟著引言
+    assert "每天量血壓：早晚各量一次" in hits[0]["content"]
+    assert "有下列情況請儘快就醫：\n1. 血壓超過 180/110" in hits[0]["content"]
+
+    # 重跑：同網址更新、不重複建檔
+    again = _import_departments(container, actor, tmp_path)
+    assert again["created"] == 0 and again["updated"] == 3 and again["duplicates"] == 1
+    assert container.knowledge.stats()["documents"] == 3
+    # 非系統管理員不能匯入；檔名格式錯誤擋下
+    from app.core.exceptions import AuthorizationError, ValidationError
 
     staff = _system_actor(container, make_user, role=Role.MEDICAL_STAFF, hospital_id="H1")
-    try:
-        container.knowledge.import_health_education(staff, path)
-        raise AssertionError("expected AuthorizationError")
-    except AuthorizationError:
-        pass
+    with pytest.raises(AuthorizationError):
+        _import_departments(container, staff, tmp_path)
+    bad = tmp_path / "notes.txt"
+    bad.write_text("x", encoding="utf-8")
+    with pytest.raises(ValidationError):
+        container.knowledge.import_department_files(actor, [bad])
+
+
+def test_retrieve_weights_department_without_filtering(container, make_user, tmp_path):
+    actor = _system_actor(container, make_user)
+    wound = "傷口換藥前先洗手，用生理食鹽水清潔，再蓋上無菌紗布，每天換一次。"
+    files = {
+        "23_骨科.txt": _record(
+            "骨折術後傷口照護",
+            "A 醫院",
+            "區域醫院",
+            "https://a.example/1",
+            wound + "石膏不要弄濕。" * 3,
+        ),
+        "36_皮膚科.txt": _record(
+            "皮膚傷口照護", "B 醫院", "區域醫院", "https://b.example/1", wound + "避免抓癢。" * 3
+        ),
+    }
+    container.knowledge.import_department_files(
+        actor, _write_department_files(tmp_path, files), min_chars=30
+    )
+    assert (
+        container.knowledge.retrieve("傷口怎麼換藥", department="骨科")[0]["department"] == "骨科"
+    )
+    assert (
+        container.knowledge.retrieve("傷口怎麼換藥", department="皮膚科")[0]["department"]
+        == "皮膚科"
+    )
+    # 加權不是過濾：其他科別的片段仍在結果內
+    hits = container.knowledge.retrieve("傷口怎麼換藥", department="骨科")
+    assert {h["department"] for h in hits} == {"骨科", "皮膚科"}
+
+
+def test_department_import_and_rechunk_jobs(client, container, make_user, auth_header, tmp_path):
+    superadmin = make_user(Role.SUPER_ADMIN)
+    h1_admin = make_user(Role.HOSPITAL_ADMIN, hospital_id="H1")
+    container.knowledge_jobs.spawn = lambda fn: fn()  # 同步執行
+
+    def upload(user):
+        return client.post(
+            "/api/v1/admin/knowledge/jobs/department-import",
+            data={
+                "files": [
+                    (io.BytesIO(DEPARTMENT_FILES["01_心臟內科.txt"].encode()), "01_心臟內科.txt"),
+                    (io.BytesIO(DEPARTMENT_FILES["57_未分類.txt"].encode()), "57_未分類.txt"),
+                ],
+                "min_chars": "60",
+            },
+            headers=auth_header(user),
+        )
+
+    assert upload(h1_admin).status_code == 403
+    resp = upload(superadmin)
+    assert resp.status_code == 202
+    job = resp.get_json()["data"]
+    assert job["kind"] == "department_txt" and "path" not in job["params"]
+    done = container.knowledge_jobs.get(container.users.to_principal(superadmin), job["id"])
+    assert done["status"] == "succeeded" and done["result"]["created"] == 3
+    assert not (container.knowledge_jobs._upload_dir / job["id"]).exists()  # 暫存目錄已刪
+
+    # 先算向量，重建片段後向量清空、片段數不變
+    container.knowledge.embed_pending()
+    before = container.knowledge.stats()
+    assert before["embedded"] == before["chunks"] > 0
+    resp = client.post("/api/v1/admin/knowledge/jobs/rechunk", headers=auth_header(superadmin))
+    assert resp.status_code == 202
+    result = container.knowledge_jobs.get(
+        container.users.to_principal(superadmin), resp.get_json()["data"]["id"]
+    )["result"]
+    after = container.knowledge.stats()
+    assert result == {"documents": 3, "chunks": before["chunks"]}
+    assert after["chunks"] == before["chunks"] and after["embedded"] == 0
+    assert (
+        client.post(
+            "/api/v1/admin/knowledge/jobs/rechunk", headers=auth_header(h1_admin)
+        ).status_code
+        == 403
+    )
 
 
 def test_hybrid_retrieval_uses_embeddings_and_keywords(container, make_user, tmp_path):
     actor = _system_actor(container, make_user)
-    container.knowledge.import_health_education(
-        actor, _write_jsonl(tmp_path, HEALTH_ED_RECORDS), min_chars=60
-    )
+    _import_departments(container, actor, tmp_path)
     assert container.knowledge.stats()["embedded"] == 0
     done = container.knowledge.embed_pending(batch=1)
     assert done == container.knowledge.stats()["chunks"] > 0
@@ -577,18 +780,21 @@ def test_hybrid_retrieval_uses_embeddings_and_keywords(container, make_user, tmp
     )
     assert len(container.llm_client.embed_calls[-1]) == 1  # 查詢也算了一次向量
 
+    # 向量輸入帶科別與標題
+    assert any(
+        call[0].startswith("心臟內科 › 高血壓居家照護\n")
+        for call in container.llm_client.embed_calls
+    )
     # 沒有向量模型 → 只用關鍵字，結果仍然正確
     container.llm_client.embedding_model = None
-    hits = container.knowledge.retrieve("肝癌 高風險 追蹤")
-    assert hits[0]["title"] == "了解肝癌"
+    hits = container.knowledge.retrieve("心導管 檢查後 下床")
+    assert hits[0]["title"] == "心導管檢查須知"
     container.llm_client.embedding_model = "fake-embedding"
 
 
 def test_answer_with_citations_renders_sources(post_line_event, container, make_user, tmp_path):
     actor = _system_actor(container, make_user)
-    container.knowledge.import_health_education(
-        actor, _write_jsonl(tmp_path, HEALTH_ED_RECORDS), min_chars=60
-    )
+    _import_departments(container, actor, tmp_path)
     container.llm_client.decisions.insert(
         0,
         (

@@ -100,12 +100,14 @@
       return body.data;
     }
 
-    // multipart 上傳（CSV / JSONL）：用 XHR 才拿得到上傳進度；onProgress(percent) 可省略。
+    // multipart 上傳（CSV / 衛教 txt）：用 XHR 才拿得到上傳進度；onProgress(percent) 可省略。
     // 大檔（例如 96MB 的健保用藥）經 ngrok 上傳會很慢，沒有進度使用者會以為當掉。
     function upload(path, file, onProgress, fields) {
+      // file 可以是單一 File（欄位 file）或 File 陣列（欄位 files，多檔一次上傳）
       return new Promise(function (resolve, reject) {
         var data = new FormData();
-        data.append("file", file);
+        if (Array.isArray(file)) file.forEach(function (f) { data.append("files", f); });
+        else data.append("file", file);
         Object.keys(fields || {}).forEach(function (key) { data.append(key, fields[key]); });
         var xhr = new XMLHttpRequest();
         xhr.open("POST", path);

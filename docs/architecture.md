@@ -7,12 +7,12 @@
 | 加入好友 → 歡迎訊息 → 安全聲明 → 資料使用說明 Flex | `app/line/handlers/follow.py`、`app/line/messages/onboarding.py` |
 | 主選單 Rich Menu 六格 | LINE Official Account Manager 建立（文字動作 = `TEXT_KEYWORDS`）；六格定義 `app/line/handlers/intents/menu.py`（`DEFAULT_CELLS`） |
 | 自由文字 → AI 助理（RAG 檢索 → 判斷事件 → 套用模組） | `intents/assistant.py`、`services/conversation_service.py`、`services/knowledge_service.py`、`domain/retrieval.py`、`docs/ai-assistant-design.md` |
-| 我不舒服 → ① 病況諮詢 / 紅旗 → 緊急畫面 | `intents/symptom.py`（入口提示，後續文字走 AI 助理）、`EMERGENCY_KEYWORDS` in `app/line/intents.py` |
-| 找醫院 → 急診即時看板（燈號）+ 附近診所 | `intents/hospital.py`、`services/triage_service.py`、`domain/triage_rules.py`、LIFF `/liff/er` |
+| 我不舒服 → ① 病況諮詢 / 紅旗 → 緊急畫面 | `intents/symptom.py`（入口提示，後續文字走 AI 助理）、`EMERGENCY_KEYWORDS` in `app/line/intents.py`、冷卻 `app/line/emergency.py` |
+| 找醫院 → 急診動態分流：急診即時看板（燈號）+ 附近診所 | `intents/hospital.py`、`services/triage_service.py`、`domain/triage_rules.py`、LIFF `/liff/er` |
 | 急診動態分流（壅塞 → 分流建議 → 通知 119 / 診所） | `app/scheduler.py` 每 15 分鐘 `TriageService.poll()`、`FindHospitalHandler`、`docs/triage-design.md` |
-| 我剛出院 → 已驗證？→ ② 個人化 / 通用版 | `intents/discharge.py` |
+| 我剛出院 → ② 衛教諮詢：已驗證？→ 個人化 / 通用版 | `intents/discharge.py` |
 | 去哪拿藥 → ③ 藥物諮詢 / 一鍵建立提醒 | `intents/medication.py` |
-| 服藥提醒 → 已驗證？→ ④ 服藥小幫手 | `intents/reminder.py`（`requires_verified = True`） |
+| 服藥提醒 → ④ 服藥小幫手（不需驗證） | `intents/reminder.py`（`requires_verified = True`） |
 | 意見回饋（取代真人客服） | `intents/feedback.py`、`services/feedback_service.py`、LIFF `/liff/feedback`、後台 `/admin/feedback` |
 | 設定頁（檢視 / 修改基本資料） | `intents/settings.py` → LIFF `/liff/settings`（`app/liff_pages.py`） |
 | B1–B6 填寫基本資料（LIFF 6 步表單） | `/liff/intake`（`app/templates/liff/intake.html`）、`app/domain/intake_schema.py`、`IntakeService`、`api/v1/liff.py` |

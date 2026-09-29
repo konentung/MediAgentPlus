@@ -31,20 +31,24 @@
   </div>
   <div class="card-body">
     <p class="small text-secondary mb-3">
-      全台醫院衛教內文（<code>health_education_content.jsonl</code>，一行一篇）匯入為通用文件，之後再「計算向量」讓語意檢索生效。
-      兩個工作都在背景執行、可重跑：已匯入的網址與重複內文會略過，向量只算還沒有的片段。同一時間只會跑一個工作。
+      全台醫院衛教內文（依科別分類的 <code>01_心臟內科.txt</code> … 每科一檔，可一次選多檔）匯入為通用文件並記下科別，之後再「計算向量」讓語意檢索生效。
+      工作都在背景執行、可重跑：同網址的文件會更新（補科別、依新規則重切）、重複內文略過、向量只算還沒有的片段。切段規則改了可按「重建片段」不必重新上傳。同一時間只會跑一個工作。
     </p>
     <div class="row g-3">
       <div class="col-md-7">
         <form class="border rounded p-3 h-100" id="he-form">
-          <label class="form-label fw-bold small">匯入衛教內文 JSONL</label>
-          <input class="form-control form-control-sm" type="file" name="file" accept=".jsonl,.json,application/json,application/jsonl" required>
+          <label class="form-label fw-bold small">匯入衛教內文（依科別分類的 txt）</label>
+          <input class="form-control form-control-sm" type="file" name="files" accept=".txt,text/plain" multiple required>
+          <div class="form-text">「非衛教」檔會整檔略過；「未分類」照收但不記科別。</div>
           <div class="row g-2 mt-1">
-            <div class="col-4"><label class="form-label small mb-0">內文最少字數</label><input class="form-control form-control-sm" type="number" name="min_chars" value="200" min="0"></div>
-            <div class="col-4"><label class="form-label small mb-0">最多匯入篇數</label><input class="form-control form-control-sm" type="number" name="limit" min="1" placeholder="不限"></div>
-            <div class="col-4 d-flex align-items-end"><div class="form-check small"><input class="form-check-input" type="checkbox" name="include_all" id="he-all"><label class="form-check-label" for="he-all">連未分類的也匯入</label></div></div>
+            <div class="col-6"><label class="form-label small mb-0">內文最少字數</label><input class="form-control form-control-sm" type="number" name="min_chars" value="200" min="0"></div>
+            <div class="col-6"><label class="form-label small mb-0">最多匯入篇數</label><input class="form-control form-control-sm" type="number" name="limit" min="1" placeholder="不限"></div>
           </div>
-          <button class="btn btn-sm btn-brand mt-3" type="submit">開始匯入</button>
+          <div class="d-flex gap-2 mt-3 align-items-center">
+            <button class="btn btn-sm btn-brand" type="submit">開始匯入</button>
+            <button class="btn btn-sm btn-outline-secondary" type="button" id="rechunk-btn">重建片段</button>
+            <span class="small text-secondary" id="he-progress"></span>
+          </div>
         </form>
       </div>
       <div class="col-md-5">
@@ -203,7 +207,8 @@ Admin.boot(async function (ctx) {
       var hits = await ctx.api("/api/v1/admin/knowledge/search?q=" + encodeURIComponent(q));
       box.classList.remove("d-none");
       box.innerHTML = hits.length ? hits.map(function (h, i) {
-        return '<div class="border rounded p-2 mb-2 small"><div class="fw-bold">K' + (i + 1) + "　" + Admin.esc(h.title) + ' <span class="text-secondary fw-normal">' + Admin.esc(h.category) + "・分數 " + h.score + "</span></div><div style='white-space: pre-wrap;'>" + Admin.esc(h.content) + "</div></div>";
+        var meta = [h.department, h.category, h.kind !== "text" ? h.kind : "", "分數 " + h.score].filter(Boolean).map(Admin.esc).join("・");
+        return '<div class="border rounded p-2 mb-2 small"><div class="fw-bold">K' + (i + 1) + "　" + Admin.esc(h.title) + (h.heading ? ' <span class="text-secondary fw-normal">› ' + Admin.esc(h.heading) + "</span>" : "") + ' <span class="text-secondary fw-normal">' + meta + "</span></div><div style='white-space: pre-wrap;'>" + Admin.esc(h.content) + "</div></div>";
       }).join("") : '<div class="text-secondary small">沒有檢索到相關片段，AI 會回答「知識庫沒有資料」並建議詢問原院所。</div>';
     } catch (err) { Admin.toast(err.message, "danger"); }
   });
@@ -236,13 +241,20 @@ Admin.boot(async function (ctx) {
 
     function describeParams(j) {
       var p = j.params || {};
-      if (j.kind === "health_education") return Admin.esc(p.filename || "") + "・≥" + p.min_chars + " 字" + (p.include_all ? "・含未分類" : "") + (p.limit ? "・最多 " + p.limit + " 篇" : "");
+      if (j.kind === "department_txt") return (p.filenames || []).length + " 個檔・≥" + p.min_chars + " 字" + (p.limit ? "・最多 " + p.limit + " 篇" : "");
+      if (j.kind === "rechunk") return "文件 " + p.documents + " 篇";
       return "每批 " + p.batch + "・待算 " + p.pending;
     }
     function describeResult(j) {
       if (j.status === "failed") return '<span class="text-danger">' + Admin.esc(j.error || "") + "</span>";
       var r = j.result || j.progress || {};
-      if (j.kind === "health_education") return r.created === undefined ? "—" : "新增 " + r.created + (r.skipped !== undefined ? "・略過 " + r.skipped + "・重複 " + r.duplicates : "") + "（讀取 " + r.read + " 行）";
+      if (j.kind === "department_txt") {
+        if (r.read === undefined) return "—";
+        var c = r.chunks || {};
+        return "新增 " + r.created + "・更新 " + r.updated + "・略過 " + r.skipped + "・重複 " + r.duplicates + "（讀取 " + r.read + " 篇）" +
+          (c.count ? "；片段 " + c.count + " 個、中位數 " + c.median + " 字、過短 " + c.under_min + "、過長 " + c.over_hard_max : "");
+      }
+      if (j.kind === "rechunk" && r.chunks !== undefined && r.documents !== undefined && r.done === undefined) return "文件 " + r.documents + " 篇 → 片段 " + r.chunks + " 個";
       if (r.embedded !== undefined) return "完成 " + r.embedded + " 個片段";
       return r.done === undefined ? "—" : r.done + " / " + r.total;
     }
@@ -279,11 +291,25 @@ Admin.boot(async function (ctx) {
     }
     document.getElementById("he-form").addEventListener("submit", async function (e) {
       e.preventDefault();
-      var form = e.target, data = new FormData(form);
-      if (!form.elements.limit.value) data.delete("limit");
-      form.querySelector("button").disabled = true;
-      try { await startJob("/api/v1/admin/knowledge/jobs/health-education", { body: data, headers: authHeaders }); form.reset(); }
-      catch (err) { Admin.toast(err.message, "danger"); form.querySelector("button").disabled = false; }
+      var form = e.target, btn = form.querySelector("button[type=submit]"), progress = document.getElementById("he-progress");
+      var files = Array.prototype.slice.call(form.elements.files.files);
+      var fields = { min_chars: form.elements.min_chars.value || "200" };
+      if (form.elements.limit.value) fields.limit = form.elements.limit.value;
+      var sizeMB = (files.reduce(function (n, f) { return n + f.size; }, 0) / 1048576).toFixed(1);
+      btn.disabled = true;
+      try {
+        // 幾十個檔加起來近 100MB，用 XHR 顯示上傳進度（走本機網址，不要經 ngrok）
+        var job = await Admin.upload("/api/v1/admin/knowledge/jobs/department-import", files, function (pct) {
+          progress.textContent = pct < 100 ? "上傳中 " + pct + "%（" + sizeMB + " MB）" : "上傳完成，伺服器匯入中…";
+        }, fields);
+        Admin.toast("已開始：" + job.kind_label); progress.textContent = ""; form.reset(); await loadJobs();
+      } catch (err) { Admin.toast(err.message, "danger"); progress.textContent = ""; btn.disabled = false; }
+    });
+    document.getElementById("rechunk-btn").addEventListener("click", async function (e) {
+      if (!confirm("用目前的切段規則重建所有片段？已算好的向量會清掉，完成後要再按「計算向量」。")) return;
+      e.target.disabled = true;
+      try { await startJob("/api/v1/admin/knowledge/jobs/rechunk", { headers: Object.assign({ "Content-Type": "application/json" }, authHeaders), body: "{}" }); }
+      catch (err) { Admin.toast(err.message, "danger"); e.target.disabled = false; }
     });
     document.getElementById("embed-form").addEventListener("submit", async function (e) {
       e.preventDefault();

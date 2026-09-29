@@ -179,32 +179,78 @@ class TriageService:
         *,
         lat: float | None = None,
         lng: float | None = None,
+        department: str | None = None,
         limit: int = 5,
     ) -> dict[str, Any]:
-        """非急症的替代：有座標就依距離找診所 / 地區 / 區域醫院，否則同區（退到同縣市）比對。"""
-        if lat is not None and lng is not None:
-            with_coords = []
-            for h in self._hospitals.list_with_coords(tiers=CLINIC_TIERS):
-                distance = haversine_km(lat, lng, h["lat"], h["lng"])
-                if distance <= CLINIC_RADIUS_KM:
-                    with_coords.append({**h, "distance_km": round(distance, 1)})
-            if with_coords:
-                with_coords.sort(key=lambda h: h["distance_km"])
-                return {
-                    "city": city,
-                    "district": district,
-                    "scope": "distance",
-                    "hospitals": with_coords[:limit],
-                }
+        """非急症的替代：找同一鄉鎮市區（沒有就退到同縣市）的診所 / 地區 / 區域醫院。
+
+        院所主檔裡的診所大多**沒有座標**（衛福部基本資料沒提供），所以先用地址比對鄉鎮市區，
+        有座標的才算距離、並再補上 10 km 內有座標的院所；排序：層級小的優先（診所 → 地區 → 區域）
+        → 距離近的優先（沒座標排後）→ 名稱。`department`（AI 依症狀建議的科別）有值時只留有該科
+        的院所（對到該科本身的排在「西醫一般科」前面），一家都沒有再放寬成不限科別
+        （回傳 `department_matched=False`）。
+        """
+        terms = rules.department_terms(department)
+        result = self._clinic_pool(city, district, lat, lng, terms)
+        matched = bool(terms) and bool(result["hospitals"])
+        if terms and not matched:
+            result = self._clinic_pool(city, district, lat, lng, ())
+
+        def term_rank(h: dict[str, Any]) -> int:
+            departments = h.get("departments") or ""
+            return next((i for i, t in enumerate(terms) if t in departments), len(terms))
+
+        rows = sorted(
+            result["hospitals"],
+            key=lambda h: (
+                CLINIC_TIERS.index(h.get("capacity_tier")),
+                term_rank(h),
+                h.get("distance_km") if h.get("distance_km") is not None else float("inf"),
+                h["name"],
+            ),
+        )
+        return {
+            **result,
+            "hospitals": rows[:limit],
+            "department": department,
+            "department_terms": list(terms),
+            "department_matched": matched,
+        }
+
+    def _clinic_pool(
+        self,
+        city: str,
+        district: str | None,
+        lat: float | None,
+        lng: float | None,
+        departments: tuple[str, ...],
+    ) -> dict[str, Any]:
         rows = self._hospitals.search_nearby(
-            city=city, district=district, tiers=CLINIC_TIERS, limit=limit
+            city=city, district=district, tiers=CLINIC_TIERS, departments=departments, limit=50
         )
         scope = "district" if rows and district else "city"
         if not rows and district:
             rows = self._hospitals.search_nearby(
-                city=city, district=None, tiers=CLINIC_TIERS, limit=limit
+                city=city, district=None, tiers=CLINIC_TIERS, departments=departments, limit=50
             )
-        return {"city": city, "district": district, "scope": scope, "hospitals": rows}
+        pool = {h["id"]: h for h in rows}
+        if lat is not None and lng is not None:
+            for h in pool.values():
+                if h.get("lat") is not None and h.get("lng") is not None:
+                    h["distance_km"] = round(haversine_km(lat, lng, h["lat"], h["lng"]), 1)
+            for h in self._hospitals.list_with_coords(tiers=CLINIC_TIERS, departments=departments):
+                if h["id"] in pool:
+                    continue
+                distance = haversine_km(lat, lng, h["lat"], h["lng"])
+                if distance <= CLINIC_RADIUS_KM:
+                    pool[h["id"]] = {**h, "distance_km": round(distance, 1)}
+            scope = "nearby"
+        return {
+            "city": city,
+            "district": district,
+            "scope": scope,
+            "hospitals": list(pool.values()),
+        }
 
     # ---- helpers ----
 

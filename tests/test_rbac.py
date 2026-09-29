@@ -10,7 +10,7 @@ def test_guest_only_has_public_permissions(principal_factory):
     guest = principal_factory(Role.GUEST)
     assert AccessPolicy.has_permission(guest, Permission.CONSULT_SYMPTOM)
     assert AccessPolicy.has_permission(guest, Permission.FEEDBACK_SUBMIT)
-    # 服藥提醒與處方辨識刻意開放給所有人（不需先填基本資料）
+    # 服藥提醒與處方辨識開放給所有人（不需先填基本資料）
     assert AccessPolicy.has_permission(guest, Permission.REMINDER_MANAGE_OWN)
     assert AccessPolicy.has_permission(guest, Permission.PRESCRIPTION_MANAGE_OWN)
     assert not AccessPolicy.has_permission(guest, Permission.EDUCATION_PERSONAL)

@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Float, String
+from sqlalchemy import Boolean, Float, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.extensions import db
@@ -24,6 +24,9 @@ class HospitalModel(db.Model, TimestampMixin):
     contact_phone: Mapped[str | None] = mapped_column(String(30))
     # medical_center / regional / district / clinic；「非急症找附近診所」只取後三種
     capacity_tier: Mapped[str | None] = mapped_column(String(16))
+    # 診療科別，逗號分隔（衛福部「醫療機構與人員基本資料」的「科別」用詞，例如 家庭醫學科,內科）。
+    # 找附近診所依 AI 建議的科別篩選（`triage_rules.department_terms()` 對應同義詞）
+    departments: Mapped[str | None] = mapped_column(Text)
     # 座標：找醫院依距離推薦與找附近診所用；來源 data/er_hospitals.csv、匯入 CSV 或後台手填。
     # 沒有座標的院所不會出現在依距離的推薦裡
     lat: Mapped[float | None] = mapped_column(Float)

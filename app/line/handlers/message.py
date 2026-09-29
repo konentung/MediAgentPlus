@@ -2,10 +2,10 @@
 
 圖片與位置本身沒有意圖，依 `conversation_state`（使用者上一步在做什麼）決定：
 - 等處方箋照片 → 圖片交給藥物諮詢辨識；沒有狀態 → 先問「這是處方箋嗎？」
-- 等位置 → 交給找藥局 / 找醫院（找醫院用經緯度算距離）；沒有狀態 → 先記下位置再問要找什麼
+- 等位置 → 交給找藥局 / 找醫院 / 找附近診所；沒有狀態 → 先記下位置再問要找什麼
 - 等藥名 → 自由文字當藥名查詢
 - 文字完全等於 `TEXT_KEYWORDS` 的關鍵字（主選單、我不舒服、找醫院、我剛出院、去哪拿藥、
-  服藥提醒、意見回饋、設定）→ 直接走該功能，**不經 AI**：這是不依賴模型的確定進入點
+  服藥提醒、意見回饋、設定，及正式名稱別名）→ 直接走該功能，**不經 AI**：不依賴模型的確定進入點
 - 其他自由文字 → AI 助理（`AssistantHandler`）判斷事件後套用模組
 """
 
@@ -20,9 +20,10 @@ from linebot.v3.webhooks import (
 )
 
 from app.domain.enums import Intent
+from app.line import emergency
 from app.line.context import BotContext
 from app.line.handlers.base import EventHandler
-from app.line.intents import EMERGENCY_KEYWORDS, IntentRequest, keyword_intent
+from app.line.intents import IntentRequest, is_emergency_text, keyword_intent
 from app.line.router import IntentRouter
 from app.line.state_store import (
     AWAIT_DRUG_NAME,
@@ -52,14 +53,14 @@ class MessageHandler(EventHandler):
 
     def _text_request(self, ctx: BotContext, text: str) -> IntentRequest | None:
         """文字的分派順序（前三種都不經 AI）：
-        1. 紅旗關鍵字 → 緊急畫面（安全層）
+        1. 紅旗關鍵字 → 緊急畫面（安全層；冷卻期間內已送過就不再短路，交給 AI 依脈絡判斷）
         2. 正在「等藥名」→ 當藥名查詢
         3. 完全等於功能關鍵字（主選單、找醫院…）→ 直接走該功能
         4. 其餘自由文字 → AI 助理判斷事件；AI 未啟用時 AssistantHandler 再退回關鍵字包含比對"""
         states = ctx.container.conversation_state
         state = states.peek(ctx.line_user_id) if ctx.line_user_id else None
         normalized = text.strip()
-        if any(keyword in normalized for keyword in EMERGENCY_KEYWORDS):
+        if is_emergency_text(normalized) and not emergency.recently_notified(ctx):
             if state:
                 states.clear(ctx.line_user_id)
             return IntentRequest(Intent.EMERGENCY, {"text": normalized})
@@ -88,7 +89,7 @@ class MessageHandler(EventHandler):
         state = states.pop(ctx.line_user_id) if ctx.line_user_id else None
         if state and state.action == AWAIT_LOCATION:
             params = {**location, **{k: str(v) for k, v in state.payload.items()}}
-            if state.payload.get("for") == "hospital":
+            if state.payload.get("for") in ("hospital", "clinics"):
                 return IntentRequest(Intent.FIND_HOSPITAL, params)
             return IntentRequest(Intent.MEDICATION, {"action": "locate", **params})
         if ctx.line_user_id:

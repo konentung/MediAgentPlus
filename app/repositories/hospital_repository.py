@@ -31,9 +31,12 @@ class HospitalRepository(Protocol):
         city: str,
         district: str | None,
         tiers: tuple[str, ...],
+        departments: tuple[str, ...] = (),
         limit: int = 10,
     ) -> list[dict[str, Any]]: ...
-    def list_with_coords(self, *, tiers: tuple[str, ...] | None = None) -> list[dict[str, Any]]: ...
+    def list_with_coords(
+        self, *, tiers: tuple[str, ...] | None = None, departments: tuple[str, ...] = ()
+    ) -> list[dict[str, Any]]: ...
     def create(self, **values: Any) -> dict[str, Any]: ...
     def update(self, hospital_id: str, **changes: Any) -> dict[str, Any]: ...
     def upsert_many(self, rows: list[dict[str, Any]]) -> tuple[int, int]: ...
@@ -94,7 +97,9 @@ class SqlAlchemyHospitalRepository:
             stmt = stmt.where(HospitalModel.capacity_tier == tier)
         return paginate(stmt, page, per_page)
 
-    def list_with_coords(self, *, tiers: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
+    def list_with_coords(
+        self, *, tiers: tuple[str, ...] | None = None, departments: tuple[str, ...] = ()
+    ) -> list[dict[str, Any]]:
         """所有有座標的啟用院所（依距離排序時用，交給呼叫端算距離）。"""
         stmt = db.select(HospitalModel).where(
             HospitalModel.active.is_(True),
@@ -103,6 +108,8 @@ class SqlAlchemyHospitalRepository:
         )
         if tiers:
             stmt = stmt.where(HospitalModel.capacity_tier.in_(list(tiers)))
+        if departments:
+            stmt = stmt.where(_departments_filter(departments))
         return [row_to_dict(r) for r in db.session.execute(stmt).scalars()]
 
     def search_nearby(
@@ -111,9 +118,11 @@ class SqlAlchemyHospitalRepository:
         city: str,
         district: str | None,
         tiers: tuple[str, ...],
+        departments: tuple[str, ...] = (),
         limit: int = 10,
     ) -> list[dict[str, Any]]:
-        """依縣市（region 或地址開頭，臺 / 台皆可）與鄉鎮市區（地址包含）找啟用中的院所。"""
+        """依縣市（region 或地址開頭，臺 / 台皆可）與鄉鎮市區（地址包含）找啟用中的院所；
+        `departments` 有值時只留科別含任一者的院所。"""
         variants = {city, city.replace("台", "臺"), city.replace("臺", "台")}
         stmt = (
             db.select(HospitalModel)
@@ -130,6 +139,8 @@ class SqlAlchemyHospitalRepository:
         )
         if district:
             stmt = stmt.where(HospitalModel.address.like(f"%{district}%"))
+        if departments:
+            stmt = stmt.where(_departments_filter(departments))
         return [row_to_dict(r) for r in db.session.execute(stmt).scalars()]
 
     def create(self, **values: Any) -> dict[str, Any]:
@@ -169,3 +180,8 @@ class SqlAlchemyHospitalRepository:
                 updated += 1
         db.session.commit()
         return created, updated
+
+
+def _departments_filter(departments: tuple[str, ...]):
+    """`departments` 欄位是逗號分隔字串，用 LIKE 比對任一科別。"""
+    return db.or_(*[HospitalModel.departments.like(f"%{d}%") for d in departments])

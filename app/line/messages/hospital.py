@@ -241,9 +241,28 @@ def board_messages(board: dict[str, Any], liff_url: str, *, emergency: bool) -> 
     return messages
 
 
+def _departments_label(departments: str, limit: int = 6) -> str:
+    """逗號分隔的科別 → 「A、B、C…」，最多列幾個。"""
+    parts = [p for p in departments.split(",") if p]
+    label = "、".join(parts[:limit])
+    return f"{label}…" if len(parts) > limit else label
+
+
+def clinics_prompt_messages(department: str | None) -> list[Message]:
+    """找附近診所但還不知道使用者在哪：請分享位置（科別由 AI 依症狀建議）。"""
+    target = f"有{department}的診所" if department else "診所"
+    return [
+        M.text(
+            f"請分享位置，我幫你找附近{target}，非急症就近看診最快。",
+            quick_replies=[M.location_item("📍 分享位置")],
+        )
+    ]
+
+
 def clinics_messages(result: dict[str, Any], liff_url: str) -> list[Message]:
     rows = result.get("hospitals") or []
     area = f"{result['city']}{result.get('district') or ''}"
+    department = result.get("department")
     if not rows:
         return [
             M.text(
@@ -252,15 +271,17 @@ def clinics_messages(result: dict[str, Any], liff_url: str) -> list[Message]:
                 quick_replies=[M.uri_item("急診看板", liff_url)],
             )
         ]
-    scope = {"district": "同區", "distance": "離你最近"}.get(result.get("scope"), "同縣市")
+    scope = {"district": "同區", "nearby": "附近", "distance": "離你最近"}.get(
+        result.get("scope"), "同縣市"
+    )
+    if department and result.get("department_matched"):
+        lead = f"{area}（{scope}）有{department}的院所，非急症可先就近看診："
+    elif department:
+        lead = f"{area}（{scope}）沒有標示{department}的院所，先列出附近診所，可先電話確認："
+    else:
+        lead = f"{area}（{scope}）非急症可先就近看診，減少急診等候："
     contents: list[dict[str, Any]] = [
-        {
-            "type": "text",
-            "text": f"{area}（{scope}）非急症可先就近看診，減少急診等候：",
-            "size": "xs",
-            "color": "#666666",
-            "wrap": True,
-        }
+        {"type": "text", "text": lead, "size": "xs", "color": "#666666", "wrap": True}
     ]
     tier_label = {"clinic": "診所", "district": "地區醫院", "regional": "區域醫院"}
     for h in rows[:MAX_ROWS]:
@@ -279,6 +300,16 @@ def clinics_messages(result: dict[str, Any], liff_url: str) -> list[Message]:
                 {
                     "type": "text",
                     "text": h["address"],
+                    "size": "xs",
+                    "color": "#666666",
+                    "wrap": True,
+                }
+            )
+        if h.get("departments"):
+            line_items.append(
+                {
+                    "type": "text",
+                    "text": f"科別：{_departments_label(h['departments'])}",
                     "size": "xs",
                     "color": "#666666",
                     "wrap": True,

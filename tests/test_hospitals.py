@@ -143,6 +143,43 @@ def test_import_csv_nhi_format_and_upsert(client, make_user, auth_header):
     assert (result["created"], result["updated"], result["skipped"]) == (0, 1, 2)
 
 
+MOHW_CSV = (
+    "\ufeff機構代碼,機構名稱,電話,縣市區名,地址,科別,A醫師\n"
+    '3501015311,禾玥醫學診所,0988863238,臺北市松山區,臺北市松山區南京東路3段269巷6號1樓,"家庭醫學科,內科,",1\n'
+    '0401180014,臺大醫院,(02)23123456,臺北市中正區,臺北市中正區中山南路7號,"家庭醫學科,內科,外科,",100\n'
+)
+
+
+def test_import_mohw_format_fills_departments(client, make_user, auth_header):
+    """衛福部「醫療機構與人員基本資料」：沒有層級欄位，診所從名稱認、醫院層級不覆蓋；科別寫入 departments。"""
+    superadmin = make_user(Role.SUPER_ADMIN)
+    headers = auth_header(superadmin)
+    client.post(
+        "/api/v1/admin/hospitals/import",
+        data={"file": (io.BytesIO(NHI_CSV.encode("utf-8")), "nhi.csv")},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    resp = client.post(
+        "/api/v1/admin/hospitals/import",
+        data={"file": (io.BytesIO(MOHW_CSV.encode("utf-8")), "mohw.csv")},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.get_json()
+    assert resp.get_json()["data"]["errors"] == []
+    rows = {
+        h["id"]: h
+        for h in client.get("/api/v1/admin/hospitals", headers=headers).get_json()["data"]["items"]
+    }
+    clinic = rows["3501015311"]
+    assert clinic["capacity_tier"] == "clinic" and clinic["region"] == "臺北市"
+    assert clinic["departments"] == "家庭醫學科,內科"
+    ntuh = rows["0401180014"]
+    assert ntuh["capacity_tier"] == "medical_center"  # 先前匯入的層級保留
+    assert ntuh["departments"] == "家庭醫學科,內科,外科"
+
+
 def test_import_json_rows_template_format_and_permission(client, make_user, auth_header):
     admin = make_user(Role.HOSPITAL_ADMIN, hospital_id="H1")
     rows = [{"id": "H7", "name": "第七醫院", "region": "高雄市", "capacity_tier": "regional"}]
@@ -160,4 +197,4 @@ def test_import_json_rows_template_format_and_permission(client, make_user, auth
     template = client.get(
         "/api/v1/admin/hospitals/import/template", headers=auth_header(superadmin)
     )
-    assert template.status_code == 200 and "id,name,region" in template.get_data(as_text=True)
+    assert template.status_code == 200 and "departments" in template.get_data(as_text=True)

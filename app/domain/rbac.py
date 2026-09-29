@@ -1,6 +1,6 @@
 """角色 → 權限對照表與存取政策。
 
-刻意使用「明確列舉」而非階層繼承，方便稽核每個角色到底能做什麼。
+角色權限以明確列舉定義（非階層繼承），方便稽核每個角色能做什麼。
 """
 
 from __future__ import annotations
@@ -119,7 +119,7 @@ class AccessPolicy:
     def hospital_scope(principal: Principal) -> str | None:
         """院方查詢的院所範圍：SUPER_ADMIN 為 None（不限），其他人必須有所屬院所，否則拒絕。
 
-        刻意不讓「沒有 hospital_id 的院方帳號」退化成不過濾，避免看到全系統資料。
+        沒有 hospital_id 的院方帳號直接拒絕，不會退化成不過濾而看到全系統資料。
         """
         if principal.role is Role.SUPER_ADMIN:
             return None

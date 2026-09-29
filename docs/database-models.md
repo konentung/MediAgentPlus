@@ -46,7 +46,7 @@ MediAgent+ 的所有資料表都是 `app/models/` 下的 SQLAlchemy 模型，正
 | 急診分流（找醫院） | `er_snapshots` | 健保署急診即時資料的時序快照，依使用者位置推薦醫院用 |
 | AI 知識庫 | `knowledge_documents` | RAG 文件 |
 | | `knowledge_chunks` | 文件切段後的檢索片段（tsvector + 向量） |
-| | `knowledge_jobs` | 後台背景維護工作（衛教匯入、算向量） |
+| | `knowledge_jobs` | 後台背景維護工作（衛教 txt 匯入、重建片段、算向量） |
 
 ---
 
@@ -76,8 +76,9 @@ MediAgent+ 的所有資料表都是 `app/models/` 下的 SQLAlchemy 模型，正
 | `region` | String(50) | 縣市（臺 → 台 正規化），找醫院 / 分流依縣市篩選用。 |
 | `address` | String(200) | 地址；找附近診所時會解析鄉鎮市區。 |
 | `contact_phone` | String(30) | 聯絡電話，Flex 卡片上的「撥打電話」。 |
-| `capacity_tier` | String(16) | 層級：`medical_center` / `regional` / `district` / `clinic`（匯入時由健保署「特約類別」對應）。找附近診所只取 clinic / district / regional。 |
-| `lat` / `lng` | Float | 座標，找醫院依距離排序、分流建議依「離壅塞醫院最近」排序用；沒有時退回縣市比對。來源 `data/er_hospitals.csv` 或後台手填。 |
+| `capacity_tier` | String(16) | 層級：`medical_center` / `regional` / `district` / `clinic`（匯入時由健保署「醫事機構種類」對應；沒有該欄位時名稱含「診所」才視為 clinic）。找附近診所只取 clinic / district / regional。 |
+| `departments` | Text | 診療科別，逗號分隔（衛福部「醫療機構與人員基本資料」的「科別」用詞，例 `家庭醫學科,內科`）。找附近診所依 AI 建議的科別篩選（`triage_rules.department_terms()` 對應同義詞）。migration `0002_hospital_departments`。 |
+| `lat` / `lng` | Float | 座標，找醫院依距離排序用；找附近診所以鄉鎮市區為主、有座標才算距離（診所大多沒有座標）。來源 `data/er_hospitals.csv` 或後台手填。 |
 | `active` | Boolean, default true | 停用的院所不出現在下拉選單、不能被寫入（`HospitalService.require_active()`）。只有 SUPER_ADMIN 能改。 |
 | `created_by` | String(32) | 建立者 `users.id` 或 `system`。 |
 
@@ -333,7 +334,7 @@ AI 個人化衛教（「我剛出院」）會讀最近一筆的科別、診斷�
 
 ## 藥物諮詢 / 服藥小幫手
 
-設計文件 `docs/medication-design.md`。刻意極簡：處方的藥品清單存 JSON、照片路徑直接掛在處方上。
+設計文件 `docs/medication-design.md`。處方的藥品清單存 JSON 欄位、照片路徑直接掛在處方上。
 
 ### `prescriptions` — 處方箋（`app/models/medication.py`）
 
@@ -462,23 +463,27 @@ Rich Menu「去哪拿藥」拍照 → `PrescriptionService.create_from_image()` 
 | `category` | String(32) | 分類代碼，見 `KnowledgeService.CATEGORIES`：`service`（服務說明）/ `faq`（常見問題）/ `symptom`（症狀與就醫）/ `medication`（用藥）/ `education`（衛教）/ `hospital`（院所資訊）。 |
 | `hospital_id` | FK → hospitals (SET NULL) | NULL = 通用（只有 SUPER_ADMIN 能改）；有值 = 該院所專屬。 |
 | `content` | Text | 全文（Markdown 或純文字），最長 `MAX_CONTENT_CHARS`。 |
-| `tags` | JSON list | 標籤；衛教匯入時 = topics + forms。 |
-| `source` | String(500) index | 來源：Markdown 檔名或原文網址。匯入時以此去重（同檔名更新、同網址略過）。 |
+| `department` | String(50) index | 科別（衛教 txt 檔名「01_心臟內科」的科別；未分類 / 手動建立的為 NULL）。檢索時同科別片段加權。 |
+| `tags` | JSON list | 標籤；衛教匯入時 = [科別]。 |
+| `source` | String(500) index | 來源：Markdown 檔名或原文網址。匯入時以此去重（同檔名 / 同網址都更新同一份）。 |
 | `content_hash` | String(40) index | 內文 SHA-1，跨醫院轉載的相同內容只收一份。 |
-| `meta` | JSON | 出處資訊（衛教匯入時填）：`external_id`（原始資料 id）、`hospital_code`、`hospital_name`、`level`（醫學中心 / 區域 / 地區）、`topics`、`forms`、`source_category`（來源站台分類）、`format`（html / pdf / docx）。 |
+| `meta` | JSON | 出處資訊（衛教匯入時填）：`hospital_name`、`level`（醫學中心 / 區域 / 地區）、`department`、`source_category`（來源站台分類）、`imported_from`（txt 檔名）。 |
 | `active` | Boolean | 停用後不參與檢索。 |
 | `created_by` | String(32) | 建立者或 `system`。 |
 
 ### `knowledge_chunks` — 檢索片段
 
-文件新增 / 修改時由 `chunk_text()` 切約 400 字重建（`replace_chunks`），刪文件 CASCADE。
+文件新增 / 修改時由 `chunk_document()`（結構感知 recursive chunking，目標 400 字、硬上限 600、句界收尾、重疊一句）重建
+（`replace_chunks`），刪文件 CASCADE；後台「重建片段」用目前規則重切全部（向量清空）。
 
 | 欄位 | 型別 | 說明 |
 |---|---|---|
 | `id` | String(32) PK | |
 | `document_id` | FK → knowledge_documents (CASCADE) | |
 | `seq` | Integer | 片段在文件內的順序。 |
-| `content` | Text | 片段文字，就是餵給模型的 K1…Kn。 |
+| `heading` | String(200) | 片段所在的標題路徑「章 › 節」，顯示用；內容已含同樣的前綴。 |
+| `kind` | String(8) | `text` / `list`（條列）/ `table`（表格攤平成「｜」分隔）/ `qa`（問答）。 |
+| `content` | Text | 片段文字（含「標題路徑：」前綴），就是餵給模型的 K1…Kn。 |
 | `tokens` | JSON list | jieba 搜尋模式 + 字元 bigram 的斷詞結果；SQLite 測試環境的記憶體 BM25 用。 |
 | `search_vector` | TSVECTOR（SQLite 為 Text） | 同一組 tokens 的 tsvector，PostgreSQL 全文檢索，GIN 索引。 |
 | `embedding` | vector(1536)（SQLite 為 JSON） | OpenAI `text-embedding-3-small` 向量，pgvector HNSW 索引；NULL 代表還沒算（`knowledge embed` / 後台「計算向量」只算 NULL 的）。SQLite 用 `JSON(none_as_null=True)` 讓 NULL 真的是 NULL。 |
@@ -490,7 +495,7 @@ Rich Menu「去哪拿藥」拍照 → `PrescriptionService.create_from_image()` 
 | 欄位 | 型別 | 說明 |
 |---|---|---|
 | `id` | String(32) PK | |
-| `kind` | String(32) | `health_education`（衛教 JSONL 匯入）/ `embed`（計算向量）。 |
+| `kind` | String(32) | `department_txt`（衛教 txt 匯入）/ `rechunk`（重建片段）/ `embed`（計算向量）。 |
 | `status` | String(16) | `queued` → `running` → `succeeded` / `failed`。超過 30 分鐘沒更新的 running 工作會被標成 failed（程序中斷）。 |
 | `params` | JSON | 啟動參數：匯入 = `filename`、`min_chars`、`include_all`、`limit`、`path`（伺服器暫存路徑，API 不外露）；向量 = `batch`、`pending`（啟動時待算數）。 |
 | `progress` | JSON | 執行中的計數：匯入 = `{"created", "read"}`（每 500 篇更新）；向量 = `{"done", "total"}`（每批更新）。頁面每 3 秒輪詢。 |
@@ -534,3 +539,5 @@ hospitals ─┬─< users ─────────┬─< patient_profiles (
 - 統整前已存在的資料庫（版本指標指向舊 revision）：`flask --app wsgi db stamp --purge 0001_initial`，
   再用 `flask --app wsgi db check` 確認與模型無差異。
 - 之後改模型：`flask --app wsgi db migrate -m "..."` 產生新的 migration 疊在 `0001_initial` 之後。
+  目前：`0002_hospital_departments`（院所科別）、`0003_knowledge_department`
+  （`knowledge_documents.department`、`knowledge_chunks.heading / kind`）。

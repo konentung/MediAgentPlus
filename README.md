@@ -39,7 +39,7 @@ ruff check . && ruff format .
 ```
 
 Webhook URL 設定為 `https://<your-domain>/line/webhook`（本機開發可用 ngrok 對外）。
-Rich Menu 在 LINE Official Account Manager 建立（2500×1686 六格），每格動作設「文字」：我不舒服 / 找醫院 / 我剛出院 / 去哪拿藥 / 服藥提醒 / 意見回饋。
+Rich Menu 在 LINE Official Account Manager 建立（2500×1686 六格），每格動作設「文字」：我不舒服 / 找醫院 / 我剛出院 / 去哪拿藥 / 服藥提醒 / 意見回饋（口語化；正式名稱也可當文字關鍵字）。
 第一位系統管理員：把自己的 LINE userId 填進 `.env` 的 `SUPER_ADMIN_LINE_USER_IDS`，登入後台後在「人員與角色」指派其他人。
 服藥提醒推播與急診資料抓取由程序內排程（APScheduler，`app/scheduler.py`）執行，不需要 cron。
 
@@ -70,7 +70,7 @@ app/integrations/nhi_er.py 健保署急診即時訊息 API 客戶端（找醫院
 app/integrations/llm.py    OpenAI 結構化輸出客戶端，對話助理與處方辨識共用
 data/knowledge/            AI 知識庫種子 Markdown（通用衛教、服務說明），後台「匯入 Markdown」上傳
 data/                      開放資料與知識庫原始檔（不進版控，本機自行放置）：pharmacy/ 藥局藥品 CSV、knowledge/ 種子 Markdown、
-                           衛教內文資料/ 全台醫院衛教 JSONL；都可在後台上傳，或用 CLI 匯入
+                           衛教內文_依科別分類/ 全台醫院衛教 txt（每科一檔）；都在後台上傳
 app/utils/crypto.py        FieldCipher：身分證指紋雜湊（HMAC）、處方箋照片加密（Fernet）
 app/line/                  Messaging client、webhook、EventDispatcher、IntentRouter、handlers、messages、Rich Menu、
                            state_store（對話狀態：等處方箋照片 / 等位置 / 等藥名）
@@ -131,14 +131,15 @@ tests/                     pytest（RBAC、JWT、OAuth、LIFF、webhook、intake
 | POST / PATCH / DELETE | /api/v1/admin/knowledge[/{id}] | education:content_manage | 新增 / 修改 / 刪除文件（院所綁自己；通用只有 SUPER_ADMIN） |
 | POST | /api/v1/admin/knowledge/import | education:content_manage | 上傳多個 Markdown（multipart `files`），同檔名更新 |
 | GET | /api/v1/admin/knowledge/jobs[/{id}] | reference_data:manage | 知識庫統計 + 進行中 / 最近的維護工作（頁面輪詢） |
-| POST | /api/v1/admin/knowledge/jobs/health-education | reference_data:manage | 上傳衛教內文 JSONL（multipart `file`，`min_chars` / `include_all` / `limit`），背景匯入為通用文件，回 202 |
+| POST | /api/v1/admin/knowledge/jobs/department-import | reference_data:manage | 上傳依科別分類的衛教 txt（multipart `files` 多檔，`min_chars` / `limit`），背景匯入為通用文件並記科別，回 202 |
+| POST | /api/v1/admin/knowledge/jobs/rechunk | reference_data:manage | 用目前切段規則重建所有片段（背景；向量清空），回 202 |
 | POST | /api/v1/admin/knowledge/jobs/embed | reference_data:manage | 替還沒有向量的片段計算 embedding（背景、可重跑），同一時間只跑一個工作 |
 | GET | /api/v1/admin/permissions | 院方角色 | 權限矩陣 |
 | GET | /api/v1/admin/dashboard | patient:read | 待核對數、到期追蹤、開放工單 |
 | GET | /api/v1/admin/hospitals?q=&region=&tier=&page=&all= | 院方角色 | 院所表格分頁（每頁 15 筆；all=1 含停用，僅 SUPER_ADMIN） |
 | GET | /api/v1/admin/hospitals/options | 院方角色 | 下拉選單用的院所（只有醫院層級，不含診所） |
 | POST | /api/v1/admin/hospitals | hospital:manage | 新增院所（`id` 即院所代碼，建立後不可改） |
-| POST | /api/v1/admin/hospitals/import | hospital:manage | CSV 批次匯入（multipart `file` 或 JSON `rows`），同代碼更新、否則新增；`?only_hospitals=1` 略過診所 |
+| POST | /api/v1/admin/hospitals/import | hospital:manage | CSV 批次匯入（multipart `file` 或 JSON `rows`；支援自家範本、健保署特約機構、衛福部醫療機構基本資料三種欄名，後者提供 `departments` 科別），同代碼更新、否則新增；`?only_hospitals=1` 略過診所 |
 | GET | /api/v1/admin/hospitals/import/template | hospital:manage | 下載匯入範本 CSV |
 | PATCH | /api/v1/admin/hospitals/{id} | hospital:settings / hospital:manage | 修改院所資料；`active` 只有 SUPER_ADMIN 能改 |
 | GET | /api/v1/admin/pharmacies?city=&district=&q=&page= | 院方角色 | 藥局表格分頁（每頁 15 筆） |
@@ -174,7 +175,7 @@ tests/                     pytest（RBAC、JWT、OAuth、LIFF、webhook、intake
 | /liff/settings | 病人設定頁（Rich Menu「設定」→ LIFF）：綁定狀態、資料摘要、進入表單 |
 | /liff/prescriptions/{id} | 處方辨識結果：看原始照片、修改藥品清單、確認、進入建立提醒 |
 | /liff/er?area=01 或 ?lat=&lng= | 急診即時看板（公開資料，不需登入，LINE 內外都能開）：「用我的位置」依距離推薦，或看各縣市燈號與等候人數 |
-| /admin/knowledge | 院方後台：AI 知識庫文件維護、Markdown 匯入、試搜；系統管理員可在頁上匯入衛教內文 JSONL 與計算向量（背景工作、進度輪詢） |
+| /admin/knowledge | 院方後台：AI 知識庫文件維護、Markdown 匯入、試搜；系統管理員可在頁上匯入衛教內文 txt、重建片段與計算向量（背景工作、進度輪詢） |
 | /liff/reminders?prescription={id} | 服藥提醒總覽 / 新增 / 編輯；帶 `prescription` 會先載入該處方的建議排程 |
 | /admin | 院方後台儀表板；未登入 / 過期 / 非院方帳號一律導向 `/admin/login` |
 | /admin/login | 後台登入頁（「使用 LINE 登入」按鈕），`?next=` 登入後回原頁、`?error=` 顯示原因。LIFF 端不走這頁 |
@@ -231,7 +232,7 @@ tests/                     pytest（RBAC、JWT、OAuth、LIFF、webhook、intake
   `A21030000I-E41001-001.csv`（健保用藥）。
 - 找藥局不用地圖服務：LINE 位置訊息自帶地址，解析縣市 / 鄉鎮市區後比對 `pharmacies.city / district`。
 - 處方箋辨識與 AI 對話都走 **OpenAI API**（`OPENAI_API_KEY`；對話 `gpt-4.1-mini`、看圖 `gpt-4.1`，可用 `AI_MODEL` / `OCR_MODEL` 覆寫），透過 `app/integrations/llm.py` 的結構化輸出直接對到 pydantic 模型。
-- 知識庫資料由系統管理員在後台 `/admin/knowledge`「系統資料匯入」上傳衛教內文 JSONL、按「計算向量」（背景執行、頁面輪詢進度，狀態存 `knowledge_jobs`）；通用種子 Markdown 用同頁的「匯入 Markdown」。
+- 知識庫資料由系統管理員在後台 `/admin/knowledge`「系統資料匯入」上傳依科別分類的衛教 txt、按「計算向量」（切段規則改了按「重建片段」）（背景執行、頁面輪詢進度，狀態存 `knowledge_jobs`）；通用種子 Markdown 用同頁的「匯入 Markdown」。
 - AI 知識庫檢索 = PostgreSQL 全文檢索（jieba 斷詞 tsvector）+ pgvector 語意檢索（`EMBEDDING_MODEL` 預設 `text-embedding-3-small`）以 RRF 合併；migration 會 `CREATE EXTENSION vector`，本機 PostgreSQL 需已安裝 pgvector。
 - 服藥提醒由 `app/scheduler.py`（APScheduler）每 5 分鐘執行 `ReminderService.run_due()`；同一排程同一時段只推播一次，
   同一人同一批多顆藥合併成一則，封鎖官方帳號（`users.push_enabled=false`）的人自動略過。

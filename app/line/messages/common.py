@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from linebot.v3.messaging import Message
+from linebot.v3.messaging import Message, QuickReplyItem
 
 from app.domain.enums import Intent
 from app.line.intents import postback_data
@@ -16,16 +16,15 @@ FEEDBACK_TEXT = (
 )
 
 
-def emergency_messages() -> list[Message]:
+def emergency_items() -> list[QuickReplyItem]:
     return [
-        M.text(
-            EMERGENCY_TEXT,
-            quick_replies=[
-                M.uri_item("撥打 119", "tel:119"),
-                M.postback_item("最近急救責任醫院", Intent.FIND_HOSPITAL, emergency="1"),
-            ],
-        )
+        M.uri_item("撥打 119", "tel:119"),
+        M.postback_item("最近急救責任醫院", Intent.FIND_HOSPITAL, emergency="1"),
     ]
+
+
+def emergency_messages() -> list[Message]:
+    return [M.text(EMERGENCY_TEXT, quick_replies=emergency_items())]
 
 
 def binding_required_messages(liff_url: str, feature: str) -> list[Message]:

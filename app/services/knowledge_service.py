@@ -1,16 +1,20 @@
-"""知識庫：文件 CRUD（院方後台）、Markdown / 衛教 JSONL 匯入、向量計算、混合檢索（RAG 的 R）。
+"""知識庫：文件 CRUD（院方後台）、Markdown / 衛教 txt 匯入、重切片段、向量計算、混合檢索。
 
 - 通用文件（hospital_id 為空）只有 SUPER_ADMIN 能改；
   院所文件由該院所具 EDUCATION_CONTENT_MANAGE 的人維護。
 - 檢索 = 關鍵字（tsvector / BM25）+ 語意（OpenAI embedding + pgvector）各取候選，
   以 RRF 合併，同一份文件最多留 2 個片段。沒有向量（未設 EMBEDDING_MODEL 或尚未計算）時只用關鍵字。
+  有科別（`department`）時再多兩個「只在該科別內」的排序清單一起融合 → 同科別加權、不硬過濾
+  （科別分類正確率約 9 成，硬過濾會漏）。
+- 衛教資料來源是「依科別分類」的 txt（每科一檔、`====` 分隔、四行檔頭），
+  見 `import_department_files()`。
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import re
+import statistics
 import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -26,9 +30,14 @@ from app.domain.enums import Role
 from app.domain.principal import Principal
 from app.domain.rbac import AccessPolicy
 from app.domain.retrieval import (
-    chunk_text,
+    CHUNK_HARD_MAX_RATIO,
+    CHUNK_MIN_RATIO,
+    CHUNK_TARGET_CHARS,
+    chunk_document,
     cjk_ratio,
+    clean_lines,
     clean_text,
+    collect_boilerplate,
     content_hash,
     rrf_fuse,
     tokenize,
@@ -51,6 +60,17 @@ MAX_CHUNKS_PER_DOCUMENT = 2
 IMPORT_BATCH = 500
 _FRONT_MATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.S)
 
+# 依科別分類的衛教 txt：檔名「01_心臟內科.txt」，篇與篇用 60 個 = 分隔，每篇四行檔頭後空一行接內文
+DEPARTMENT_RECORD_SEP = "=" * 60
+_DEPARTMENT_FILENAME = re.compile(r"^(?P<code>\d{2})_(?P<department>.+)\.txt$")
+_DEPARTMENT_HEADER = re.compile(
+    r"標題：(?P<title>.*)\n醫院：(?P<hospital>.*?)(?:（(?P<level>[^）]*)）)?\n"
+    r"(?:來源分類：(?P<category>.*)\n)?網址：(?P<url>\S+)\n",
+    re.S,
+)
+SKIP_DEPARTMENT_PREFIXES = ("非衛教",)  # 院務消息 / 活動 / 醫師介紹整檔不收
+UNCLASSIFIED_DEPARTMENT = "未分類"  # 照收，但 department 留空
+
 
 class KnowledgeService:
     def __init__(
@@ -67,20 +87,41 @@ class KnowledgeService:
     # ---- 檢索 ----
 
     def retrieve(
-        self, query: str, *, hospital_ids: list[str | None] | None = None, top_k: int | None = None
+        self,
+        query: str,
+        *,
+        hospital_ids: list[str | None] | None = None,
+        top_k: int | None = None,
+        department: str | None = None,
     ) -> list[dict[str, Any]]:
         """回傳最相關的片段。
 
-        每個片段：{id, document_id, title, category, hospital_id, source, meta, content, score}。
+        每個片段：{id, document_id, title, category, hospital_id, department, source, meta,
+        heading, kind, content, score}。
+        `department` 有值時同科別的片段加權（多兩個排序清單進 RRF）。
         """
         scope = hospital_ids or [None]
         limit = top_k or self._top_k
+        tokens = tokenize(query)
         keyword = self._documents.search_keyword(
-            query, tokenize(query), hospital_ids=scope, limit=CANDIDATES_PER_SOURCE
+            query, tokens, hospital_ids=scope, limit=CANDIDATES_PER_SOURCE
         )
-        semantic = self._semantic_candidates(query, scope)
-        by_id = {h["id"]: h for h in keyword + semantic}
-        fused = rrf_fuse([[h["id"] for h in keyword], [h["id"] for h in semantic]])
+        vector = self._query_vector(query)
+        semantic = self._semantic_candidates(vector, scope)
+        rankings = [keyword, semantic]
+        if department:
+            rankings.append(
+                self._documents.search_keyword(
+                    query,
+                    tokens,
+                    hospital_ids=scope,
+                    limit=CANDIDATES_PER_SOURCE,
+                    department=department,
+                )
+            )
+            rankings.append(self._semantic_candidates(vector, scope, department=department))
+        by_id = {h["id"]: h for ranking in rankings for h in ranking}
+        fused = rrf_fuse([[h["id"] for h in ranking] for ranking in rankings])
         hits: list[dict[str, Any]] = []
         per_document: dict[str, int] = {}
         for chunk_id, score in fused:
@@ -93,19 +134,24 @@ class KnowledgeService:
                 break
         return hits
 
-    def _semantic_candidates(self, query: str, scope: list[str | None]) -> list[dict[str, Any]]:
+    def _query_vector(self, query: str) -> list[float] | None:
         client = self._llm() if self._llm else None
         if client is None or not getattr(client, "embedding_model", None):
-            return []
+            return None
         try:
             vectors = client.embed([query])
         except ExternalServiceError as exc:
             logger.warning("Query embedding failed, keyword-only retrieval: %s", exc.message)
-            return []
-        if not vectors:
+            return None
+        return vectors[0] if vectors else None
+
+    def _semantic_candidates(
+        self, vector: list[float] | None, scope: list[str | None], *, department: str | None = None
+    ) -> list[dict[str, Any]]:
+        if not vector:
             return []
         return self._documents.search_vector(
-            vectors[0], hospital_ids=scope, limit=CANDIDATES_PER_SOURCE
+            vector, hospital_ids=scope, limit=CANDIDATES_PER_SOURCE, department=department
         )
 
     # ---- 向量 ----
@@ -122,14 +168,45 @@ class KnowledgeService:
             )
             if not rows:
                 break
-            vectors = client.embed([f"{r['title']}\n{r['content']}" for r in rows])
+            vectors = client.embed([self._embedding_text(r) for r in rows])
             self._documents.set_embeddings(list(zip([r["id"] for r in rows], vectors, strict=True)))
             done += len(rows)
             logger.info("Embedded %s chunks (%s total this run)", len(rows), done)
         return done
 
+    @staticmethod
+    def _embedding_text(row: dict[str, Any]) -> str:
+        """向量輸入 = 科別 › 標題 + 片段（片段本身已含標題路徑）。"""
+        head = f"{row['department']} › {row['title']}" if row.get("department") else row["title"]
+        return f"{head}\n{row['content']}"
+
     def stats(self) -> dict[str, int]:
         return self._documents.stats()
+
+    # ---- 重切片段（切段規則改了、不想重新上傳資料時用）----
+
+    def rechunk_all(
+        self, actor: Principal, *, progress: Callable[[int, int], None] | None = None
+    ) -> dict[str, int]:
+        """用目前的切段規則重建所有文件的片段；向量會一併清掉，要再跑一次「計算向量」。"""
+        if actor.role is not Role.SUPER_ADMIN:
+            raise AuthorizationError("只有系統管理員可以重建片段")
+        ids = self._documents.document_ids()
+        chunks = 0
+        for start in range(0, len(ids), IMPORT_BATCH):
+            batch = ids[start : start + IMPORT_BATCH]
+            items: list[tuple[str, list[dict[str, Any]]]] = []
+            for document_id in batch:
+                doc = self._documents.get(document_id)
+                if doc is None:
+                    continue
+                items.append((document_id, self._chunks_for(doc)))
+            self._documents.delete_chunks_many(batch)
+            self._documents.add_chunks_many(items)
+            chunks += sum(len(c) for _, c in items)
+            if progress:
+                progress(min(start + IMPORT_BATCH, len(ids)), len(ids))
+        return {"documents": len(ids), "chunks": chunks}
 
     # ---- CRUD（院方後台）----
 
@@ -217,103 +294,135 @@ class KnowledgeService:
                 errors.append({"file": file.name, "message": getattr(exc, "message", str(exc))})
         return {"created": created, "updated": updated, "errors": errors}
 
-    # ---- 衛教 JSONL 匯入（data/衛教內文資料/health_education_content.jsonl）----
+    # ---- 衛教 txt 匯入（依科別分類，每科一檔）----
 
-    def import_health_education(
+    def import_department_files(
         self,
         actor: Principal,
-        path: Path,
+        paths: list[Path],
         *,
         min_chars: int = 200,
-        classified_only: bool = True,
         limit: int | None = None,
-        progress: Callable[[int, int], None] | None = None,
-    ) -> dict[str, int]:
-        """一行一篇的衛教文章 → 通用知識文件（category=education）。
+        progress: Callable[[dict[str, int]], None] | None = None,
+    ) -> dict[str, Any]:
+        """依科別分類的衛教 txt → 通用知識文件（category=education，`department` = 檔名的科別）。
 
-        篩選：內文 ≥ min_chars、中文比例 ≥ 0.4、（預設）已分類到疾病主題、
-        內文不重複（跨醫院常互相轉載）。
-        `source` = 原始網址，已匯入過的網址略過，所以可重跑；向量另由 `embed_pending()` 計算。
+        兩遍掃描：第一遍統計全語料的網站導覽樣板行（`collect_boilerplate`），第二遍清理、切段、寫入。
+        篩選：內文 ≥ min_chars、中文比例 ≥ 0.4、內文不重複（跨醫院常互相轉載）。
+        `source` = 原始網址：已存在的文件**更新**（補科別、依新規則重切），沒有的新增，所以可重跑。
+        「非衛教」檔整檔略過；「未分類」照收但科別留空。
         """
         if actor.role is not Role.SUPER_ADMIN:
             raise AuthorizationError("只有系統管理員可以匯入衛教資料")
-        seen_hashes = self._documents.existing_hashes()
-        seen_sources = {
-            d["source"] for d in self._documents.list(hospital_ids=[None]) if d.get("source")
+        files = [(p, self._department_of(p)) for p in paths]
+        files = [(p, d) for p, d in files if d is not False]
+        summary: dict[str, Any] = {
+            "files": len(files),
+            "read": 0,
+            "created": 0,
+            "updated": 0,
+            "skipped": 0,
+            "duplicates": 0,
         }
-        summary = {"created": 0, "skipped": 0, "duplicates": 0, "read": 0}
-        pending_docs: list[dict[str, Any]] = []
+        boilerplate = collect_boilerplate(
+            clean_lines(r["text"], title=r["title"])
+            for path, _ in files
+            for r in _iter_department_records(path)
+        )
+        summary["boilerplate_lines"] = len(boilerplate)
+        seen_hashes = self._documents.existing_hashes()
+        existing = {
+            d["source"]: d["id"]
+            for d in self._documents.list(hospital_ids=[None])
+            if d.get("source")
+        }
+        pending_new: list[dict[str, Any]] = []
+        pending_update: list[dict[str, Any]] = []
         pending_chunks: list[tuple[str, list[dict[str, Any]]]] = []
-        for record in _iter_jsonl(path):
-            summary["read"] += 1
-            if limit is not None and summary["created"] >= limit:
-                break
-            text = clean_text(record.get("text") or "").strip()
-            url = record.get("url") or ""
-            if (
-                len(text) < min_chars
-                or cjk_ratio(text) < 0.4
-                or (classified_only and not record.get("topics"))
-                or not url
-                or url in seen_sources
-            ):
-                summary["skipped"] += 1
-                continue
-            digest = content_hash(text)
-            if digest in seen_hashes:
-                summary["duplicates"] += 1
-                continue
-            seen_hashes.add(digest)
-            seen_sources.add(url)
-            doc = self._health_education_document(record, text[:MAX_CONTENT_CHARS], digest, actor)
-            pending_docs.append(doc)
-            pending_chunks.append((doc["id"], self._chunks_for(doc["title"], doc["content"])))
-            summary["created"] += 1
-            if len(pending_docs) >= IMPORT_BATCH:
-                self._flush(pending_docs, pending_chunks)
-                if progress:
-                    progress(summary["created"], summary["read"])
-        self._flush(pending_docs, pending_chunks)
+        chunk_lengths: list[int] = []
+
+        def flush() -> None:
+            if pending_update:
+                self._documents.delete_chunks_many([d["id"] for d in pending_update])
+                self._documents.update_many(list(pending_update))
+            if pending_new:
+                self._documents.create_many(list(pending_new))
+            self._documents.add_chunks_many(list(pending_chunks))
+            pending_new.clear()
+            pending_update.clear()
+            pending_chunks.clear()
+            if progress:
+                progress(dict(summary))
+
+        for path, department in files:
+            for record in _iter_department_records(path):
+                summary["read"] += 1
+                if limit is not None and summary["created"] + summary["updated"] >= limit:
+                    break
+                text = record["text"]
+                if len(text) < min_chars or cjk_ratio(text) < 0.4:
+                    summary["skipped"] += 1
+                    continue
+                digest = content_hash(text)
+                if digest in seen_hashes and record["url"] not in existing:
+                    summary["duplicates"] += 1
+                    continue
+                seen_hashes.add(digest)
+                doc = self._department_document(record, department, digest, actor)
+                chunks = self._chunks_for(doc, boilerplate=boilerplate)
+                if not chunks:
+                    summary["skipped"] += 1
+                    continue
+                document_id = existing.get(record["url"])
+                if document_id:
+                    doc.pop("created_by")
+                    pending_update.append({**doc, "id": document_id})
+                    summary["updated"] += 1
+                else:
+                    document_id = doc["id"]
+                    existing[record["url"]] = document_id
+                    pending_new.append(doc)
+                    summary["created"] += 1
+                pending_chunks.append((document_id, chunks))
+                chunk_lengths.extend(len(c["content"]) for c in chunks)
+                if len(pending_new) + len(pending_update) >= IMPORT_BATCH:
+                    flush()
+        flush()
+        summary["chunks"] = chunk_stats(chunk_lengths)
         return summary
 
-    def _flush(
-        self, docs: list[dict[str, Any]], chunks: list[tuple[str, list[dict[str, Any]]]]
-    ) -> None:
-        if not docs:
-            return
-        self._documents.create_many(list(docs))
-        self._documents.add_chunks_many(list(chunks))
-        docs.clear()
-        chunks.clear()
+    @staticmethod
+    def _department_of(path: Path) -> str | None | bool:
+        """檔名 → 科別；未分類回 None；非衛教（整檔略過）回 False。"""
+        match = _DEPARTMENT_FILENAME.match(path.name)
+        if not match:
+            raise ValidationError(f"檔名格式應為「01_科別.txt」：{path.name}")
+        department = match.group("department").strip()
+        if department.startswith(SKIP_DEPARTMENT_PREFIXES):
+            return False
+        return None if department == UNCLASSIFIED_DEPARTMENT else department[:50]
 
     @staticmethod
-    def _health_education_document(
-        record: dict[str, Any], text: str, digest: str, actor: Principal
+    def _department_document(
+        record: dict[str, Any], department: str | None, digest: str, actor: Principal
     ) -> dict[str, Any]:
-        hospital = clean_text(record.get("hospitalName") or "").strip()
-        title = clean_text(record.get("title") or "").strip()
-        if not title or title == hospital or len(title) < 2:
-            title = (record.get("indexTitle") or title or "衛教資料").strip()
-        topics = [t for t in record.get("topics") or [] if t]
-        forms = [f for f in record.get("forms") or [] if f]
+        title = record["title"] or record["hospital"] or "衛教資料"
         return {
             "id": uuid.uuid4().hex,
             "title": title[:200],
             "category": "education",
             "hospital_id": None,
-            "content": text,
-            "tags": (topics + forms)[:20],
+            "department": department,
+            "content": record["text"][:MAX_CONTENT_CHARS],
+            "tags": [department] if department else [],
             "source": record["url"][:500],
             "content_hash": digest,
             "meta": {
-                "external_id": record.get("id"),
-                "hospital_code": record.get("hospitalCode"),
-                "hospital_name": hospital or None,
-                "level": record.get("level"),
-                "topics": topics,
-                "forms": forms,
-                "source_category": record.get("category"),
-                "format": record.get("format"),
+                "hospital_name": record["hospital"] or None,
+                "level": record["level"] or None,
+                "department": department,
+                "source_category": record["category"] or None,
+                "imported_from": record["file"],
             },
             "active": True,
             "created_by": actor.user_id,
@@ -322,13 +431,23 @@ class KnowledgeService:
     # ---- helpers ----
 
     @staticmethod
-    def _chunks_for(title: str, content: str) -> list[dict[str, Any]]:
+    def _chunks_for(
+        doc: dict[str, Any], *, boilerplate: frozenset[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """文件 → 片段列（content 含標題路徑；tokens 含科別與標題，讓關鍵字檢索也吃得到）。"""
+        head = " ".join(filter(None, (doc.get("department"), doc["title"])))
         return [
-            {"content": text, "tokens": tokenize(f"{title} {text}")} for text in chunk_text(content)
+            {
+                "content": chunk.content,
+                "heading": chunk.heading,
+                "kind": chunk.kind,
+                "tokens": tokenize(f"{head} {chunk.content}"),
+            }
+            for chunk in chunk_document(doc["content"], title=doc["title"], boilerplate=boilerplate)
         ]
 
     def _reindex_document(self, doc: dict[str, Any]) -> None:
-        self._documents.replace_chunks(doc["id"], self._chunks_for(doc["title"], doc["content"]))
+        self._documents.replace_chunks(doc["id"], self._chunks_for(doc))
 
     @staticmethod
     def _clean(body: dict[str, Any], *, require_all: bool) -> dict[str, Any]:
@@ -398,12 +517,37 @@ class KnowledgeService:
         }
 
 
-def _iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
-    with path.open(encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if line:
-                yield json.loads(line)
+def _iter_department_records(path: Path) -> Iterator[dict[str, str]]:
+    """一篇一個 dict：title / hospital / level / category / url / text / file；檔頭壞的略過。"""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    for raw in text.split(DEPARTMENT_RECORD_SEP)[1:]:
+        match = _DEPARTMENT_HEADER.match(raw.lstrip("\n"))
+        if not match:
+            continue
+        body = clean_text(raw.lstrip("\n")[match.end() :]).strip()
+        yield {
+            "title": clean_text(match.group("title") or "").strip(),
+            "hospital": clean_text(match.group("hospital") or "").strip(),
+            "level": (match.group("level") or "").strip(),
+            "category": clean_text(match.group("category") or "").strip()[:200],
+            "url": match.group("url").strip(),
+            "text": body,
+            "file": path.name,
+        }
+
+
+def chunk_stats(lengths: list[int]) -> dict[str, int]:
+    """片段長度分佈摘要（匯入 / 重切結果回報），對照 `chunk_document()` 的目標 / 硬上限 / 下限。"""
+    if not lengths:
+        return {"count": 0}
+    return {
+        "count": len(lengths),
+        "median": int(statistics.median(lengths)),
+        "min": min(lengths),
+        "max": max(lengths),
+        "under_min": sum(1 for n in lengths if n < CHUNK_TARGET_CHARS * CHUNK_MIN_RATIO),
+        "over_hard_max": sum(1 for n in lengths if n > CHUNK_TARGET_CHARS * CHUNK_HARD_MAX_RATIO),
+    }
 
 
 def parse_markdown(text: str, *, default_title: str) -> dict[str, Any]:

@@ -19,13 +19,15 @@ from app.utils.geo import parse_coords
 HOSPITAL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{1,31}$")
 CAPACITY_TIERS = ("medical_center", "regional", "district", "clinic")
 # 匯入時接受的欄位別名：自家範本欄位 + 健保署「特約醫事機構」開放資料欄位
+# 支援自家範本、健保署「特約醫事機構」與衛福部「醫療機構與人員基本資料」（有「科別」）三種欄名
 IMPORT_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
-    "id": ("id", "code", "院所代碼", "醫事機構代碼"),
-    "name": ("name", "院所名稱", "名稱", "醫事機構名稱"),
-    "region": ("region", "區域", "縣市", "地址縣市別"),
+    "id": ("id", "code", "院所代碼", "醫事機構代碼", "機構代碼"),
+    "name": ("name", "院所名稱", "名稱", "醫事機構名稱", "機構名稱"),
+    "region": ("region", "區域", "縣市", "地址縣市別", "縣市區名"),
     "address": ("address", "地址"),
     "contact_phone": ("contact_phone", "phone", "電話", "聯絡電話"),
     "capacity_tier": ("capacity_tier", "層級", "醫事機構種類"),
+    "departments": ("departments", "科別", "診療科別"),
     "lat": ("lat", "latitude", "緯度"),
     "lng": ("lng", "lon", "longitude", "經度"),
 }
@@ -47,7 +49,8 @@ SKIP_KIND_KEYWORDS = (
     "居家",
     "精神復健",
 )
-IMPORT_TEMPLATE_HEADER = "id,name,region,address,contact_phone,capacity_tier,lat,lng"
+IMPORT_TEMPLATE_HEADER = "id,name,region,address,contact_phone,capacity_tier,departments,lat,lng"
+MAX_DEPARTMENTS_LENGTH = 1000
 
 EDITABLE_FIELDS: dict[str, int] = {
     "name": 100,
@@ -157,6 +160,8 @@ class HospitalService:
             values[key] = text or None
         if (require_name or "name" in values) and not values.get("name"):
             raise ValidationError("院所名稱為必填")
+        if "departments" in body:
+            values["departments"] = HospitalService.clean_departments(body["departments"])
         if "capacity_tier" in body:
             tier = body["capacity_tier"] or None
             if tier is not None and tier not in CAPACITY_TIERS:
@@ -195,6 +200,9 @@ class HospitalService:
             if any(k in kind for k in SKIP_KIND_KEYWORDS):
                 skipped += 1
                 continue
+            # 沒有種類欄位（衛福部基本資料檔）時只能從名稱認出診所；醫院層級留空、不覆蓋既有值
+            if not kind and "診所" in (mapped.get("name") or ""):
+                kind = "診所"
             tier = self._tier_from_text(kind)
             if only_hospitals and tier in (None, "clinic"):
                 skipped += 1
@@ -231,6 +239,21 @@ class HospitalService:
         return mapped
 
     @staticmethod
+    def clean_departments(value: Any) -> str | None:
+        """科別：接受逗號 / 頓號分隔字串或清單，正規化成「A,B,C」（去空白、去重、去尾逗號）。"""
+        if value is None:
+            return None
+        if isinstance(value, list):
+            parts = value
+        else:
+            parts = str(value).replace("，", ",").replace("、", ",").split(",")
+        cleaned = list(dict.fromkeys(str(x).strip() for x in parts if str(x).strip()))
+        text = ",".join(cleaned)
+        if len(text) > MAX_DEPARTMENTS_LENGTH:
+            raise ValidationError(f"departments 不可超過 {MAX_DEPARTMENTS_LENGTH} 字")
+        return text or None
+
+    @staticmethod
     def _tier_from_text(text: str) -> str | None:
         if text in CAPACITY_TIERS:
             return text
@@ -241,8 +264,8 @@ class HospitalService:
 
     @staticmethod
     def _region(mapped: dict[str, str]) -> str | None:
-        """沒有 region 欄位時，從地址前 3 個字（縣市）推得。"""
-        if mapped.get("region"):
-            return mapped["region"]
-        address = mapped.get("address") or ""
-        return address[:3] if len(address) >= 3 and address[2] in "市縣" else None
+        """沒有 region 時從地址前 3 個字（縣市）推得；「縣市區名」這類含鄉鎮市區的值只留縣市。"""
+        text = mapped.get("region") or mapped.get("address") or ""
+        if len(text) > 3 and text[2] in "市縣":
+            return text[:3]
+        return text or None

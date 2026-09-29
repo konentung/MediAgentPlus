@@ -1,16 +1,17 @@
-"""知識庫維護工作（後台「系統資料匯入」）：衛教 JSONL 匯入、向量計算。
+"""知識庫維護工作（後台「系統資料匯入」）：衛教 txt 匯入、重建片段、向量計算。
 
 兩件事都要跑幾分鐘，不能在一個 HTTP 請求內做完，所以：
 1. API 只負責收檔、建一列 `knowledge_jobs`、交給 `spawn` 在背景執行緒跑 `run()`；
 2. 執行中定期把計數寫回 `progress`，頁面輪詢 `GET /api/v1/admin/knowledge/jobs` 顯示；
 3. 同一時間只允許一個工作（避免同時匯入 + 算向量互相干擾）；
    執行程序若中途被重啟，超過 `STALE_MINUTES` 沒更新的工作視為中斷，讓下一個工作能開始。
-只有 SUPER_ADMIN 能操作（與 CLI 的 `flask knowledge import-health-education` / `embed` 相同）。
+只有 SUPER_ADMIN 能操作。
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import uuid
 from collections.abc import Callable
@@ -28,9 +29,15 @@ logger = logging.getLogger(__name__)
 
 Spawn = Callable[[Callable[[], None]], None]
 
-KIND_HEALTH_EDUCATION = "health_education"
+KIND_DEPARTMENT_TXT = "department_txt"
+KIND_RECHUNK = "rechunk"
 KIND_EMBED = "embed"
-KIND_LABELS = {KIND_HEALTH_EDUCATION: "匯入衛教內文", KIND_EMBED: "計算向量"}
+KIND_LABELS = {
+    KIND_DEPARTMENT_TXT: "匯入衛教內文（依科別 txt）",
+    KIND_RECHUNK: "重建片段",
+    KIND_EMBED: "計算向量",
+}
+MAX_UPLOAD_FILES = 80
 STALE_MINUTES = 30
 RECENT_LIMIT = 8
 
@@ -69,31 +76,41 @@ class KnowledgeJobService:
 
     # ---- 啟動 ----
 
-    def start_health_education(
+    def start_department_import(
         self,
         actor: Principal,
-        stream: IO[bytes],
-        filename: str,
+        uploads: list[tuple[IO[bytes], str]],
         *,
         min_chars: int = 200,
-        include_all: bool = False,
         limit: int | None = None,
     ) -> dict[str, Any]:
-        """把上傳的 JSONL 存到 `upload_dir/<job_id>.jsonl`，背景匯入後刪檔。"""
+        """把上傳的科別 txt 存到 `upload_dir/<job_id>/`，背景匯入後整個目錄刪掉。"""
         self._require_system(actor)
         if min_chars < 0 or (limit is not None and limit <= 0):
             raise ValidationError("min_chars 需 ≥ 0、limit 需 > 0")
+        if not uploads or len(uploads) > MAX_UPLOAD_FILES:
+            raise ValidationError(f"請上傳 1 到 {MAX_UPLOAD_FILES} 個 .txt 檔")
         self._ensure_idle()
         job_id = uuid.uuid4().hex
-        path = self._save_upload(stream, job_id)
+        folder = self._save_uploads(uploads, job_id)
         params = {
-            "filename": filename,
+            "filenames": [name for _, name in uploads],
             "min_chars": min_chars,
-            "include_all": include_all,
             "limit": limit,
-            "path": str(path),
+            "path": str(folder),
         }
-        return self._create_and_spawn(actor, KIND_HEALTH_EDUCATION, job_id, params)
+        return self._create_and_spawn(actor, KIND_DEPARTMENT_TXT, job_id, params)
+
+    def start_rechunk(self, actor: Principal) -> dict[str, Any]:
+        """用目前的切段規則重建所有片段（向量會清掉，之後要再計算向量）。"""
+        self._require_system(actor)
+        self._ensure_idle()
+        stats = self._knowledge.stats()
+        if stats["documents"] == 0:
+            raise ValidationError("知識庫還沒有文件")
+        return self._create_and_spawn(
+            actor, KIND_RECHUNK, uuid.uuid4().hex, {"documents": stats["documents"]}
+        )
 
     def start_embed(self, actor: Principal, *, batch: int = 200) -> dict[str, Any]:
         self._require_system(actor)
@@ -116,8 +133,10 @@ class KnowledgeJobService:
         self._jobs.update(job_id, status="running", started_at=_now())
         params = job.get("params") or {}
         try:
-            if job["kind"] == KIND_HEALTH_EDUCATION:
-                result = self._run_health_education(job_id, params)
+            if job["kind"] == KIND_DEPARTMENT_TXT:
+                result = self._run_department_import(job_id, params)
+            elif job["kind"] == KIND_RECHUNK:
+                result = self._run_rechunk(job_id)
             elif job["kind"] == KIND_EMBED:
                 result = self._run_embed(job_id, params)
             else:
@@ -131,20 +150,29 @@ class KnowledgeJobService:
         finally:
             self._cleanup_upload(params.get("path"))
 
-    def _run_health_education(self, job_id: str, params: dict[str, Any]) -> dict[str, Any]:
+    def _run_department_import(self, job_id: str, params: dict[str, Any]) -> dict[str, Any]:
         actor = Principal(user_id="system", role=Role.SUPER_ADMIN)
+        folder = Path(params["path"])
+        paths = sorted(folder.glob("*.txt"))
 
-        def progress(created: int, read: int) -> None:
-            self._jobs.update(job_id, progress={"created": created, "read": read})
+        def progress(summary: dict[str, int]) -> None:
+            self._jobs.update(job_id, progress=summary)
 
-        return self._knowledge.import_health_education(
+        return self._knowledge.import_department_files(
             actor,
-            Path(params["path"]),
+            paths,
             min_chars=int(params.get("min_chars", 200)),
-            classified_only=not params.get("include_all", False),
             limit=params.get("limit"),
             progress=progress,
         )
+
+    def _run_rechunk(self, job_id: str) -> dict[str, Any]:
+        actor = Principal(user_id="system", role=Role.SUPER_ADMIN)
+
+        def progress(done: int, total: int) -> None:
+            self._jobs.update(job_id, progress={"done": done, "total": total})
+
+        return self._knowledge.rechunk_all(actor, progress=progress)
 
     def _run_embed(self, job_id: str, params: dict[str, Any]) -> dict[str, Any]:
         batch = int(params.get("batch", 200))
@@ -195,20 +223,32 @@ class KnowledgeJobService:
             )
             self._cleanup_upload((active.get("params") or {}).get("path"))
 
-    def _save_upload(self, stream: IO[bytes], job_id: str) -> Path:
-        self._upload_dir.mkdir(parents=True, exist_ok=True)
-        path = self._upload_dir / f"{job_id}.jsonl"
-        with path.open("wb") as target:
-            shutil.copyfileobj(stream, target)
-        if path.stat().st_size == 0:
-            path.unlink(missing_ok=True)
-            raise ValidationError("上傳的檔案是空的")
-        return path
+    def _save_uploads(self, uploads: list[tuple[IO[bytes], str]], job_id: str) -> Path:
+        """存成 `<upload_dir>/<job_id>/<原檔名>`；檔名只留安全字元（科別靠檔名判斷，中文保留）。"""
+        folder = self._upload_dir / job_id
+        folder.mkdir(parents=True, exist_ok=True)
+        for stream, name in uploads:
+            safe = re.sub(r"[^\w一-鿿（）().\-]", "_", Path(name).name)
+            if not safe.lower().endswith(".txt"):
+                shutil.rmtree(folder, ignore_errors=True)
+                raise ValidationError(f"只接受 .txt：{name}")
+            path = folder / safe
+            with path.open("wb") as target:
+                shutil.copyfileobj(stream, target)
+            if path.stat().st_size == 0:
+                shutil.rmtree(folder, ignore_errors=True)
+                raise ValidationError(f"上傳的檔案是空的：{name}")
+        return folder
 
     @staticmethod
     def _cleanup_upload(path: str | None) -> None:
-        if path:
-            Path(path).unlink(missing_ok=True)
+        if not path:
+            return
+        target = Path(path)
+        if target.is_dir():
+            shutil.rmtree(target, ignore_errors=True)
+        else:
+            target.unlink(missing_ok=True)
 
     @staticmethod
     def _require_system(actor: Principal) -> None:

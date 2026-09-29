@@ -13,11 +13,6 @@ class SettingsHandler(IntentHandler):
     feature_name = "設定"
 
     def handle(self, ctx: BotContext, params: dict[str, str]) -> None:
-        if params.get("action") == "skip":
-            ctx.reply(
-                M.text("好的，隨時可以從主選單使用服務；需要個人化功能時再填寫基本資料即可。")
-            )
-            return
         status = "已綁定" if ctx.principal.is_verified else "未綁定"
         bubble = M.button_bubble(
             title=f"設定（目前狀態：{status}）",

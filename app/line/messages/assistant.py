@@ -20,16 +20,20 @@ MAX_SOURCES = 3
 BRAND = "#2F6F62"
 
 
-def action_items(actions: list[str], liff_url: str) -> list[QuickReplyItem]:
-    """決策的 actions → Quick Reply；對應表在這裡，模型不需要知道 postback 格式。"""
+def action_items(
+    actions: list[str], liff_url: str, *, department: str | None = None
+) -> list[QuickReplyItem]:
+    """決策的 actions → Quick Reply；對應表在這裡，模型不需要知道 postback 格式。
+    `department`（症狀諮詢建議的科別）會帶進「附近診所」按鈕，讓找診所依科別篩選。"""
     items: list[QuickReplyItem] = []
+    clinic_params = {"action": "clinics", **({"department": department} if department else {})}
     for action in actions:
         if action == "call_119":
             items.append(M.uri_item("🚨 撥打 119", "tel:119"))
         elif action == "find_hospital":
             items.append(M.postback_item("🏥 找醫院", Intent.FIND_HOSPITAL))
         elif action == "find_clinic":
-            items.append(M.postback_item("🏠 附近診所", Intent.FIND_HOSPITAL, action="clinics"))
+            items.append(M.postback_item("🏠 附近診所", Intent.FIND_HOSPITAL, **clinic_params))
         elif action == "share_location":
             items.append(M.location_item("📍 分享位置"))
         elif action == "find_pharmacy":
@@ -52,9 +56,14 @@ def action_items(actions: list[str], liff_url: str) -> list[QuickReplyItem]:
 
 
 def answer_messages(
-    answer: str, actions: list[str], liff_url: str, sources: list[dict[str, Any]] | None = None
+    answer: str,
+    actions: list[str],
+    liff_url: str,
+    sources: list[dict[str, Any]] | None = None,
+    *,
+    department: str | None = None,
 ) -> list[Message]:
-    quick = action_items(actions, liff_url) or None
+    quick = action_items(actions, liff_url, department=department) or None
     text = answer or CLARIFY_TEXT
     links = [s for s in (sources or []) if (s.get("source") or "").startswith("http")]
     if not links:

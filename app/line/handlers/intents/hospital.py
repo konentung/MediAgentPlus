@@ -1,11 +1,13 @@
-"""找醫院 → 依使用者位置推薦適合去的急救責任醫院（不需基本資料）。
+"""找醫院（急診動態分流）→ 依使用者位置推薦適合去的急救責任醫院（不需基本資料）。
 
 流程：
   menu     → 設定「等位置（for=hospital）」，Quick Reply 只有「分享位置」（紅旗時多「撥打 119」）
   位置訊息（MessageHandler 依狀態轉來，params 帶 address + lat / lng；PENDING_LOCATION 也存座標）
            → `board_for_location()` 依距離列最近的醫院、推薦最近未壅塞者，
              並附上該醫院的位置訊息（可導航）
-  clinics  → 非急症：找附近診所 / 地區醫院（有座標依距離，否則同縣市 + 鄉鎮市區）
+  clinics  → 非急症：找附近診所 / 地區醫院（同鄉鎮市區優先、診所優先；`department` 依 AI 建議的
+             科別篩選）；沒有縣市也沒有座標時先請對方分享位置（狀態 for=clinics 帶 department），
+             位置訊息回來再查
   emergency=1（紅旗命中）：文案改急救導向、按鈕加撥打 119
 """
 
@@ -16,7 +18,8 @@ from app.line.context import BotContext
 from app.line.handlers.intents.base import IntentHandler
 from app.line.messages import hospital as msg
 from app.line.state_store import AWAIT_LOCATION, PENDING_LOCATION
-from app.utils.geo import parse_coords
+from app.services.pharmacy_service import parse_address
+from app.utils.geo import nearest_district, parse_coords
 
 
 class FindHospitalHandler(IntentHandler):
@@ -26,7 +29,7 @@ class FindHospitalHandler(IntentHandler):
 
     def handle(self, ctx: BotContext, params: dict[str, str]) -> None:
         emergency = params.get("emergency") == "1"
-        if params.get("action") == "clinics":
+        if params.get("action") == "clinics" or params.get("for") == "clinics":
             self._reply_clinics(ctx, params)
             return
 
@@ -57,17 +60,28 @@ class FindHospitalHandler(IntentHandler):
         ctx.reply(msg.menu_messages(emergency=emergency))
 
     def _reply_clinics(self, ctx: BotContext, params: dict[str, str]) -> None:
-        city = (params.get("city") or "").replace("臺", "台")
-        if not city:
-            ctx.reply(msg.menu_messages(emergency=False))
-            return
+        department = (params.get("department") or "").strip() or None
         coords = parse_coords(params.get("lat"), params.get("lng"))
+        city = (params.get("city") or "").replace("臺", "台")
+        district = params.get("district") or None
+        if not city and coords:
+            # 位置訊息回來：地址可能是英文或空白，抓不到就用座標反推鄉鎮市區
+            city, district = parse_address(params.get("address"))
+            if city is None:
+                city, district = nearest_district(coords[0], coords[1]) or (None, None)
+        if not city:
+            payload = {"for": "clinics", "department": department or ""}
+            ctx.container.conversation_state.set(ctx.line_user_id, AWAIT_LOCATION, payload)
+            ctx.reply(msg.clinics_prompt_messages(department))
+            return
         result = ctx.container.triage.nearby_clinics(
             city,
-            params.get("district") or None,
+            district,
             lat=coords[0] if coords else None,
             lng=coords[1] if coords else None,
+            department=department,
         )
+        ctx.container.conversation_state.clear(ctx.line_user_id)
         ctx.reply(msg.clinics_messages(result, ctx.liff_url("/er")))
 
     @staticmethod
