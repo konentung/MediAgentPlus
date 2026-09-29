@@ -123,11 +123,14 @@ class AssistantHandler(IntentHandler):
         elif event == "symptom" and decision.risk == "watch" and "find_clinic" not in actions:
             actions.insert(0, "find_clinic")  # 病況諮詢：建議就醫但非急症 → 就近診所最快
         if event == "unknown" and not decision.answer:
-            actions = actions or ["human"]
+            # 修改：沒有下一步動作時給主選單（原本的 human 動作已隨真人客服移除）
+            quick = msg.action_items(actions, liff_intake) or [
+                M.postback_item("主選單", Intent.MENU)
+            ]
             return [
                 M.text(
                     msg.CLARIFY_TEXT if decision.needs_clarification else msg.AI_FAILED_TEXT,
-                    quick_replies=msg.action_items(actions, liff_intake) or None,
+                    quick_replies=quick,
                 )
             ]
         return msg.answer_messages(

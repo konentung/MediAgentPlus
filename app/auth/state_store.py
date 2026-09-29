@@ -72,7 +72,11 @@ class RedisOAuthStateStore:
         return record
 
     def consume(self, state: str) -> OAuthState | None:
-        raw = self._redis.getdel(self._prefix + state)
+        # 修改：GETDEL 是 Redis 6.2+ 才有的指令，改用交易式 GET + DEL 相容舊版
+        pipe = self._redis.pipeline()
+        pipe.get(self._prefix + state)
+        pipe.delete(self._prefix + state)
+        raw, _ = pipe.execute()
         if not raw:
             return None
         data = json.loads(raw)

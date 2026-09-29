@@ -87,3 +87,35 @@ def test_intent_request_parsing():
     }
     assert IntentRequest.from_postback("foo=bar") is None
     assert IntentRequest.from_text("找醫院").intent is Intent.FIND_HOSPITAL
+
+
+def test_discharge_department_step_lists_quick_replies(post_line_event, container):
+    resp = post_line_event(
+        _event("postback", postback={"data": "intent=discharge&step=department"})
+    )
+    assert resp.status_code == 200
+    _, messages = container.line_client.replies[-1]
+    assert isinstance(messages[0], TextMessage)
+    labels = [i.action.label for i in messages[0].quick_reply.items]
+    assert "心臟內科" in labels and len(labels) <= 13
+    assert all(len(label) <= 20 for label in labels)
+
+
+def test_event_without_user_id_is_skipped(post_line_event, container):
+    ev = _event("postback", postback={"data": postback_data(Intent.FIND_HOSPITAL)})
+    ev["source"] = {"type": "group", "groupId": "G1"}
+    before = len(container.line_client.replies)
+    assert post_line_event(ev).status_code == 200
+    assert len(container.line_client.replies) == before
+
+
+def test_confirm_missing_prescription_replies(post_line_event, container):
+    ev = _event(
+        "postback",
+        postback={
+            "data": postback_data(Intent.MEDICATION, action="confirm", prescription_id="nope")
+        },
+    )
+    assert post_line_event(ev).status_code == 200
+    _, messages = container.line_client.replies[-1]
+    assert isinstance(messages[0], TextMessage) and "找不到" in messages[0].text

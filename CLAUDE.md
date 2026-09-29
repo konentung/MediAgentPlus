@@ -133,7 +133,8 @@ Rich Menu / Quick Reply / Flex 按鈕的 postback、圖片、位置訊息，以�
 
 - **LLM** `app/integrations/llm.py`：`OpenAiClient.complete_structured(prompt, response_model, system=, images=)`
   用 OpenAI Chat Completions 的 structured outputs 直接回 pydantic 實例；對話 `AI_MODEL`（預設 `gpt-4.1-mini`）、
-  處方辨識 `OCR_MODEL`（預設 `gpt-4.1`），金鑰 `OPENAI_API_KEY`（正式環境必填，缺少啟動即失敗）。
+  處方辨識 `OCR_MODEL`（預設 `gpt-4.1`），金鑰 `OPENAI_API_KEY`（正式環境必填，`ProductionConfig` 缺少即啟動失敗；開發環境留空時容器改注入
+  `DisabledLlmClient`，AI 對話退回關鍵字、處方辨識回失敗訊息、語意檢索停用，app 仍可啟動）。
   測試以 `tests/conftest.py` 的 `FakeLlmClient`（依關鍵字回固定決策，`decisions` / `default` / `error` 可改）替換
   `container.llm_client`。
 - **檢索（RAG 的 R）= 混合檢索**：關鍵字（`app/domain/retrieval.py` 的 jieba 搜尋模式 + 字元 bigram + `CUSTOM_WORDS`

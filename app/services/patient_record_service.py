@@ -144,6 +144,7 @@ class PatientRecordService:
         hospital = self._resolve_hospital(actor, hospital_id)
         _require_choice(identity_method, IDENTITY_METHODS, "identity_method")
         medical_record_no = self._text(medical_record_no, 32)
+        note = self._text(note, 500)  # 修改：note 不是字串時資料庫 adapter 會失敗
 
         record = self._records.get(user_id, hospital)
         if record is not None:
@@ -185,9 +186,10 @@ class PatientRecordService:
         self._notify(user, "您的基本資料已由院所核對完成，現在可以使用個人化衛教與服藥提醒功能。")
         return record
 
-    def reject(self, actor: Principal, user_id: str, *, reason: str) -> dict[str, Any] | None:
+    def reject(self, actor: Principal, user_id: str, *, reason: Any) -> dict[str, Any] | None:
         _, user = self._load_accessible(actor, user_id)
-        if not reason or not reason.strip():
+        reason = self._text(reason, 500)  # 修改：reason 可能不是字串
+        if not reason:
             raise ValidationError("請填寫退回原因")
         if user.binding_status is not BindingStatus.PENDING:
             raise ConflictError("只有待核對的病人可以退回補正")
@@ -286,6 +288,7 @@ class PatientRecordService:
     ) -> dict[str, Any]:
         profile, _ = self._load_accessible(actor, user_id)
         record = self._require_record(actor, user_id)
+        note = self._text(note, 500)  # 修改
         unknown = set(changes) - set(ALL_FIELDS)
         blocked = set(changes) & NON_CORRECTABLE
         if unknown or blocked:

@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -513,6 +514,9 @@ def _clean_scalar(f: Field, value: Any, errors: dict[str, str]) -> Any:
         try:
             number = float(value)
         except (TypeError, ValueError):
+            errors[f.key] = "必須是數字"
+            return None
+        if not math.isfinite(number):  # 新增：float("nan") 會繞過範圍檢查
             errors[f.key] = "必須是數字"
             return None
         if (f.min_value is not None and number < f.min_value) or (

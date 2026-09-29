@@ -42,6 +42,7 @@ from app.domain.retrieval import (
     rrf_fuse,
     tokenize,
 )
+from app.repositories.hospital_repository import HospitalRepository
 from app.repositories.knowledge_repository import KnowledgeRepository
 
 logger = logging.getLogger(__name__)
@@ -63,10 +64,11 @@ _FRONT_MATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.S)
 # 依科別分類的衛教 txt：檔名「01_心臟內科.txt」，篇與篇用 60 個 = 分隔，每篇四行檔頭後空一行接內文
 DEPARTMENT_RECORD_SEP = "=" * 60
 _DEPARTMENT_FILENAME = re.compile(r"^(?P<code>\d{2})_(?P<department>.+)\.txt$")
+# 修改：檔頭四行都是單行，用 [^\n]* 而不是 DOTALL 的 .*，
+# 否則內文裡出現「網址：」「醫院：」行會把內文吃進檔頭欄位
 _DEPARTMENT_HEADER = re.compile(
-    r"標題：(?P<title>.*)\n醫院：(?P<hospital>.*?)(?:（(?P<level>[^）]*)）)?\n"
-    r"(?:來源分類：(?P<category>.*)\n)?網址：(?P<url>\S+)\n",
-    re.S,
+    r"標題：(?P<title>[^\n]*)\n醫院：(?P<hospital>[^\n（]*)(?:（(?P<level>[^）\n]*)）)?[^\n]*\n"
+    r"(?:來源分類：(?P<category>[^\n]*)\n)?網址：(?P<url>\S+)[^\n]*\n"
 )
 SKIP_DEPARTMENT_PREFIXES = ("非衛教",)  # 院務消息 / 活動 / 醫師介紹整檔不收
 UNCLASSIFIED_DEPARTMENT = "未分類"  # 照收，但 department 留空
@@ -79,10 +81,12 @@ class KnowledgeService:
         llm: Callable[[], Any] | None = None,
         *,
         top_k: int = 4,
+        hospitals: HospitalRepository | None = None,
     ) -> None:
         self._documents = documents
         self._llm = llm
         self._top_k = top_k
+        self._hospitals = hospitals  # 新增：驗證 SUPER_ADMIN 指定的院所代碼存在
 
     # ---- 檢索 ----
 
@@ -211,8 +215,11 @@ class KnowledgeService:
     # ---- CRUD（院方後台）----
 
     def list(self, actor: Principal) -> list[dict[str, Any]]:
+        """後台列表：不含 content（上萬篇內文會有幾十 MB），編輯時再以 get() 取單篇。"""
         scope = AccessPolicy.hospital_scope(actor)
-        rows = self._documents.list(hospital_ids=None if scope is None else [None, scope])
+        rows = self._documents.list(
+            hospital_ids=None if scope is None else [None, scope], with_content=False
+        )
         return [self._public(r) for r in rows]
 
     def get(self, actor: Principal, document_id: str) -> dict[str, Any]:
@@ -250,13 +257,12 @@ class KnowledgeService:
 
     def find_by_source(self, actor: Principal, source: str) -> dict[str, Any] | None:
         """後台重複上傳同名檔案 → 更新同一份（只在 actor 看得到的範圍內）。"""
-        doc = self._documents.get_by_source(source)
-        if doc is None:
-            return None
-        try:
-            return self._get_editable(actor, doc["id"])
-        except AuthorizationError:
-            return None
+        for doc in self._documents.list_by_source(source):  # 修改：挑 actor 可編輯的那一份
+            try:
+                return self._get_editable(actor, doc["id"])
+            except AuthorizationError:
+                continue
+        return None
 
     def search_preview(self, actor: Principal, query: str) -> list[dict[str, Any]]:
         scope = AccessPolicy.hospital_scope(actor)
@@ -280,8 +286,15 @@ class KnowledgeService:
                 )
                 values = self._clean(fields, require_all=True)
                 values["content_hash"] = content_hash(values["content"])
-                existing = self._documents.get_by_source(file.name)
-                if existing and existing.get("hospital_id") == target_hospital:
+                existing = next(
+                    (
+                        d
+                        for d in self._documents.list_by_source(file.name)
+                        if d.get("hospital_id") == target_hospital
+                    ),
+                    None,
+                )
+                if existing:
                     doc = self._documents.update(existing["id"], **values)
                     updated += 1
                 else:
@@ -331,22 +344,19 @@ class KnowledgeService:
         )
         summary["boilerplate_lines"] = len(boilerplate)
         seen_hashes = self._documents.existing_hashes()
-        existing = {
-            d["source"]: d["id"]
-            for d in self._documents.list(hospital_ids=[None])
-            if d.get("source")
-        }
+        existing = self._documents.source_index()  # 修改：只取 source → id，不把全庫內文載進記憶體
+        handled_urls: set[str] = set()  # 新增：同一次匯入內同網址只處理一次
         pending_new: list[dict[str, Any]] = []
         pending_update: list[dict[str, Any]] = []
         pending_chunks: list[tuple[str, list[dict[str, Any]]]] = []
         chunk_lengths: list[int] = []
 
         def flush() -> None:
+            if pending_new:
+                self._documents.create_many(list(pending_new))
             if pending_update:
                 self._documents.delete_chunks_many([d["id"] for d in pending_update])
                 self._documents.update_many(list(pending_update))
-            if pending_new:
-                self._documents.create_many(list(pending_new))
             self._documents.add_chunks_many(list(pending_chunks))
             pending_new.clear()
             pending_update.clear()
@@ -364,10 +374,13 @@ class KnowledgeService:
                     summary["skipped"] += 1
                     continue
                 digest = content_hash(text)
-                if digest in seen_hashes and record["url"] not in existing:
+                if record["url"] in handled_urls or (
+                    digest in seen_hashes and record["url"] not in existing
+                ):
                     summary["duplicates"] += 1
                     continue
                 seen_hashes.add(digest)
+                handled_urls.add(record["url"])
                 doc = self._department_document(record, department, digest, actor)
                 chunks = self._chunks_for(doc, boilerplate=boilerplate)
                 if not chunks:
@@ -479,11 +492,13 @@ class KnowledgeService:
             values["source"] = source[:500] or None
         return values
 
-    @staticmethod
-    def _resolve_hospital(actor: Principal, requested: Any) -> str | None:
+    def _resolve_hospital(self, actor: Principal, requested: Any) -> str | None:
         """通用文件只有 SUPER_ADMIN 能建；院方帳號一律綁自己的院所。"""
         hospital_id = str(requested or "").strip() or None
         if actor.role is Role.SUPER_ADMIN:
+            # 修改：hospital_id 是外鍵，不存在的代碼要回 422 而不是資料庫 IntegrityError
+            if hospital_id and self._hospitals and self._hospitals.get(hospital_id) is None:
+                raise ValidationError("找不到這個院所代碼", details={"hospital_id": hospital_id})
             return hospital_id
         scope = AccessPolicy.hospital_scope(actor)
         if hospital_id and hospital_id != scope:

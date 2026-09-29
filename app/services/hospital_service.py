@@ -64,8 +64,17 @@ class HospitalService:
     def __init__(self, hospitals: HospitalRepository) -> None:
         self._hospitals = hospitals
 
-    def options(self) -> list[dict[str, Any]]:
-        """後台下拉選單（指派人員 / 病人建檔 / 知識庫）用的院所：只有醫院層級，不含診所。"""
+    def options(self, *, ensure_id: str | None = None) -> list[dict[str, Any]]:
+        """後台下拉選單（指派人員 / 病人建檔 / 知識庫）用的院所：只有醫院層級，不含診所。
+
+        `ensure_id`（通常是登入者自己的院所）即使是診所或已停用也一併帶回，
+        否則後台側欄與「院所設定」會把該帳號當成尚未指派院所。
+        """
+        rows = self._hospitals.list(active_only=True, exclude_clinics=True)
+        if ensure_id and all(h["id"] != ensure_id for h in rows):  # 新增
+            own = self._hospitals.get(ensure_id)
+            if own:
+                rows.append(own)
         return [
             {
                 "id": h["id"],
@@ -75,7 +84,7 @@ class HospitalService:
                 "address": h["address"],
                 "contact_phone": h["contact_phone"],
             }
-            for h in self._hospitals.list(active_only=True, exclude_clinics=True)
+            for h in rows
         ]
 
     def public_list(self) -> list[dict[str, Any]]:

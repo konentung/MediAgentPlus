@@ -12,6 +12,7 @@ from linebot.v3.messaging import (
     FlexMessage,
     LocationAction,
     LocationMessage,
+    MessageAction,
     PostbackAction,
     QuickReply,
     QuickReplyItem,
@@ -45,6 +46,11 @@ class MessageBuilder:
                 display_text=display_text or label,
             )
         )
+
+    @staticmethod
+    def message_item(label: str, text: str | None = None) -> QuickReplyItem:
+        """按下後以使用者身分送出文字（走一般文字訊息的分派流程）。"""  # 新增
+        return QuickReplyItem(action=MessageAction(label=label, text=text or label))
 
     @staticmethod
     def uri_item(label: str, uri: str) -> QuickReplyItem:

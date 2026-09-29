@@ -82,7 +82,7 @@ class FeedbackService:
             status=status,
             resolved_by=actor.user_id if resolved else None,
             resolved_at=datetime.now(UTC) if resolved else None,
-            resolver_note=(note or "").strip()[:MAX_CONTENT] or None,
+            resolver_note=str(note or "").strip()[:MAX_CONTENT] or None,  # 修改：可能不是字串
         )
 
     def _hospital_for(self, principal: Principal) -> str | None:

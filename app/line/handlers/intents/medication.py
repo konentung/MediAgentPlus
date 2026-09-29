@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 
-from app.core.exceptions import ExternalServiceError, ValidationError
+from app.core.exceptions import AppError, ExternalServiceError, ValidationError
 from app.domain.enums import Intent, Permission
 from app.line.context import BotContext
 from app.line.handlers.intents.base import IntentHandler
@@ -110,7 +110,7 @@ class MedicationHandler(IntentHandler):
         prescription_id = params.get("prescription_id", "")
         try:
             ctx.container.prescriptions.confirm(ctx.principal, prescription_id)
-        except ValidationError as exc:
+        except AppError as exc:  # 修改：處方不存在 / 已捨棄會丟 NotFoundError，也要回覆使用者
             ctx.reply(M.text(exc.message))
             return
         self._prompt_location(ctx, prescription_id)

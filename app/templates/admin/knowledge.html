@@ -174,8 +174,13 @@ Admin.boot(async function (ctx) {
   filter.addEventListener("change", render);
 
   var form = document.getElementById("doc-form");
-  function openDoc(id, readOnly) {
-    var d = id ? docs.find(function (x) { return x.id === id; }) : null;
+  async function openDoc(id, readOnly) {
+    var d = null;
+    if (id) {
+      // 修改：列表不帶 content，開啟時再抓單篇
+      try { d = await ctx.api("/api/v1/admin/knowledge/" + id); }
+      catch (err) { Admin.toast(err.message, "danger"); return; }
+    }
     form.reset();
     form.elements.id.value = d ? d.id : "";
     document.getElementById("doc-modal-title").textContent = d ? (readOnly ? "檢視文件" : "編輯文件") : "新增文件";

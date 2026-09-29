@@ -91,7 +91,7 @@ class ReminderService:
             raise ValidationError("請至少提供一筆提醒")
         if len(drafts) > 30:
             raise ValidationError("一次最多建立 30 筆提醒")
-        prepared = [self._clean(d, index) for index, d in enumerate(drafts, start=1)]
+        prepared = [self._clean(d, index, principal) for index, d in enumerate(drafts, start=1)]
         return [self._schedules.create(user_id=principal.user_id, **values) for values in prepared]
 
     def list_own(self, principal: Principal) -> dict[str, Any]:
@@ -108,10 +108,11 @@ class ReminderService:
         return {"schedules": schedules, "today": today.isoformat()}
 
     def update(self, principal: Principal, schedule_id: str, body: dict[str, Any]) -> dict:
-        self._get_own(principal, schedule_id)
+        schedule = self._get_own(principal, schedule_id)
         changes: dict[str, Any] = {}
         if "times" in body:
-            changes["times"] = self._clean_times(body["times"], body.get("frequency_code"))
+            # 修改：PATCH 通常不帶 frequency_code，用既有排程的頻率判斷，否則可把 times 清空
+            changes["times"] = self._clean_times(body["times"], schedule["frequency_code"])
         if "end_date" in body:
             changes["end_date"] = _parse_date(body["end_date"])
         if "active" in body:
@@ -253,9 +254,15 @@ class ReminderService:
             raise NotFoundError("找不到這筆提醒")
         return schedule
 
-    def _clean(self, draft: Any, index: int) -> dict[str, Any]:
+    def _clean(self, draft: Any, index: int, principal: Principal) -> dict[str, Any]:
         if not isinstance(draft, dict):
             raise ValidationError(f"第 {index} 筆格式錯誤")
+        prescription_id = str(draft.get("prescription_id") or "").strip() or None
+        if prescription_id:
+            # 新增：medication_schedules.prescription_id 是外鍵，且只能掛自己的處方
+            prescription = self._prescriptions.get(prescription_id)
+            if prescription is None or prescription["user_id"] != principal.user_id:
+                raise ValidationError(f"第 {index} 筆的處方不存在")
         drug_name = str(draft.get("drug_name") or "").strip()
         if not drug_name or len(drug_name) > 150:
             raise ValidationError(f"第 {index} 筆缺少藥名或藥名過長")
@@ -270,7 +277,7 @@ class ReminderService:
         if end is not None and end < start:
             raise ValidationError(f"第 {index} 筆結束日不可早於開始日")
         return {
-            "prescription_id": draft.get("prescription_id") or None,
+            "prescription_id": prescription_id,
             "drug_name": drug_name,
             "dose_text": str(draft.get("dose_text") or "").strip()[:50] or None,
             "frequency_code": freq,

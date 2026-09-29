@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from sqlalchemy.orm import defer
+
 from app.domain.retrieval import BM25Index, cosine
 from app.extensions import db
 from app.models.knowledge import KnowledgeChunkModel, KnowledgeDocumentModel, KnowledgeJobModel
@@ -19,10 +21,15 @@ JOB = KnowledgeJobModel
 
 class KnowledgeRepository(Protocol):
     def get(self, document_id: str) -> dict[str, Any] | None: ...
-    def get_by_source(self, source: str) -> dict[str, Any] | None: ...
+    def list_by_source(self, source: str) -> list[dict[str, Any]]: ...
     def existing_hashes(self) -> set[str]: ...
+    def source_index(self) -> dict[str, str]: ...
     def list(
-        self, *, hospital_ids: list[str | None] | None = None, active_only: bool = False
+        self,
+        *,
+        hospital_ids: list[str | None] | None = None,
+        active_only: bool = False,
+        with_content: bool = True,
     ) -> list[dict[str, Any]]: ...
     def create(self, **values: Any) -> dict[str, Any]: ...
     def create_many(self, documents: list[dict[str, Any]]) -> None: ...
@@ -116,9 +123,13 @@ class SqlAlchemyKnowledgeRepository:
         row = db.session.get(DOC, document_id)
         return row_to_dict(row) if row else None
 
-    def get_by_source(self, source: str) -> dict[str, Any] | None:
-        row = db.session.execute(db.select(DOC).where(DOC.source == source)).scalar_one_or_none()
-        return row_to_dict(row) if row else None
+    def list_by_source(self, source: str) -> list[dict[str, Any]]:
+        """同一個 source（檔名）可能有通用一份 + 各院所各一份（修改），
+        不能用 scalar_one_or_none。"""
+        rows = db.session.execute(
+            db.select(DOC).where(DOC.source == source).order_by(DOC.created_at)
+        ).scalars()
+        return [row_to_dict(r) for r in rows]
 
     def existing_hashes(self) -> set[str]:
         rows = db.session.execute(
@@ -126,15 +137,30 @@ class SqlAlchemyKnowledgeRepository:
         ).scalars()
         return set(rows)
 
+    def source_index(self) -> dict[str, str]:
+        """通用文件的 source（網址 / 檔名）→ id，匯入時判斷同網址更新用；只查兩欄。"""  # 新增
+        rows = db.session.execute(
+            db.select(DOC.source, DOC.id).where(DOC.hospital_id.is_(None), DOC.source.is_not(None))
+        )
+        return {source: doc_id for source, doc_id in rows}
+
     def list(
-        self, *, hospital_ids: list[str | None] | None = None, active_only: bool = False
+        self,
+        *,
+        hospital_ids: list[str | None] | None = None,
+        active_only: bool = False,
+        with_content: bool = True,
     ) -> list[dict[str, Any]]:
         stmt = db.select(DOC).order_by(DOC.category, DOC.title)
         if hospital_ids is not None:
             stmt = stmt.where(_scope_filter(hospital_ids))
         if active_only:
             stmt = stmt.where(DOC.active.is_(True))
-        return [row_to_dict(r) for r in db.session.execute(stmt).scalars()]
+        # 修改：後台列表不載入 content（上萬篇內文會有幾十 MB）
+        exclude = () if with_content else ("content",)
+        if not with_content:
+            stmt = stmt.options(defer(DOC.content))
+        return [row_to_dict(r, exclude=exclude) for r in db.session.execute(stmt).scalars()]
 
     def create(self, **values: Any) -> dict[str, Any]:
         row = DOC(**values)

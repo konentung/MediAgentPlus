@@ -33,6 +33,11 @@ class EventDispatcher:
             if handler is None:
                 logger.debug("No handler for event type %s", type(event).__name__)
                 continue
+            if not getattr(getattr(event, "source", None), "user_id", None):
+                # 修改：群組 / 聊天室成員未授權提供 userId 時沒有身分也沒有對話狀態可用，
+                # 直接略過，避免 handler 以 None 當 key 讀寫狀態
+                logger.info("Skip %s without userId", type(event).__name__)
+                continue
             try:
                 handler.handle(self._build_context(event))
             except Exception:  # noqa: BLE001 - 單一事件失敗不影響同批其他事件

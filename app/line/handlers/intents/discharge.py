@@ -18,6 +18,22 @@ logger = logging.getLogger(__name__)
 
 # Rich Menu 進來沒有使用者文字，用固定問題讓 AI 依「病人資料」與知識庫生成個人化衛教
 PERSONAL_QUESTION = "我剛出院回家，現在該注意什麼、要做哪些事？"
+# 新增：通用版「選擇科別」的選項；按下後以文字送出，交給 AI 依科別檢索衛教知識庫回答
+DEPARTMENTS = (
+    "心臟內科",
+    "胸腔內科",
+    "腸胃科",
+    "神經科",
+    "腎臟科",
+    "新陳代謝科",
+    "一般外科",
+    "骨科",
+    "泌尿科",
+    "婦產科",
+    "小兒科",
+    "其他科別",
+)
+DEPARTMENT_QUESTION = "我剛從{department}出院，回家要注意什麼、怎麼照護？"
 
 
 class DischargeHandler(IntentHandler):
@@ -25,6 +41,9 @@ class DischargeHandler(IntentHandler):
     feature_name = "出院衛教"
 
     def handle(self, ctx: BotContext, params: dict[str, str]) -> None:
+        if params.get("step") == "department":  # 新增：原本這個 postback 沒人處理，會一直回同一張卡
+            self._reply_departments(ctx)
+            return
         if ctx.principal.is_verified and self._reply_personal(ctx):
             return
         # 通用版：先選科別與處置，並提供「想要個人化」入口
@@ -47,6 +66,15 @@ class DischargeHandler(IntentHandler):
         )
         ctx.reply(M.flex("出院衛教", bubble))
 
+    @staticmethod
+    def _reply_departments(ctx: BotContext) -> None:
+        """通用版：列科別 Quick Reply；按下後送出文字，由 AI 依科別檢索衛教知識庫回答。"""  # 新增
+        items = [
+            M.message_item(name, DEPARTMENT_QUESTION.format(department=name))
+            for name in DEPARTMENTS
+        ]
+        ctx.reply(M.text("請選擇出院的科別，我會整理對應的居家照護重點：", quick_replies=items))
+
     def _reply_personal(self, ctx: BotContext) -> bool:
         """個人化版：AI 依最近就診診斷 + 慢性病 + 衛教知識庫回「現在該做什麼」。
 
@@ -59,7 +87,7 @@ class DischargeHandler(IntentHandler):
             return False
         if not decision.answer:
             return False
-        actions = decision.actions or ["reminder_menu", "human"]
+        actions = decision.actions or ["reminder_menu"]  # 修改：human 動作已隨真人客服移除
         ctx.reply(
             ai_msg.answer_messages(
                 decision.answer, actions, ctx.liff_url("/intake"), decision.sources

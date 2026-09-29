@@ -29,6 +29,16 @@ def _page_arg() -> int:
         raise ValidationError("page 需為整數") from exc
 
 
+def _optional_json_body() -> dict:
+    """body 可為空；有給就必須是 JSON 物件。"""  # 新增
+    body = request.get_json(silent=True)
+    if body is None:
+        return {}
+    if not isinstance(body, dict):
+        raise ValidationError("請以 JSON 物件送出")
+    return body
+
+
 def _json_body() -> dict:
     body = request.get_json(silent=True)
     if not isinstance(body, dict):
@@ -56,7 +66,8 @@ def dashboard():
 @require_role(*[r for r in Role if r.is_staff])
 def hospital_options():
     """後台每頁載入一次的院所下拉選單：只有醫院層級（診所有上萬家，不放進選單）。"""
-    return ok(get_container().hospitals.options())
+    # 修改：登入者自己的院所（即使是診所層級）也要在清單裡，側欄與院所設定才顯示得出來
+    return ok(get_container().hospitals.options(ensure_id=current_principal().hospital_id))
 
 
 @admin_bp.get("/hospitals")
@@ -126,8 +137,8 @@ def _csv_rows_from_request() -> list[dict]:
     else:
         body = _json_body()
         rows = body.get("rows")
-        if not isinstance(rows, list):
-            raise ValidationError("請上傳 CSV 檔（欄位 file）或提供 rows 陣列")
+        if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+            raise ValidationError("請上傳 CSV 檔（欄位 file）或提供 rows 物件陣列")  # 修改
     if not rows:
         raise ValidationError("檔案沒有資料列")
     return rows
@@ -308,7 +319,7 @@ def verify_patient(user_id: str):
 @rate_limit("hospital_confirmation", limit=20, per_seconds=600, by="user")
 def request_hospital_confirmation(user_id: str):
     """推播 LINE 請病人自己確認「在本院就醫」；確認後才能 verify。"""
-    body = request.get_json(silent=True) or {}
+    body = _optional_json_body()  # 修改
     return ok(
         get_container().patient_records.request_hospital_confirmation(
             current_principal(), user_id, hospital_id=body.get("hospital_id")

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -18,7 +19,13 @@ from app.auth.line_identity import LineIdentityVerifier
 from app.auth.line_login import LineLoginService
 from app.auth.state_store import InMemoryOAuthStateStore, OAuthStateStore, RedisOAuthStateStore
 from app.core.ratelimit import build_limiter
-from app.integrations.llm import DEFAULT_TEXT_MODEL, DEFAULT_VISION_MODEL, LlmClient, OpenAiClient
+from app.integrations.llm import (
+    DEFAULT_TEXT_MODEL,
+    DEFAULT_VISION_MODEL,
+    DisabledLlmClient,
+    LlmClient,
+    OpenAiClient,
+)
 from app.integrations.nhi_er import DEFAULT_API_URL as DEFAULT_ER_API_URL
 from app.integrations.nhi_er import ErClient, NhiErClient
 from app.integrations.vision import LlmVisionClient, VisionClient
@@ -73,6 +80,8 @@ from app.services.reminder_service import ReminderService
 from app.services.triage_service import TriageService
 from app.services.user_service import UserService
 from app.utils.crypto import FieldCipher
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -182,13 +191,27 @@ class ServiceContainer:
         )
 
         openai_api_key = cfg.get("OPENAI_API_KEY", "")
-        vision_client = LlmVisionClient(
-            OpenAiClient(
-                cfg.get("OCR_MODEL") or DEFAULT_VISION_MODEL,
-                openai_api_key,
-                int(cfg.get("OCR_TIMEOUT_SECONDS", 90)),
+        text_model = cfg.get("AI_MODEL") or DEFAULT_TEXT_MODEL
+        vision_model = cfg.get("OCR_MODEL") or DEFAULT_VISION_MODEL
+        llm_client: LlmClient
+        vision_llm: LlmClient
+        if openai_api_key:
+            vision_llm = OpenAiClient(
+                vision_model, openai_api_key, int(cfg.get("OCR_TIMEOUT_SECONDS", 90))
             )
-        )
+            llm_client = OpenAiClient(
+                text_model,
+                openai_api_key,
+                int(cfg.get("AI_TIMEOUT_SECONDS", 60)),
+                embedding_model=cfg.get("EMBEDDING_MODEL") or None,
+            )
+        else:
+            # 修改：正式環境由 ProductionConfig 要求金鑰；開發環境沒金鑰時停用 AI，
+            # 不讓 create_app() 直接失敗（原本 OpenAiClient 建構子會 raise RuntimeError）
+            logger.warning("OPENAI_API_KEY 未設定：AI 對話助理、處方辨識與語意檢索停用")
+            vision_llm = DisabledLlmClient(vision_model)
+            llm_client = DisabledLlmClient(text_model)
+        vision_client = LlmVisionClient(vision_llm)
         pharmacies = PharmacyService(pharmacy_repo, drug_repo)
         prescriptions = PrescriptionService(
             prescription_repo,
@@ -222,16 +245,11 @@ class ServiceContainer:
             retention_days=int(cfg.get("TRIAGE_RETENTION_DAYS", 30)),
         )
 
-        llm_client = OpenAiClient(
-            cfg.get("AI_MODEL") or DEFAULT_TEXT_MODEL,
-            openai_api_key,
-            int(cfg.get("AI_TIMEOUT_SECONDS", 60)),
-            embedding_model=cfg.get("EMBEDDING_MODEL") or None,
-        )
         knowledge = KnowledgeService(
             knowledge_repo,
             lambda: container.llm_client,
             top_k=int(cfg.get("KNOWLEDGE_TOP_K", 4)),
+            hospitals=hospital_repo,  # 新增
         )
         knowledge_jobs = KnowledgeJobService(
             knowledge_job_repo,

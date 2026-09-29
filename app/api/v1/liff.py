@@ -41,10 +41,20 @@ def liff_config():
     return ok({"liff_id": get_container().liff_auth.liff_id})
 
 
+def _optional_json_body() -> dict:
+    """body 可為空；有給就必須是 JSON 物件。"""  # 新增
+    body = request.get_json(silent=True)
+    if body is None:
+        return {}
+    if not isinstance(body, dict):
+        raise ValidationError("請以 JSON 物件送出")
+    return body
+
+
 @liff_bp.post("/auth")
 @rate_limit("liff_auth", limit=30, per_seconds=300)
 def liff_auth():
-    body = request.get_json(silent=True) or {}
+    body = _optional_json_body()  # 修改：送 JSON 陣列會 AttributeError → 500
     container = get_container()
     identity = container.liff_auth.authenticate(
         id_token=body.get("id_token"), access_token=body.get("access_token")

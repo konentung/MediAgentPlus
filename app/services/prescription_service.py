@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
@@ -70,19 +71,24 @@ class PrescriptionService:
         prescription_id = uuid.uuid4().hex
         image_path = self._store_image(principal.user_id, prescription_id, image)
         items = [self._item_from_extraction(x) for x in extraction.items]
+        warnings = list(extraction.warnings or [])
+        # 修改：模型可能回「113/05/01」這類格式，原本直接 ValidationError 會讓整張辨識結果丟掉
+        issued_on = _parse_date_lenient(extraction.issued_on)
+        if extraction.issued_on and issued_on is None:
+            warnings.append(f"開立日期「{extraction.issued_on}」無法辨識，請自行確認")
         row = self._prescriptions.create(
             id=prescription_id,
             user_id=principal.user_id,
             status="draft",
             source="ocr",
             hospital_name=(extraction.hospital_name or None) and extraction.hospital_name[:100],
-            issued_on=_parse_date(extraction.issued_on),
+            issued_on=issued_on,
             days_supply=extraction.days_supply,
             is_chronic_refill=bool(extraction.is_chronic_refill),
             refill_seq=extraction.refill_seq,
             refill_total=extraction.refill_total,
             items=items,
-            warnings=list(extraction.warnings or []),
+            warnings=warnings,
             image_path=str(image_path),
             image_content_type=content_type or "image/jpeg",
             line_message_id=line_message_id,
@@ -248,6 +254,28 @@ def _parse_date(value: Any) -> date | None:
         return date.fromisoformat(str(value)[:10])
     except ValueError as exc:
         raise ValidationError("日期格式須為 YYYY-MM-DD") from exc
+
+
+_LOOSE_DATE = re.compile(r"(\d{2,4})\s*[./年-]\s*(\d{1,2})\s*[./月-]\s*(\d{1,2})")
+
+
+def _parse_date_lenient(value: Any) -> date | None:
+    """辨識結果的日期（新增）：接受 2024-05-01 / 2024/5/1 / 113.05.01 / 113年5月1日，
+    民國年自動 +1911；解不出來回 None。"""
+    if value in (None, ""):
+        return None
+    if isinstance(value, date):
+        return value
+    match = _LOOSE_DATE.search(str(value))
+    if not match:
+        return None
+    year, month, day = (int(g) for g in match.groups())
+    if year < 1911:
+        year += 1911
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
 
 
 def _parse_int(value: Any, key: str) -> int | None:

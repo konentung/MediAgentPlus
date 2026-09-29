@@ -93,7 +93,11 @@ class RedisConversationStateStore:
         return self._decode(raw)
 
     def pop(self, line_user_id: str) -> ConversationState | None:
-        raw = self._client.getdel(self._prefix + line_user_id)
+        # 修改：GETDEL 是 Redis 6.2+ 才有的指令，改用交易式 GET + DEL 相容舊版
+        pipe = self._client.pipeline()
+        pipe.get(self._prefix + line_user_id)
+        pipe.delete(self._prefix + line_user_id)
+        raw, _ = pipe.execute()
         return self._decode(raw)
 
     def clear(self, line_user_id: str) -> None:

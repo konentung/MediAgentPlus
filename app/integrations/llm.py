@@ -54,6 +54,28 @@ def validate_output(response_model: type[T], raw: Any) -> T:
         raise ExternalServiceError(f"{FAILURE_TEXT}（回傳格式錯誤）") from exc
 
 
+class DisabledLlmClient:
+    """未設定 `OPENAI_API_KEY` 時的替身（新增）：任何呼叫都回 502，
+    讓對話助理退回關鍵字比對、處方辨識回失敗訊息。"""
+
+    def __init__(self, model: str) -> None:
+        self.model = model
+        self.embedding_model: str | None = None
+
+    def complete_structured(
+        self,
+        prompt: str,
+        response_model: type[T],
+        *,
+        system: str = "",
+        images: Sequence[Image] = (),
+    ) -> T:
+        raise ExternalServiceError(f"{FAILURE_TEXT}（未設定 OPENAI_API_KEY）")
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        return []
+
+
 class OpenAiClient:
     def __init__(
         self,

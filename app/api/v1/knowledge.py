@@ -22,6 +22,16 @@ admin_knowledge_bp = Blueprint("admin_knowledge", __name__, url_prefix="/admin/k
 STAFF = [r for r in Role if r.is_staff]
 
 
+def _optional_json_body() -> dict:
+    """body 可為空；有給就必須是 JSON 物件。"""  # 新增
+    body = request.get_json(silent=True)
+    if body is None:
+        return {}
+    if not isinstance(body, dict):
+        raise ValidationError("請以 JSON 物件送出")
+    return body
+
+
 def _json_body() -> dict:
     body = request.get_json(silent=True)
     if not isinstance(body, dict):
@@ -95,7 +105,7 @@ def start_rechunk():
 @rate_limit("knowledge_embed", limit=5, per_seconds=600, by="user")
 def start_embed():
     """替還沒有向量的片段計算 embedding（背景執行、可中斷重跑）。"""
-    body = request.get_json(silent=True) or {}
+    body = _optional_json_body()  # 修改
     try:
         batch = int(body.get("batch") or 200)
     except (TypeError, ValueError) as exc:

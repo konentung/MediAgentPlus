@@ -15,7 +15,7 @@ from typing import Any
 from app.core.pagination import PAGE_SIZE, page_payload
 from app.repositories.pharmacy_repository import DrugRepository, PharmacyRepository
 from app.utils.clock import now_tw, today_tw
-from app.utils.geo import nearest_district
+from app.utils.geo import district_centroids, nearest_district
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +73,14 @@ def parse_address(address: str | None) -> tuple[str | None, str | None]:
     city_match = CITY_PATTERN.search(text)
     if not city_match:
         return None, None
-    district_match = DISTRICT_PATTERN.match(text, city_match.end())
-    return city_match.group(1), district_match.group(1) if district_match else None
+    city, rest = city_match.group(1), text[city_match.end() :]
+    # 修改：先用行政區清單做最長前綴比對，「新市區」「大安區市民大道」都能正確切；
+    # 清單沒收錄的才退回正則
+    known = [d for c, d, _, _ in district_centroids() if c == city and rest.startswith(d)]
+    if known:
+        return city, max(known, key=len)
+    district_match = DISTRICT_PATTERN.match(rest)
+    return city, district_match.group(1) if district_match else None
 
 
 def parse_opening_hours(text: str | None) -> dict[str, list[str]] | None:
@@ -246,7 +252,7 @@ class PharmacyService:
         skipped = 0
         today = today_tw()
         for raw in rows:
-            row = {str(k).strip().lstrip("﻿"): (v or "").strip() for k, v in raw.items() if k}
+            row = {str(k).strip().lstrip("﻿"): str(v or "").strip() for k, v in raw.items() if k}
             mapped = self._map_nhi(row, today) if "醫事機構代碼" in row else self._map_mohw(row)
             if mapped is None:
                 skipped += 1
@@ -312,7 +318,7 @@ class PharmacyService:
         latest: dict[str, tuple[str, dict[str, Any]]] = {}
         skipped = 0
         for raw in rows:
-            row = {str(k).strip().lstrip("﻿"): (v or "").strip() for k, v in raw.items() if k}
+            row = {str(k).strip().lstrip("﻿"): str(v or "").strip() for k, v in raw.items() if k}
             code = row.get("藥品代號", "")
             name_en = row.get("藥品英文名稱", "")
             if not code or not name_en:
