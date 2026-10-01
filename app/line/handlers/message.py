@@ -71,6 +71,8 @@ class MessageHandler(EventHandler):
             states.clear(ctx.line_user_id)  # 使用者改打字聊別的，丟掉等照片 / 等位置的狀態
         direct = keyword_intent(normalized)
         if direct:
+            # 新增：從 Rich Menu / 主選單進功能等於換話題，清掉 AI 對話紀錄，免得舊內容一直被帶進去
+            ctx.container.conversation.clear_history(ctx.principal)
             return IntentRequest(direct, {"text": normalized})
         return IntentRequest(Intent.ASSISTANT, {"text": normalized})
 

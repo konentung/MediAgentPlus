@@ -9,7 +9,10 @@
    （Quick Reply 只有「📍 分享位置」；紅旗時多「🚨 撥打 119」）。不再有「選縣市」「用基本資料住址」。
 2. 使用者傳 LINE 位置訊息 → 回一張 Flex：離使用者最近的 8 家重度級急救責任醫院，每家標距離、燈號、
    等看診 / 等住院 / 等 ICU 人數、119 滿床通報；**推薦最近且未壅塞的一家**，並附上該醫院的 `LocationMessage`（可直接導航）。
-   全部壅塞時提示「附近都壅塞，有生命危險請撥 119」。
+   全部壅塞時提示「附近都壅塞，有生命危險請撥 119」。AI 症狀諮詢判斷出科別時（`slots.department`），
+   「找醫院」按鈕也帶 `department`，`board_for_location(department=)` 每家標 `department_matched`
+   （`hospitals.departments` 對 `department_terms()`），推薦優先給「最近、未壅塞、有該科」的一家，
+   都沒有該科再退回最近的並說明（2026-10-01）。
 3. 「非急症：找附近診所」按鈕 → 同鄉鎮市區（沒有退到同縣市）的診所 / 地區 / 區域醫院，診所優先、有座標的再依距離，
    並補上 10 km 內有座標的院所；AI 症狀諮詢建議的科別（`department`）會帶進按鈕，依 `hospitals.departments` 篩選
    （同義詞對應在 `triage_rules.department_terms()`），沒有該科再放寬。按鈕沒帶位置時先請分享位置。

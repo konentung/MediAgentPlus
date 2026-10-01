@@ -35,6 +35,9 @@ class FindHospitalHandler(IntentHandler):
 
         address = params.get("address")
         coords = parse_coords(params.get("lat"), params.get("lng"))
+        # 修改：AI 依症狀建議的科別（symptom / hospital 事件的 slots.department）
+        # → 優先推薦有該科的醫院
+        department = (params.get("department") or "").strip() or None
         if params.get("source") == "state":
             # 使用者先傳了位置才選「找醫院」：用剛才存下的座標
             state = ctx.container.conversation_state.pop(ctx.line_user_id)
@@ -42,7 +45,9 @@ class FindHospitalHandler(IntentHandler):
                 address = state.payload.get("address")
                 coords = parse_coords(state.payload.get("lat"), state.payload.get("lng"))
         if coords:
-            board = ctx.container.triage.board_for_location(coords[0], coords[1], address=address)
+            board = ctx.container.triage.board_for_location(
+                coords[0], coords[1], address=address, department=department
+            )
             if board is None:
                 ctx.reply(msg.no_coordinates_messages())
                 return
@@ -56,8 +61,10 @@ class FindHospitalHandler(IntentHandler):
         payload = {"for": "hospital"}
         if emergency:
             payload["emergency"] = "1"
+        if department:
+            payload["department"] = department  # 位置訊息回來時 MessageHandler 會把它帶回 params
         ctx.container.conversation_state.set(ctx.line_user_id, AWAIT_LOCATION, payload)
-        ctx.reply(msg.menu_messages(emergency=emergency))
+        ctx.reply(msg.menu_messages(emergency=emergency, department=department))
 
     def _reply_clinics(self, ctx: BotContext, params: dict[str, str]) -> None:
         department = (params.get("department") or "").strip() or None

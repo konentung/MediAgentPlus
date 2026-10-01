@@ -53,7 +53,7 @@ Rich Menu 在 LINE Official Account Manager 建立，六格動作設「文字」
 
 ### 請求生命週期有兩條，共用同一套 Principal / 權限
 
-- **LINE webhook** `POST /line/webhook`（`app/line/webhook.py`）：`WebhookParser` 驗簽 → `EventDispatcher` 依事件類別找 `EventHandler` → 建立 `BotContext`（含 `Principal`，首次接觸即建立 GUEST 使用者）→ 文字 / postback 交給 `IntentRouter` → `IntentHandler.execute()` 先檢查鎖定、綁定、權限，再呼叫子類的 `handle()`。
+- **LINE webhook** `POST /line/webhook`（`app/line/webhook.py`）：`WebhookParser` 驗簽 → **立刻回 200、事件在背景執行緒處理**（`WEBHOOK_ASYNC`，測試環境關閉改同步；2026-10-01 加入：AI / 辨識流程常要 10–60 秒，同步處理會超過 LINE 等待時間，LINE 判定失敗後「重新傳送」同一事件，使用者就一直收到重複訊息）→ `EventDispatcher` 先用 `conversation_state` 的 `evt:<webhookEventId>` 去重（只有 `isRedelivery=true` 的事件會比對，第一次送達一律處理）→ 依事件類別找 `EventHandler` → 建立 `BotContext`（含 `Principal`，首次接觸即建立 GUEST 使用者）→ 文字 / postback 交給 `IntentRouter` → `IntentHandler.execute()` 先檢查鎖定、綁定、權限，再呼叫子類的 `handle()`。
 - **REST API** `/api/v1/*`：`Authorization: Bearer <JWT>` → `app/auth/decorators.py` 的 `current_principal()` **每次都從 Repository 重新載入使用者**，token 內的 role 可能已過期、不拿來判斷 → `@require_auth / @require_permission / @require_role / @require_verified`。
 
 ### 授權集中在 `app/domain/rbac.py`
@@ -83,7 +83,7 @@ Enum 欄位（`Role`/`BindingStatus`）一律用 `sa.Enum(..., native_enum=False
 - **資料歸屬**：自填資料（`patient_*` 7 張）跟著 `users` 走、跨院所共用一份；院方紀錄（`patient_records` + 審核 / 就診 / 風險 / 追蹤 / 備註）跟著 `hospital_id` 走。**院所只看得到自己新增的病人**（`preferred_hospital_id` 是本院，不論病人確認了沒）或已在本院建檔的病人；別家新增的、還沒人新增的一律看不到、不能動，只有 SUPER_ADMIN 看全部。**表單不問院所、沒有 QR 連結**：病人加好友填完表後不會出現在任何院所的清單，院方在後台「新增病人」用手機或姓名 + 身分證末四碼**精準比對**（`GET /api/v1/admin/patients/unclaimed`，不做模糊搜尋）找到本人，按「加入本院並請病人確認」（`POST /api/v1/admin/patients/{id}/request-hospital-confirmation`）→ 寫入 `preferred_hospital_id` = 本院、推播兩個按鈕；病人按「是」走 `Intent.HOSPITAL_CONFIRM` → `IntakeService.confirm_hospital()` 記下 `hospital_confirmed_at`，按「不是」清掉院所（回到沒人新增）。**核對建檔的前提是病人自己確認過**：`PatientRecordService.verify()` 沒有確認就回 409。
 - **身分證**：**不存明碼也不存密文**（2026-09-28 移除 `national_id_encrypted` 欄位與 `PATIENT_IDENTITY_READ`）。`IntakeService._digest_national_id()` 用 `FieldCipher.fingerprint()`（HMAC，金鑰 `PATIENT_DATA_KEY`）算 `national_id_fingerprint` 並留 `national_id_last4`，所有 API、所有後台角色一律只回遮罩 `******1234`；院方核對用末四碼 + 姓名 + 生日對照 HIS。前端回傳遮罩字串代表沒改。同一指紋出現在第二個帳號 → 送出時回 409。
 - **狀態轉換**：送出 → `PENDING`；院方 verify → `VERIFIED` + 角色；reject → `UNBOUND`。送出後（`PENDING` / `VERIFIED`）病人端**唯讀**：`IntakeService._ensure_can_edit()` 對存步驟 / 送出回 403（`details.read_only=true`），`GET /liff/intake` 回 `read_only` 讓前端把表單鎖成檢視模式；資料修正只能由院方在後台做。每次送出都在 `patient_form_submissions` 存一份原始 JSON，院方修正只改結構化表並寫 `patient_record_reviews.corrections`。
-- **後台**：`/admin/*`（`app/admin_pages.py`）是 Jinja + Bootstrap 骨架，頁內 JS 讀 `sessionStorage` 的 JWT 打 `/api/v1/admin/*`，沿用 LINE Login callback 存 token 的機制，沒有 cookie session。未登入 / 過期 / 非院方帳號都導到 `/admin/login`（獨立登入頁，`?next=` 只接受 `/admin` 開頭的路徑）；LIFF 端不經過這頁，維持 `liff.init()` 自動登入。選單依 `/api/v1/auth/me` 回傳的權限隱藏，真正授權在 API decorator。後台每頁只載入 `GET /api/v1/admin/hospitals/options`（醫院層級、不含診所，約幾百家）供下拉選單與名稱顯示；院所 / 藥局 / 藥品等上萬筆的清單一律走分頁 API（`app/core/pagination.py` 的 `PAGE_SIZE=15` + `page_payload()`、`repositories/base.py` 的 `paginate()`），前端用 `Admin.pagination()` 畫頁碼，不要一次抓全部。Service 透過 `lambda: container.line_client` 取 LINE client，測試替換 `container.line_client` 才會生效。
+- **後台**：`/admin/*`（`app/admin_pages.py`）是 Jinja + Bootstrap 骨架，頁內 JS 讀 `sessionStorage` 的 JWT 打 `/api/v1/admin/*`，沿用 LINE Login callback 存 token 的機制，沒有 cookie session。未登入 / 過期 / 非院方帳號都導到 `/admin/login`（獨立登入頁，`?next=` 只接受 `/admin` 開頭的路徑）；LIFF 端不經過這頁，維持 `liff.init()` 自動登入。選單依 `/api/v1/auth/me` 回傳的權限隱藏，真正授權在 API decorator。後台每頁只載入 `GET /api/v1/admin/hospitals/options`（醫院層級、不含診所，約幾百家）供下拉選單與名稱顯示；院所 / 藥局 / 藥品等上萬筆的清單一律走分頁 API（`app/core/pagination.py` 的 `PAGE_SIZE=15` + `page_payload()`、`repositories/base.py` 的 `paginate()`），前端用 `Admin.pagination()` 畫頁碼（超過 5 頁時多一個「跳到第 N 頁」輸入框），不要一次抓全部。SUPER_ADMIN 在「院所設定」可新增（代碼 / 名稱 / 區域 / 電話 / 層級 / 地址 / 科別 / 座標）與編輯任一院所（列上的「編輯」modal，走同一支 PATCH）。Service 透過 `lambda: container.line_client` 取 LINE client，測試替換 `container.line_client` 才會生效。
 - **安全相關慣例**：院方查詢範圍一律用 `AccessPolicy.hospital_scope(actor)`（無 `hospital_id` 的院方帳號直接 403，不可退化成不過濾）；高敏感操作（鎖定 / 解鎖帳號）寫 `audit_logs`（`container.audit_repo.record()`）；容易被暴力嘗試的端點掛 `@rate_limit()`（`app/core/ratelimit.py`，測試環境 `RATELIMIT_ENABLED=False`）；「今天」一律用 `app/utils/clock.today_tw()`；LINE 推播失敗只記 log 不讓交易失敗（`_notify`）。同一身分證出現在第二個帳號只回 409 不自動鎖定（家屬與本人可能各自填），冒用由院方核對時判斷、必要時後台鎖定。
 - `get_config()` 在 `FLASK_ENV` 未設定時視為 production 並拒絕範例金鑰；本機開發務必在 `.env` 設 `FLASK_ENV=development`。
 - **登入效期**：只有 access token，**沒有 refresh token、沒有 `auth_sessions` 表、沒有伺服器端登出**（2026-09-28 移除）。`JwtService.issue(principal)` 依角色決定效期：一般使用者 `JWT_ACCESS_TOKEN_EXPIRES`（預設 1 小時）、院方角色 `JWT_STAFF_ACCESS_TOKEN_EXPIRES`（預設 8 小時）。到期後 LIFF 端 `liff/base.html` 的 `api()` 收到 401 會重跑 `login()`（`liff.init()` 自動換新 id_token）再重送；後台 `admin/base.html` 收到 401 導回 `/admin/login`。登出只是前端清 sessionStorage。帳號鎖定 / 降權靠每個請求重載使用者立即生效，不需撤銷 token。
@@ -177,8 +177,11 @@ Rich Menu / Quick Reply / Flex 按鈕的 postback、圖片、位置訊息，以�
 - **決策格式單一來源** `app/domain/assistant_schema.py`（`AssistantDecision`：event / risk / answer / slots / actions /
   citations / needs_clarification）。模型只回這個結構，**不決定訊息長相**。
 - **脈絡** `ConversationService.build_context()`：使用者狀態（綁定 / 住址）、最近對話（存 `conversation_state` store，
-  key `<line_user_id>:history`，TTL `AI_HISTORY_TTL_SECONDS`）、知識片段（K1…）、即時資料（提到縣市 → 急診看板摘要，
-  用已存的資料不即時抓；像藥名的詞 → `PharmacyService.search_drugs`，只收名稱開頭相符的）。`SYSTEM_PROMPT` 規定：只能依片段
+  key `<line_user_id>:history`，TTL `AI_HISTORY_TTL_SECONDS`；**只供理解上下文**：prompt 標明不要重複其中內容、
+  助理回答只留前 120 字、Rich Menu 關鍵字視為換話題會 `clear_history()`，2026-10-01 修正模型一直重講舊內容）、
+  知識片段（K1…；文字裡出現知識庫科別名 `retrieval.department_in_text()` 時做同科別加權）、即時資料
+  （提到縣市 → 急診看板摘要，用已存的資料不即時抓；藥名 → `PharmacyService.mentioned_drugs`（資料庫比對句中的中文商品名）
+  + jieba 詞 `search_drugs`，只收名稱開頭相符的）。`SYSTEM_PROMPT` 規定：只能依片段
   逐條對照寫答案、有依據必標 citations、沒有依據要明說並建議詢問原院所、先結論再 2–4 個重點、不診斷不開藥。
 - **事件 → 模組** `AssistantHandler`（`intents/assistant.py`，`Intent.ASSISTANT`）：emergency → 緊急畫面；hospital →
   `FindHospitalHandler`（slots.city 有值直接 `action=area`）；medication → 藥名查詢 / 選單；pharmacy → 找藥局；
@@ -195,6 +198,9 @@ Rich Menu / Quick Reply / Flex 按鈕的 postback、圖片、位置訊息，以�
   【病人資料】（`patient_record_repo.latest_encounter()` 的科別 / 診斷 / 出院代碼 + 自填慢性病），問到照護時檢索補上診斷；
   模型有 answer 就直接回個人化衛教，answer 留空 → `DischargeHandler` 通用版；Rich Menu「我剛出院」已驗證也走
   `conversation.decide()`（`DischargeHandler.PERSONAL_QUESTION`），AI 失敗退回通用版。
+  **通用版「選擇科別」**（`DischargeHandler.DEPARTMENTS`，名稱對齊知識庫科別）送出「我剛從 X 出院…」後，
+  模型有 answer 就直接回（不論驗證與否），留空則回 `NO_DISCHARGE_DATA_TEXT`，**不再退回選科別卡片**
+  （2026-10-01 修正：原本未驗證一律回卡片，選完又是同一張，形成迴圈）。
   新增事件或動作：改 `assistant_schema.py` 的 Literal + `AssistantHandler._compose()` /
   `messages/assistant.py`，`tests/test_assistant.py` 對每種事件都有對應測試。
 
@@ -211,7 +217,10 @@ Rich Menu / Quick Reply / Flex 按鈕的 postback、圖片、位置訊息，以�
 - **LINE** `FindHospitalHandler`（`intents/hospital.py`）**只認使用者位置**：入口只請對方「分享位置」（紅旗多「撥打 119」），
   沒有選縣市、沒有用基本資料住址。位置訊息由 `MessageHandler` 依 `AWAIT_LOCATION` `for=hospital` 轉來（params 帶
   `address` / `lat` / `lng`；`PENDING_LOCATION` 也存座標）→ `TriageService.board_for_location(lat, lng)` 依距離列最近 8 家
-  （`distance_km`）、`recommended` = 最近且未壅塞的一家，回 Flex + 該醫院的 `LocationMessage`（可導航）；院所主檔沒座標時回
+  （`distance_km`）、`recommended` = 最近且未壅塞的一家，回 Flex + 該醫院的 `LocationMessage`（可導航）；
+  AI 症狀諮詢給了科別時（`slots.department` → 「找醫院」按鈕與 `AWAIT_LOCATION` payload 都帶 `department`）
+  `board_for_location(department=)` 每家標 `department_matched`、推薦優先「最近、未壅塞、有該科」，
+  都沒有再退回最近的並在標題說明（2026-10-01）；院所主檔沒座標時回
   「座標尚未建置」+ 119；急診快照是空的（健保署 API 抓不到）時回 `unavailable=True` → 「資料暫時無法取得」+ 119 +
   找附近診所（縣市 / 鄉鎮市區由地址或 `nearest_district()` 反推）。AI 的 `hospital` 事件不論有沒有提到縣市都走這條。
   「非急症：找附近診所」`nearby_clinics(city, district, lat, lng, department)`：`hospitals` 主檔（`capacity_tier`

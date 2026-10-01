@@ -74,6 +74,83 @@ def content_hash(text: str) -> str:
     return hashlib.sha1(re.sub(r"\s+", " ", text).strip().encode()).hexdigest()
 
 
+# 新增：衛教知識庫的科別（= `衛教內文_依科別分類/NN_<科別>.txt` 的檔名、
+# `knowledge_documents.department`）。使用者文字裡出現這些名稱時可直接拿來做同科別加權；
+# 長的先比對（「心臟血管外科」不能被「外科」搶走）。
+KNOWLEDGE_DEPARTMENTS: tuple[str, ...] = (
+    "心臟內科",
+    "胸腔內科",
+    "呼吸治療科",
+    "肝膽腸胃內科",
+    "腎臟內科",
+    "內分泌新陳代謝科",
+    "血液腫瘤科",
+    "感染科",
+    "風濕免疫過敏科",
+    "神經內科",
+    "家庭醫學科",
+    "老年醫學科",
+    "安寧緩和醫療科",
+    "重症醫學科",
+    "急診醫學科",
+    "職業醫學科",
+    "一般外科",
+    "大腸直腸外科",
+    "乳房外科",
+    "心臟血管外科",
+    "胸腔外科",
+    "神經外科",
+    "骨科",
+    "泌尿科",
+    "整形外科",
+    "小兒外科",
+    "婦科",
+    "產科",
+    "生殖醫學科",
+    "兒科",
+    "新生兒科",
+    "眼科",
+    "耳鼻喉科",
+    "牙科",
+    "皮膚科",
+    "精神科",
+    "復健科",
+    "疼痛科",
+    "麻醉科",
+    "放射腫瘤科",
+    "中醫科",
+    "營養科",
+)
+_DEPARTMENT_ALIASES = {  # 口語 / 簡稱 → 知識庫科別
+    "心臟科": "心臟內科",
+    "腸胃科": "肝膽腸胃內科",
+    "胃腸科": "肝膽腸胃內科",
+    "肝膽腸胃科": "肝膽腸胃內科",
+    "腎臟科": "腎臟內科",
+    "新陳代謝科": "內分泌新陳代謝科",
+    "內分泌科": "內分泌新陳代謝科",
+    "神經科": "神經內科",
+    "家醫科": "家庭醫學科",
+    "外科": "一般外科",
+    "小兒科": "兒科",
+    "婦產科": "婦科",
+    "身心科": "精神科",
+    "中醫": "中醫科",
+}
+
+
+def department_in_text(text: str) -> str | None:
+    """文字裡提到的知識庫科別（「我剛從心臟內科出院」→ 心臟內科）；沒有回 None。"""
+    normalized = text.replace("臺", "台")
+    for name in sorted(KNOWLEDGE_DEPARTMENTS, key=len, reverse=True):
+        if name in normalized:
+            return name
+    for alias, name in sorted(_DEPARTMENT_ALIASES.items(), key=lambda kv: -len(kv[0])):
+        if alias in normalized:
+            return name
+    return None
+
+
 @dataclass
 class BM25Index:
     """Okapi BM25，只用於 SQLite 環境。`documents` 是 (id, tokens)。"""

@@ -51,6 +51,22 @@ ATC_CATEGORIES = {
 }
 
 
+# 新增：藥名查詢時去掉的劑量 / 劑型 / 問句字眼
+_DOSE_PATTERN = re.compile(
+    r"\d+(?:\.\d+)?\s*(?:mg|mcg|μg|ug|g|ml|iu|%|毫克|公絲|公克|毫升|單位)?", re.I
+)
+_QUERY_NOISE = re.compile(
+    r"(?:請問|我想查|查一下|幫我查|這個藥|這種藥|是什麼藥|是什麼|的藥|藥嗎|嗎|呢|\?|？|錠|膠囊|糖漿|軟膏)"
+)
+
+
+def _strip_drug_query(text: str) -> str:
+    """「普拿疼 500mg 是什麼藥？」→「普拿疼」。"""
+    cleaned = _DOSE_PATTERN.sub(" ", text)
+    cleaned = _QUERY_NOISE.sub(" ", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def _clip(text: str | None, limit: int) -> str | None:
     """開放資料偶有超長欄位（例如一格塞多組電話），截到欄位長度。"""
     text = (text or "").strip()
@@ -213,8 +229,30 @@ class PharmacyService:
     # ---- 藥品 ----
 
     def search_drugs(self, query: str, *, limit: int = 5) -> list[dict[str, Any]]:
-        rows = self._drugs.search(query, limit=limit)
+        """藥名查詢。修改：使用者常連劑量 / 問句一起打（「普拿疼 500mg」「metformin是什麼」），
+        整句查不到時依序退回：去掉劑量與問句字眼 → 句子裡出現的中文藥名 → 最長的單一詞。"""
+        text = query.strip()
+        if not text:
+            return []
+        rows = self._drugs.search(text, limit=limit)
+        if not rows:
+            stripped = _strip_drug_query(text)
+            if stripped and stripped != text:
+                rows = self._drugs.search(stripped, limit=limit)
+        if not rows:
+            rows = self._drugs.find_mentioned(text, limit=limit)
+        if not rows:
+            words = re.findall(r"[A-Za-z][A-Za-z-]{2,}|[一-鿿]{2,}", text)
+            tokens = sorted(words, key=len, reverse=True)
+            for token in tokens[:3]:
+                rows = self._drugs.search(token, limit=limit)
+                if rows:
+                    break
         return [self._drug_public(r) for r in rows]
+
+    def mentioned_drugs(self, text: str, *, limit: int = 3) -> list[dict[str, Any]]:
+        """新增：自由文字裡提到的藥（中文商品名由資料庫比對；AI 脈絡用）。"""
+        return [self._drug_public(r) for r in self._drugs.find_mentioned(text, limit=limit)]
 
     def match_drug(self, *names: str | None) -> dict[str, Any] | None:
         """辨識出的藥名 → 藥品主檔；依序嘗試英文名、原文，取最接近的一筆。"""

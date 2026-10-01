@@ -30,6 +30,7 @@ class PharmacyRepository(Protocol):
 class DrugRepository(Protocol):
     def get(self, nhi_code: str) -> dict[str, Any] | None: ...
     def search(self, query: str, *, limit: int = 5) -> list[dict[str, Any]]: ...
+    def find_mentioned(self, text: str, *, limit: int = 5) -> list[dict[str, Any]]: ...
     def paginate(
         self, *, query: str | None, page: int, per_page: int
     ) -> tuple[list[dict[str, Any]], int]: ...
@@ -143,6 +144,29 @@ class SqlAlchemyDrugRepository:
                 ),
                 DrugModel.name_en,
             )
+            .limit(limit)
+        )
+        return [row_to_dict(r) for r in db.session.execute(stmt).scalars()]
+
+    def find_mentioned(self, text: str, *, limit: int = 5) -> list[dict[str, Any]]:
+        """新增：自由文字裡「包含」哪些藥品的中文名（jieba 不認得商品名，改讓資料庫比對）。
+
+        整個中文名出現在文字裡，或名稱前 3 字出現（「普拿疼」→「普拿疼伏冒錠」，
+        中文名常帶劑量尾巴）；名稱長的優先。
+        """
+        name = DrugModel.name_zh
+        head = db.func.substr(name, 1, 3)
+        stmt = (
+            db.select(DrugModel)
+            .where(
+                name.isnot(None),
+                db.func.length(name) >= 2,
+                db.or_(
+                    db.literal(text).contains(name),
+                    db.and_(db.func.length(name) >= 3, db.literal(text).contains(head)),
+                ),
+            )
+            .order_by(db.func.length(name).desc(), DrugModel.name_en)
             .limit(limit)
         )
         return [row_to_dict(r) for r in db.session.execute(stmt).scalars()]

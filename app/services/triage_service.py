@@ -123,19 +123,35 @@ class TriageService:
         }
 
     def board_for_location(
-        self, lat: float, lng: float, *, address: str | None = None, limit: int = NEARBY_LIMIT
+        self,
+        lat: float,
+        lng: float,
+        *,
+        address: str | None = None,
+        department: str | None = None,
+        limit: int = NEARBY_LIMIT,
     ) -> dict[str, Any] | None:
         """以使用者位置為準：有座標的重度級醫院依距離排序，推薦最近且未壅塞的一家。
 
+        修改：`department`（AI 依症狀建議的科別）有值時，每家標上 `department_matched`，
+        推薦優先給「最近、未壅塞、且有該科」的醫院；都沒有該科再退回不限科別（`department_matched=False`）。
         沒有任何急診即時資料（API 抓不到、快照是空的）時回 `unavailable=True`；
         有資料但院所主檔完全沒有座標時回 None（呼叫端提示尚未匯入院所座標）。
         """
         board = self.board()
+        terms = rules.department_terms(department)
         rows = []
         for h in board["hospitals"]:
             if h.get("lat") is None or h.get("lng") is None:
                 continue
-            rows.append({**h, "distance_km": round(haversine_km(lat, lng, h["lat"], h["lng"]), 1)})
+            departments = h.get("departments") or ""
+            rows.append(
+                {
+                    **h,
+                    "distance_km": round(haversine_km(lat, lng, h["lat"], h["lng"]), 1),
+                    "department_matched": bool(terms) and any(t in departments for t in terms),
+                }
+            )
         # 地址可能是英文或空白（LINE 依手機語系給），抓不到就用座標反推鄉鎮市區
         city, district = parse_address(address)
         if city is None:
@@ -156,7 +172,11 @@ class TriageService:
             return None
         rows.sort(key=lambda h: (h["distance_km"], rules.sort_key(h)))
         nearest = rows[:limit]
-        recommended = next((h for h in nearest if h["level"] != rules.LEVEL_CRITICAL), None)
+        open_rows = [h for h in nearest if h["level"] != rules.LEVEL_CRITICAL]
+        # 有科別時先找「有該科且未壅塞」的最近一家；沒有再退回不限科別
+        recommended = next((h for h in open_rows if h["department_matched"]), None) or next(
+            iter(open_rows), None
+        )
         if city is None:
             city = nearest[0]["area_name"]
         return {
@@ -170,6 +190,8 @@ class TriageService:
             "recommended": recommended,
             "all_congested": recommended is None,
             "unavailable": False,
+            "department": department,
+            "department_matched": bool(recommended and recommended["department_matched"]),
         }
 
     def nearby_clinics(
@@ -273,6 +295,7 @@ class TriageService:
             item["phone"] = hospital.get("contact_phone") if hospital else None
             item["lat"] = hospital.get("lat") if hospital else None
             item["lng"] = hospital.get("lng") if hospital else None
+            item["departments"] = hospital.get("departments") if hospital else None  # 新增
             item["reported_at_label"] = _tw_label(_parse_dt(row["reported_at"]))
             result.append(item)
         return result

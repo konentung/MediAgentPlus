@@ -105,6 +105,9 @@ class BaseConfig:
 
     # ---- 程序內排程（服藥提醒推播、急診資料抓取），取代外部 cron ----
     SCHEDULER_ENABLED = _env("SCHEDULER_ENABLED", "true").lower() in {"1", "true", "yes"}
+    # 新增：webhook 收到事件後立刻回 200、在背景執行緒處理。AI / 辨識流程常超過 LINE 等待回應
+    # 的時間，同步處理會讓 LINE 判定失敗並「重新傳送」同一事件，使用者就會一直收到重複訊息。
+    WEBHOOK_ASYNC = _env("WEBHOOK_ASYNC", "true").lower() in {"1", "true", "yes"}
     # 系統管理員的 LINE userId（逗號分隔）：這些人登入 / 加好友時自動成為 SUPER_ADMIN，
     # 其他角色都在後台「人員與角色」指派
     SUPER_ADMIN_LINE_USER_IDS = _env("SUPER_ADMIN_LINE_USER_IDS", "")
@@ -135,6 +138,7 @@ class TestingConfig(BaseConfig):
     PATIENT_DATA_KEY = ""  # 由 SECRET_KEY 衍生
     RATELIMIT_ENABLED = False
     SCHEDULER_ENABLED = False
+    WEBHOOK_ASYNC = False  # 測試同步處理，送出請求後就能直接檢查 FakeLineClient 的回覆
     OPENAI_API_KEY = "test-openai-key"  # 測試以 FakeLlmClient / FakeVisionClient 替換，不會真的呼叫
     MEDIA_ROOT = os.path.join(tempfile.gettempdir(), "mediagent-test-media")
 

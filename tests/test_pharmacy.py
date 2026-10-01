@@ -303,3 +303,22 @@ def test_reference_data_import_is_super_admin_only(client, make_user, auth_heade
     # 院方可以看清單，但不能匯入；未登入一律 401
     assert client.get("/api/v1/admin/pharmacies", headers=auth_header(admin)).status_code == 200
     assert client.get("/api/v1/admin/pharmacies").status_code == 401
+
+
+def test_search_drugs_tolerates_dose_and_question_words(container):
+    """使用者連劑量 / 問句一起打，或句子裡夾著中文商品名，也查得到。"""
+    container.pharmacies.import_drugs(DRUG_ROWS)
+    assert (
+        container.pharmacies.search_drugs("Metformin 500mg 是什麼藥？")[0]["nhi_code"]
+        == "BC23456100"
+    )
+    assert (
+        container.pharmacies.search_drugs("我在吃美佛明可以喝咖啡嗎")[0]["nhi_code"] == "BC23456100"
+    )
+    assert (
+        container.pharmacies.search_drugs("請問撫緒膜衣錠要吃多久")[0]["nhi_code"] == "AC48092100"
+    )
+    assert container.pharmacies.search_drugs("完全不存在") == []
+    mentioned = container.pharmacies.mentioned_drugs("醫生開了美佛明和撫緒膜衣錠給我")
+    assert {d["nhi_code"] for d in mentioned} == {"BC23456100", "AC48092100"}
+    assert container.pharmacies.mentioned_drugs("今天天氣很好") == []

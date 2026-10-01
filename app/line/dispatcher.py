@@ -16,6 +16,9 @@ from app.line.router import IntentRouter
 
 logger = logging.getLogger(__name__)
 
+SEEN_EVENT = "seen_event"  # 新增：已處理過的 webhook 事件（去重用）
+EVENT_SEEN_TTL = 600
+
 
 class EventDispatcher:
     def __init__(self, container: ServiceContainer, liff_id: str) -> None:
@@ -38,10 +41,30 @@ class EventDispatcher:
                 # 直接略過，避免 handler 以 None 當 key 讀寫狀態
                 logger.info("Skip %s without userId", type(event).__name__)
                 continue
+            if self._is_duplicate_redelivery(event):
+                continue
             try:
                 handler.handle(self._build_context(event))
             except Exception:  # noqa: BLE001 - 單一事件失敗不影響同批其他事件
                 logger.exception("Failed to handle %s", type(event).__name__)
+
+    def _is_duplicate_redelivery(self, event: Event) -> bool:
+        """新增：LINE 重送（redelivery）的事件若已處理過（或還在處理中）就略過。
+
+        同一事件重送時 `webhookEventId` 相同；每個事件開始處理前先在對話狀態 store 記下
+        `evt:<id>`（TTL 10 分鐘），只有標記 `isRedelivery` 的事件才比對，第一次送達一律處理。
+        """
+        event_id = getattr(event, "webhook_event_id", None)
+        if not event_id:
+            return False
+        key = f"evt:{event_id}"
+        store = self._container.conversation_state
+        redelivery = bool(getattr(getattr(event, "delivery_context", None), "is_redelivery", False))
+        if redelivery and store.peek(key) is not None:
+            logger.info("Skip redelivered %s %s", type(event).__name__, event_id)
+            return True
+        store.set(key, SEEN_EVENT, {}, ttl=EVENT_SEEN_TTL)
+        return False
 
     def _build_context(self, event: Event) -> BotContext:
         line_user_id = getattr(getattr(event, "source", None), "user_id", None)

@@ -119,3 +119,18 @@ def test_confirm_missing_prescription_replies(post_line_event, container):
     assert post_line_event(ev).status_code == 200
     _, messages = container.line_client.replies[-1]
     assert isinstance(messages[0], TextMessage) and "找不到" in messages[0].text
+
+
+def test_redelivered_event_is_processed_once(post_line_event, container):
+    """LINE 重送（isRedelivery）同一 webhookEventId 的事件只處理一次，不會重複回覆。"""
+    event = _event("postback", postback={"data": postback_data(Intent.REMINDER)})
+    event["webhookEventId"] = "evt-dup"
+    post_line_event(event)
+    assert len(container.line_client.replies) == 1
+    event["deliveryContext"] = {"isRedelivery": True}
+    post_line_event(event)
+    assert len(container.line_client.replies) == 1
+    # 沒處理過的重送（第一次根本沒送到）照常處理
+    fresh = {**event, "webhookEventId": "evt-new"}
+    post_line_event(fresh)
+    assert len(container.line_client.replies) == 2

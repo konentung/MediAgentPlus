@@ -820,3 +820,70 @@ def test_answer_with_citations_renders_sources(post_line_event, container, make_
     _text(post_line_event, "哈囉")
     _, messages = container.line_client.replies[-1]
     assert isinstance(messages[0], TextMessage)
+
+
+def test_symptom_find_hospital_button_carries_department(post_line_event, container):
+    """「找醫院」按鈕也帶科別，位置分享回來後優先推薦有該科的急救責任醫院。"""
+    _text(post_line_event, "我頭痛兩天")
+    _, messages = container.line_client.replies[-1]
+    hospital = next(i for i in messages[0].quick_reply.items if i.action.label == "🏥 找醫院")
+    assert "department=" in hospital.action.data
+    post_line_event(_event("postback", postback={"data": hospital.action.data}))
+    _, messages = container.line_client.replies[-1]
+    assert "家醫科" in messages[0].text  # 入口文案說明會依症狀科別推薦
+    state = container.conversation_state.peek("U1")
+    assert state.payload == {"for": "hospital", "department": "家醫科"}
+
+
+def test_discharge_department_choice_answers_without_verification(post_line_event, container):
+    """通用版出院衛教：選了科別後模型有答案就直接回，不再退回「選擇科別」卡片而一直繞圈。"""
+    post_line_event(_event("postback", postback={"data": f"intent={Intent.DISCHARGE.value}"}))
+    _, messages = container.line_client.replies[-1]
+    assert isinstance(messages[0], FlexMessage)
+    post_line_event(_event("postback", postback={"data": "intent=discharge&step=department"}))
+    _, messages = container.line_client.replies[-1]
+    items = messages[0].quick_reply.items
+    assert items[0].action.label == "心臟內科" and "從心臟內科出院" in items[0].action.text
+    container.llm_client.decisions.insert(
+        0,
+        (
+            "從心臟內科出院",
+            {
+                "event": "discharge",
+                "answer": "心臟內科出院後：\n・每天量體重\n・限制鹽分",
+                "citations": ["K1"],
+            },
+        ),
+    )
+    _text(post_line_event, items[0].action.text)
+    _, messages = container.line_client.replies[-1]
+    assert isinstance(messages[0], TextMessage) and "量體重" in messages[0].text
+    # 模型沒答案（知識庫沒該科資料）→ 回說明文字，不是再一張選科別卡片
+    container.llm_client.decisions.insert(
+        0, ("從其他科別出院", {"event": "discharge", "answer": ""})
+    )
+    _text(post_line_event, "我剛從其他科別出院，回家要注意什麼、怎麼照護？")
+    _, messages = container.line_client.replies[-1]
+    assert isinstance(messages[0], TextMessage) and "知識庫目前沒有" in messages[0].text
+
+
+def test_department_in_text_weights_retrieval(container, make_user):
+    guest = container.users.to_principal(make_user(Role.GUEST, line_user_id="Ug"))
+    calls: list[dict] = []
+    original = container.knowledge.retrieve
+    container.knowledge.retrieve = lambda *a, **kw: calls.append(kw) or original(*a, **kw)
+    container.conversation.build_context(guest, "我剛從腸胃科出院，回家要注意什麼")
+    assert calls[-1]["department"] == "肝膽腸胃內科"
+
+
+def test_history_is_trimmed_and_cleared_on_keyword(post_line_event, container):
+    _text(post_line_event, "我頭痛兩天")
+    principal = container.users.to_principal(container.user_repo.get_by_line_user_id("U1"))
+    history = container.conversation._history(principal)
+    assert [t["role"] for t in history] == ["user", "assistant"]
+    assert len(history[1]["text"]) <= 120
+    assert "不要重複其中內容" in container.conversation.build_prompt(
+        "x", container.conversation.build_context(principal, "x")
+    )
+    _text(post_line_event, "主選單")  # Rich Menu 關鍵字 = 換話題，清掉對話紀錄
+    assert container.conversation._history(principal) == []

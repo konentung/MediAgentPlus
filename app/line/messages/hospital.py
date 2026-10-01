@@ -19,13 +19,14 @@ EMERGENCY_HINT = "🚨 有生命危險請直接撥打 119，救護車會依現�
 BOARD_HINT = "燈號依「等住院 / 等 ICU / 等看診 / 119 滿床通報」判斷，供就醫前參考。"
 
 
-def menu_messages(*, emergency: bool) -> list[Message]:
-    """入口：只認使用者位置，請對方分享位置（紅旗時先給 119）。"""
+def menu_messages(*, emergency: bool, department: str | None = None) -> list[Message]:
+    """入口：只認使用者位置，請對方分享位置（紅旗時先給 119）。`department` 是依症狀建議的科別。"""
+    target = f"有{department}的" if department else ""  # 修改：說明會依症狀科別推薦
     lead = (
-        "正在為你找最近、目前不壅塞的急救責任醫院。請分享位置，我會依距離與急診即時狀況推薦。"
+        f"正在為你找最近、目前不壅塞、{target}急救責任醫院。請分享位置，我會依距離與急診即時狀況推薦。"
         if emergency
-        else "找醫院：請分享位置，我會列出離你最近的急救責任醫院與目前急診壅塞狀況，"
-        "並推薦最適合前往的一家；非急症也可以改找附近診所。"
+        else f"找醫院：請分享位置，我會列出離你最近的急救責任醫院與目前急診壅塞狀況，"
+        f"並推薦最適合前往的{target}一家；非急症也可以改找附近診所。"
     )
     items = [M.location_item("📍 分享位置")]
     if emergency:
@@ -97,12 +98,21 @@ def board_messages(board: dict[str, Any], liff_url: str, *, emergency: bool) -> 
             "wrap": True,
         }
     ]
+    department = board.get("department")
     if by_distance:
         if recommended:
             headline = (
                 f"✅ 建議前往：{recommended['hospital_name']}"
                 f"（{format_distance(recommended.get('distance_km'))}，{recommended['level_label']}）"
             )
+            # 修改：依症狀科別推薦時說明是否對到該科
+            if department and board.get("department_matched"):
+                headline += f"\n依你的症狀建議看{department}，這家有{department}。"
+            elif department:
+                headline += (
+                    f"\n附近未壅塞的急救責任醫院都沒有{department}，"
+                    "先以最近的為準，到院後由急診評估。"
+                )
         else:
             headline = "⚠ 附近的急救責任醫院目前都壅塞，請撥打 119 由救護車調度，或參考下方等候人數"
         contents.append(
@@ -122,6 +132,7 @@ def board_messages(board: dict[str, Any], liff_url: str, *, emergency: bool) -> 
             detail += "・119 滿床通報"
         distance = _distance_prefix(h)
         area_tag = f"{h['area_name']} " if by_distance and h.get("area_name") != area else ""
+        dept_tag = f"・有{department}" if department and h.get("department_matched") else ""
         contents.append(
             {
                 "type": "box",
@@ -131,7 +142,7 @@ def board_messages(board: dict[str, Any], liff_url: str, *, emergency: bool) -> 
                     {
                         "type": "text",
                         "text": f"{rules.LEVEL_EMOJI[h['level']]} {distance}{area_tag}"
-                        f"{h['hospital_name']}（{h['tier_label']}）{h['level_label']}",
+                        f"{h['hospital_name']}（{h['tier_label']}）{h['level_label']}{dept_tag}",
                         "size": "sm",
                         "weight": "bold",
                         "wrap": True,
@@ -177,6 +188,8 @@ def board_messages(board: dict[str, Any], liff_url: str, *, emergency: bool) -> 
             }
         )
     clinic_params = {"action": "clinics", "city": area}
+    if department:
+        clinic_params["department"] = department  # 新增：找附近診所也依同一科別
     if board.get("district"):
         clinic_params["district"] = board["district"]
     if board.get("origin"):

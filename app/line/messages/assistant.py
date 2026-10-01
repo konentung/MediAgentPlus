@@ -16,6 +16,11 @@ from app.line.messages.builder import MessageBuilder as M
 AI_FAILED_TEXT = "我暫時無法判斷你的問題，可以從下方選單選擇服務，或稍後再試一次。"
 CLARIFY_TEXT = "可以再多說一點嗎？例如哪裡不舒服、持續多久，或你想找哪一種服務。"
 DISCLAIMER = "以上整理自各醫院公開衛教資料，僅供參考，實際狀況請以醫師或原院所說明為準。"
+# 新增：通用版出院衛教選了科別，但知識庫沒有該科的出院照護內容
+NO_DISCHARGE_DATA_TEXT = (
+    "知識庫目前沒有這個科別的出院照護資料。出院後的注意事項請以出院衛教單與原院所說明為準，"
+    "有傷口紅腫、發燒、疼痛加劇或原本症狀變嚴重時請儘快回診；有生命危險請撥打 119。"
+)
 MAX_SOURCES = 3
 BRAND = "#2F6F62"
 
@@ -26,12 +31,14 @@ def action_items(
     """決策的 actions → Quick Reply；對應表在這裡，模型不需要知道 postback 格式。
     `department`（症狀諮詢建議的科別）會帶進「附近診所」按鈕，讓找診所依科別篩選。"""
     items: list[QuickReplyItem] = []
-    clinic_params = {"action": "clinics", **({"department": department} if department else {})}
+    dept_params = {"department": department} if department else {}
+    clinic_params = {"action": "clinics", **dept_params}
     for action in actions:
         if action == "call_119":
             items.append(M.uri_item("🚨 撥打 119", "tel:119"))
         elif action == "find_hospital":
-            items.append(M.postback_item("🏥 找醫院", Intent.FIND_HOSPITAL))
+            # 修改：帶科別，找醫院時優先推薦有該科的急救責任醫院
+            items.append(M.postback_item("🏥 找醫院", Intent.FIND_HOSPITAL, **dept_params))
         elif action == "find_clinic":
             items.append(M.postback_item("🏠 附近診所", Intent.FIND_HOSPITAL, **clinic_params))
         elif action == "share_location":

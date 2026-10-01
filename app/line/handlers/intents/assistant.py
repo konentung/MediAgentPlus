@@ -15,11 +15,13 @@ AI 失敗（未啟用、逾時、格式錯誤）退回關鍵字比對；仍無�
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from app.core.exceptions import ExternalServiceError
 from app.domain.assistant_schema import AssistantDecision
 from app.domain.enums import Intent
+from app.domain.retrieval import department_in_text
 from app.line import emergency
 from app.line.context import BotContext
 from app.line.handlers.intents.base import IntentHandler
@@ -34,6 +36,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 LOADING_SECONDS = 60  # LINE 上限；模型回覆後動畫自動消失
+_DISCHARGED_FROM = re.compile(r"從.{1,12}出院")  # 新增：通用版出院衛教「選擇科別」送出的文字
 
 
 class AssistantHandler(IntentHandler):
@@ -78,8 +81,12 @@ class AssistantHandler(IntentHandler):
         slots = decision.slots
         module: list = []
         if event == "hospital":
-            # 找醫院只認使用者位置：不論有沒有提到縣市，都請對方分享位置
-            module = self._run(ctx, Intent.FIND_HOSPITAL, {"emergency": "1"} if urgent else {})
+            # 找醫院只認使用者位置：不論有沒有提到縣市，都請對方分享位置；
+            # 修改：模型依症狀判斷出科別時帶上，推薦時優先有該科的醫院
+            params = {"emergency": "1"} if urgent else {}
+            if slots.department:
+                params["department"] = slots.department
+            module = self._run(ctx, Intent.FIND_HOSPITAL, params)
         elif event == "medication":
             if slots.drug_name:
                 module = self._run(
@@ -95,10 +102,17 @@ class AssistantHandler(IntentHandler):
             )
             module = self._run(ctx, Intent.REMINDER, {"action": action})
         elif event == "discharge":
-            if decision.answer and ctx.principal.is_verified:
-                # 衛教諮詢：模型已依病人的診斷 / 慢性病與知識庫寫出「現在該做什麼」
-                actions = decision.actions or ["discharge_menu", "feedback"]
+            if decision.answer:
+                # 衛教諮詢：模型已依病人的診斷 / 慢性病（或使用者說的科別）與知識庫
+                # 寫出「現在該做什麼」
+                # 修改：未驗證的使用者只要模型有答案（通用版選科別後）也直接回，不再退回選科別卡片
+                actions = decision.actions or ["find_clinic", "reminder_menu", "feedback"]
                 return msg.answer_messages(decision.answer, actions, liff_intake, decision.sources)
+            if department_in_text(text) or _DISCHARGED_FROM.search(text):
+                # 修改：使用者已經選了科別但知識庫沒內容；再回「選擇科別」卡片會一直繞圈
+                return msg.answer_messages(
+                    msg.NO_DISCHARGE_DATA_TEXT, ["find_clinic", "feedback"], liff_intake
+                )
             module = self._run(ctx, Intent.DISCHARGE, {})
         elif event == "feedback":
             module = self._run(ctx, Intent.FEEDBACK, {})
@@ -120,6 +134,8 @@ class AssistantHandler(IntentHandler):
             for extra in ("call_119", "find_hospital"):
                 if extra not in actions:
                     actions.insert(0, extra)
+            if "find_clinic" not in actions:
+                actions.append("find_clinic")  # 新增：急診之外也給同科別的醫院 / 診所選項
         elif event == "symptom" and decision.risk == "watch" and "find_clinic" not in actions:
             actions.insert(0, "find_clinic")  # 病況諮詢：建議就醫但非急症 → 就近診所最快
         if event == "unknown" and not decision.answer:
@@ -138,6 +154,7 @@ class AssistantHandler(IntentHandler):
             actions,
             liff_intake,
             decision.sources,
+            # 修改：症狀諮詢的科別同時帶進「找醫院」與「附近診所」按鈕，推薦時依症狀對應科別
             department=slots.department if event == "symptom" else None,
         )
 

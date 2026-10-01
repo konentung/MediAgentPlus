@@ -126,8 +126,18 @@ Markdown `#` 只有 68 行；36% 的文章有連續 8 行以上短行（表格�
 - **衛教諮詢（event=discharge）**：已驗證病人的脈絡多一段【病人資料】（`PatientRecordRepository.latest_encounter()`：
   最近就診科別 / 診斷 / 出院代碼 / 院方說明 + 自填慢性病）；問題像在問照護（出院 / 衛教 / 回家 / 傷口 …）時
   檢索查詢補上診斷名稱，才找得到對應衛教。模型要寫「現在該做的具體動作」（今日照護、何時回診、何時 119）；
-  有 answer 就直接回（含來源），沒有【病人資料】則 answer 留空 → `DischargeHandler` 通用版。
+  有 answer 就直接回（含來源）；沒有【病人資料】但使用者說了科別 / 疾病（通用版「選擇科別」Quick Reply 送出的
+  「我剛從心臟內科出院…」）也要依片段寫該科通用版（2026-10-01：原本未驗證一律退回選科別卡片，選完又回同一張卡，
+  使用者會一直收到同一則訊息）；兩者都沒有才留空 → `DischargeHandler` 通用版。模型留空但文字已含科別時回
+  `NO_DISCHARGE_DATA_TEXT` 而不是再一張卡。科別選項對齊知識庫科別名（`retrieval.KNOWLEDGE_DEPARTMENTS`），
+  `department_in_text()` 認出文字裡的科別後也拿來做同科別加權。
   Rich Menu「我剛出院」對已驗證病人也用固定問題走同一條路（`DischargeHandler.PERSONAL_QUESTION`），AI 失敗退回通用版。
+- **最近對話**（2026-10-01）：只用來理解代名詞 / 延續話題，prompt 標明「不要重複其中內容」，助理回答在紀錄裡只留
+  前 120 字（`ASSISTANT_HISTORY_CHARS`），使用者打 Rich Menu 關鍵字（主選單、找醫院…）視為換話題、清掉紀錄；
+  之前整段回答都存進紀錄，模型會把舊內容再講一次。
+- **藥名**（2026-10-01）：中文商品名 jieba 切不出來，`DrugRepository.find_mentioned()` 讓資料庫比對句子裡出現的
+  `name_zh`（整名或前 3 字），`PharmacyService.search_drugs()` 整句查不到時依序去劑量 / 問句字眼 → 句中藥名 →
+  最長單詞再查。
 
 ## 7. 費用與延遲
 

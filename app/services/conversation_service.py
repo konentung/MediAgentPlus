@@ -18,7 +18,7 @@ from app.core.exceptions import ExternalServiceError
 from app.domain import triage_rules
 from app.domain.assistant_schema import MAX_ANSWER_CHARS, AssistantDecision
 from app.domain.principal import Principal
-from app.domain.retrieval import summarize_hits, tokenize
+from app.domain.retrieval import department_in_text, summarize_hits, tokenize
 from app.line.state_store import ConversationStateStore
 from app.repositories.patient_record_repository import PatientRecordRepository
 from app.repositories.patient_repository import PatientRepository
@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 HISTORY_ACTION = "history"
 MAX_TEXT_CHARS = 1000
+ASSISTANT_HISTORY_CHARS = 120  # 新增：對話紀錄裡助理回答只留這麼多字
 _CJK = re.compile(r"[一-鿿]")
 _CARE_HINTS = ("出院", "衛教", "照護", "回家", "注意", "傷口", "復健", "回診")
 
@@ -59,6 +60,8 @@ SYSTEM_PROMPT = """你是「MediAgent+」醫療照護 LINE 機器人的對話助
    讓對應功能模組接手。
 7. actions 是給使用者的下一步按鈕（最多 4 個），只選真的有幫助的。
 8. 使用者提到縣市 / 藥名 / 症狀時填進 slots，讓功能模組直接使用。
+   問某個藥是什麼、哪一類、怎麼吃 → event=medication、slots.drug_name 填藥名（照使用者寫的），
+   「即時資料」有健保用藥資料時可用它說明藥名 / 類別 / 成分（不講劑量），模組會再附上查詢結果。
 9. 使用者說想找真人、客訴、反映問題，或問題超出範圍且知識庫沒有答案 → event=feedback，
    answer 一句話說明目前沒有真人客服、可留下意見回饋或聯絡原院所。
 
@@ -72,8 +75,15 @@ SYSTEM_PROMPT = """你是「MediAgent+」醫療照護 LINE 機器人的對話助
 衛教諮詢（event=discharge）：
 11. 「病人資料」有最近的就診 / 出院診斷時，answer 要對照片段寫出「現在該做的具體動作」：
     今日照護 2–4 條（傷口 / 飲食 / 活動 / 服藥）、什麼情況要回診、什麼情況撥 119，
-    並以病人的診斷與慢性病為準，不要泛泛而談。沒有「病人資料」（未驗證或無紀錄）就把 answer 留空，
-    讓通用版衛教模組接手。
+    並以病人的診斷與慢性病為準，不要泛泛而談。
+    沒有「病人資料」但使用者說了科別或疾病（例如「我剛從心臟內科出院」）→ 依片段寫該科 / 該病
+    通用的出院照護重點，一樣要有 citations；片段完全沒有相關內容就照規則 2 明說。
+    兩者都沒有（只說「我剛出院」、沒有科別也沒有診斷）才把 answer 留空，讓通用版衛教模組接手。
+
+最近對話（history）：
+12. 「最近對話」只用來理解代名詞與延續話題（「那要吃多久？」指的是上一則提到的藥），
+    **不要重述、摘要或延伸先前的回答**；answer 只回應「使用者這則訊息」。
+    這則訊息換了話題就完全忽略先前對話；不要主動提起使用者沒再問的舊話題。
 """.replace("{max_chars}", str(MAX_ANSWER_CHARS))
 
 
@@ -145,7 +155,9 @@ class ConversationService:
                 hospital_ids.append(hid)
         patient_block, diagnosis, department = self._patient_block(principal, profile)
         # 出院衛教問題通常不會寫出診斷名稱（「我回家要注意什麼」），檢索時補上診斷才找得到對應衛教；
-        # 最近就診的科別拿來替同科別的衛教片段加權（不硬過濾）
+        # 最近就診的科別拿來替同科別的衛教片段加權（不硬過濾）。
+        # 修改：使用者自己說出科別（通用版出院衛教選科別、「我剛從骨科出院」）時也用它加權
+        department = department_in_text(text) or department
         query = f"{text} {diagnosis}" if diagnosis and _asks_care(text) else text
         hits = self._knowledge.retrieve(
             query, hospital_ids=hospital_ids, top_k=self._top_k, department=department
@@ -175,7 +187,8 @@ class ConversationService:
                 f"{'使用者' if t['role'] == 'user' else '助理'}：{t['text']}"
                 for t in context.history
             ]
-            parts.append("【最近對話】\n" + "\n".join(lines))
+            # 修改：標明只供理解脈絡，模型不該把舊回答再講一次
+            parts.append("【最近對話】（僅供理解上下文，不要重複其中內容）\n" + "\n".join(lines))
         parts.append("【知識庫片段】\n" + (summarize_hits(context.hits) or "（沒有相關片段）"))
         if context.live_blocks:
             parts.append("【即時資料】\n" + "\n".join(context.live_blocks))
@@ -260,7 +273,16 @@ class ConversationService:
         """訊息裡像藥名的詞 → 健保用藥主檔查詢結果（讓模型知道這是什麼藥、屬哪一類）。"""
         found: list[str] = []
         seen: set[str] = set()
+        # 修改：中文商品名（普拿疼、保栓通）jieba 切不出來，先讓資料庫直接比對句子裡出現的藥名
+        for drug in self._pharmacies.mentioned_drugs(text):
+            key = (drug.get("name_zh") or drug["name_en"]).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append(self._drug_line(drug))
         for token in tokenize(text):
+            if len(found) >= 3:
+                break
             if (
                 token in seen
                 or (token.isascii() and len(token) < 4)
@@ -272,14 +294,17 @@ class ConversationService:
                 names = (drug.get("name_en") or "", drug.get("name_zh") or "")
                 if not any(n.lower().startswith(token) for n in names if n):
                     continue  # 只收名稱開頭就是這個詞的結果，避免「頭痛」撈到「治偏頭痛錠」
-                name = drug.get("name_zh") or drug["name_en"]
-                category = f"（{drug['category']}）" if drug.get("category") else ""
-                found.append(
-                    f"{name} / {drug['name_en']}{category}，成分 {drug.get('ingredient') or '?'}"
-                )
-            if len(found) >= 3:
-                break
-        return "健保用藥資料：\n" + "\n".join(f"・{f}" for f in found) if found else None
+                key = (drug.get("name_zh") or drug["name_en"]).lower()
+                if key not in seen:
+                    seen.add(key)
+                    found.append(self._drug_line(drug))
+        return "健保用藥資料：\n" + "\n".join(f"・{f}" for f in found[:3]) if found else None
+
+    @staticmethod
+    def _drug_line(drug: dict[str, Any]) -> str:
+        name = drug.get("name_zh") or drug["name_en"]
+        category = f"（{drug['category']}）" if drug.get("category") else ""
+        return f"{name} / {drug['name_en']}{category}，成分 {drug.get('ingredient') or '?'}"
 
     # ---- 對話紀錄（短期，存在對話狀態 store）----
 
@@ -299,7 +324,9 @@ class ConversationService:
         if not key:
             return
         turns = self._history(principal)
-        turns.append({"role": role, "text": text[:300], **({"event": event} if event else {})})
+        # 修改：助理的回答只留開頭（夠認出話題就好），整段存進去模型容易照抄舊內容
+        limit = 300 if role == "user" else ASSISTANT_HISTORY_CHARS
+        turns.append({"role": role, "text": text[:limit], **({"event": event} if event else {})})
         self._states.set(
             key, HISTORY_ACTION, {"turns": turns[-self._history_turns :]}, ttl=self._history_ttl
         )
