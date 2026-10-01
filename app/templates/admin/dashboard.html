@@ -1,28 +1,40 @@
 {% extends "admin/base.html" %}
 {% block title %}儀表板{% endblock %}
 
+{% block head %}
+<style>
+  /* 統計卡：左上角放低透明度的心電圖線裝飾 */
+  .stat-card { transition: border-color .15s ease; }
+  .stat-card:hover { border-color: var(--ma-ink); }
+  .stat-card .ma-ecg { width: 2.25rem; color: var(--ma-gray); opacity: .5; }
+</style>
+{% endblock %}
+
 {% block content %}
 <h1 class="h4 mb-4">儀表板</h1>
 <div class="row g-3">
   <div class="col-sm-6 col-lg-4" data-perm="patient:read">
-    <a class="card border-0 shadow-sm text-decoration-none text-body h-100" href="{{ url_for('admin_pages.patients') }}?status=pending">
+    <a class="card stat-card text-decoration-none text-body h-100" href="{{ url_for('admin_pages.patients') }}?status=pending">
       <div class="card-body">
+        {{ brand.ecg("d-block mb-2") }}
         <div class="text-secondary small">待核對病人</div>
         <div class="display-6 fw-bold" id="stat-pending">—</div>
       </div>
     </a>
   </div>
   <div class="col-sm-6 col-lg-4" data-perm="patient:read">
-    <a class="card border-0 shadow-sm text-decoration-none text-body h-100" href="{{ url_for('admin_pages.patients') }}?status=active">
+    <a class="card stat-card text-decoration-none text-body h-100" href="{{ url_for('admin_pages.patients') }}?status=active">
       <div class="card-body">
+        {{ brand.ecg("d-block mb-2") }}
         <div class="text-secondary small">到期追蹤事項</div>
         <div class="display-6 fw-bold" id="stat-followups">—</div>
       </div>
     </a>
   </div>
   <div class="col-sm-6 col-lg-4" data-perm="feedback:manage">
-    <a class="card border-0 shadow-sm text-decoration-none text-body h-100" href="{{ url_for('admin_pages.feedback') }}">
+    <a class="card stat-card text-decoration-none text-body h-100" href="{{ url_for('admin_pages.feedback') }}">
       <div class="card-body">
+        {{ brand.ecg("d-block mb-2") }}
         <div class="text-secondary small">待處理意見回饋</div>
         <div class="display-6 fw-bold" id="stat-feedback">—</div>
       </div>
@@ -30,7 +42,7 @@
   </div>
 </div>
 
-<div class="card border-0 shadow-sm mt-4" data-perm="patient:read">
+<div class="card mt-4" data-perm="patient:read">
   <div class="card-header bg-white fw-bold">最新待核對病人</div>
   <div class="table-responsive">
     <table class="table table-hover mb-0 align-middle">

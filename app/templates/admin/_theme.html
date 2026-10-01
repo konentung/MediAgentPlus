@@ -1,0 +1,204 @@
+{# 後台共用主題：品牌色票（--ma-*）與 Bootstrap 5.3 變數覆寫。
+   base.html 與 login.html 都 include 這個檔，改色只改這裡。
+   狀態徽章的 text-bg-* 類別由各頁 JS 產生，這裡只重新定義它們的長相，不引入綠 / 黃。 #}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    /* 品牌色票 */
+    --ma-ink: #2B2D42;
+    --ma-ink-rgb: 43, 45, 66;
+    --ma-ink-hover: #3A3D59;
+    --ma-gray: #8D99AE;
+    --ma-gray-rgb: 141, 153, 174;
+    --ma-muted: #656E83;        /* 次要文字：#8D99AE 加深到在白底與白金底都符合 WCAG AA */
+    --ma-muted-rgb: 101, 110, 131;
+    --ma-platinum: #EDF2F4;
+    --ma-platinum-rgb: 237, 242, 244;
+    --ma-red: #EF233C;          /* 深色 / 白金底上的強調色 */
+    --ma-red-strong: #D90429;   /* 白底上的強調色、危險操作 */
+    --ma-red-strong-rgb: 217, 4, 41;
+    --ma-red-strong-hover: #B80323;
+    --ma-border: #DDE3E8;
+    --ma-divider: #E3E8EC;
+    --ma-row-hover: #F6F8FA;
+    --ma-radius-card: 16px;
+    --ma-radius-btn: 10px;
+
+    /* Bootstrap 主題覆寫 */
+    --bs-font-sans-serif: "Inter", -apple-system, BlinkMacSystemFont, "PingFang TC", "Microsoft JhengHei", sans-serif;
+    --bs-body-color: var(--ma-ink);
+    --bs-body-color-rgb: var(--ma-ink-rgb);
+    --bs-emphasis-color: var(--ma-ink);
+    --bs-emphasis-color-rgb: var(--ma-ink-rgb);
+    --bs-heading-color: var(--ma-ink);
+    --bs-secondary-color: var(--ma-muted);
+    --bs-secondary-color-rgb: var(--ma-muted-rgb);
+    --bs-border-color: var(--ma-border);
+    --bs-code-color: var(--ma-ink);
+    --bs-link-color: var(--ma-ink);
+    --bs-link-color-rgb: var(--ma-ink-rgb);
+    --bs-link-hover-color: var(--ma-ink-hover);
+    --bs-link-hover-color-rgb: 58, 61, 89;
+    --bs-primary: var(--ma-ink);
+    --bs-primary-rgb: var(--ma-ink-rgb);
+    --bs-success: var(--ma-ink);
+    --bs-success-rgb: var(--ma-ink-rgb);
+    --bs-secondary: var(--ma-muted);
+    --bs-secondary-rgb: var(--ma-muted-rgb);
+    --bs-info: var(--ma-gray);
+    --bs-info-rgb: var(--ma-gray-rgb);
+    --bs-danger: var(--ma-red-strong);
+    --bs-danger-rgb: var(--ma-red-strong-rgb);
+    --bs-light-rgb: var(--ma-platinum-rgb);
+    --bs-dark-rgb: var(--ma-ink-rgb);
+  }
+
+  body { background: var(--ma-platinum); }
+  h1, h2, h3, h4, h5, h6, .h1, .h2, .h3, .h4, .h5, .h6 { font-weight: 600; }
+  code { background: var(--ma-platinum); border-radius: 6px; padding: .1em .35em; }
+
+  /* 焦點框：全站一致的 2px 紅色 outline */
+  a:focus-visible, .btn:focus-visible, .btn-close:focus-visible, .nav-link:focus-visible, .page-link:focus-visible,
+  .form-control:focus, .form-select:focus, .form-check-input:focus-visible {
+    outline: 2px solid var(--ma-red);
+    outline-offset: 2px;
+    box-shadow: none;
+  }
+  .form-control:focus, .form-select:focus, .form-check-input:focus { border-color: var(--ma-ink); box-shadow: none; }
+  .form-control, .form-select { border-radius: var(--ma-radius-btn); }
+  .form-check-input:checked { background-color: var(--ma-ink); border-color: var(--ma-ink); }
+
+  /* Logo 元件（巨集在 admin/_brand.html） */
+  .ma-ecg-line { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
+  .ma-plus { width: .62em; height: .62em; fill: var(--ma-red); margin-left: .12em; vertical-align: baseline; }
+  .ma-wordmark { font-family: "Inter", sans-serif; font-weight: 600; letter-spacing: -.01em; line-height: 1; }
+  .ma-logo-circle .ma-logo-bg { fill: #fff; stroke: var(--ma-platinum); }
+  .ma-logo-circle .ma-ecg-line { stroke: var(--ma-ink); }
+  .ma-logo-circle .ma-cross { fill: var(--ma-red-strong); }
+
+  /* Loading：心電圖描線動畫 */
+  .ma-ecg-loader { width: 96px; color: var(--ma-ink); }
+  .ma-ecg-loader .ma-ecg-track { opacity: .18; }
+  .ma-ecg-loader .ma-ecg-draw { stroke-dasharray: 100; stroke-dashoffset: 100; animation: ma-ecg-draw 1.6s ease-in-out infinite; }
+  @keyframes ma-ecg-draw {
+    0% { stroke-dashoffset: 100; }
+    60% { stroke-dashoffset: 0; }
+    100% { stroke-dashoffset: -100; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .ma-ecg-loader .ma-ecg-draw { animation: none; stroke-dashoffset: 0; }
+  }
+
+  /* 卡片 / 對話框 / 清單：白底、16px 圓角、細框、不加陰影 */
+  .card {
+    --bs-card-border-radius: var(--ma-radius-card);
+    --bs-card-inner-border-radius: calc(var(--ma-radius-card) - 1px);
+    --bs-card-border-color: var(--ma-border);
+    --bs-card-cap-bg: #fff;
+    overflow: hidden;  /* 讓卡片內的表頭底色跟著圓角裁切 */
+  }
+  .modal {
+    --bs-modal-border-radius: var(--ma-radius-card);
+    --bs-modal-inner-border-radius: calc(var(--ma-radius-card) - 1px);
+    --bs-modal-border-color: var(--ma-border);
+    --bs-modal-header-border-color: var(--ma-divider);
+    --bs-modal-footer-border-color: var(--ma-divider);
+  }
+  .list-group { --bs-list-group-border-color: var(--ma-divider); --bs-list-group-border-radius: var(--ma-radius-card); }
+  .toast { --bs-toast-border-radius: 12px; }
+
+  /* 按鈕：主要 = 深靛藍、次要 = 白底深框、危險 = 深紅 */
+  .btn, .btn-sm, .btn-lg { --bs-btn-border-radius: var(--ma-radius-btn); --bs-btn-border-width: 1.5px; --bs-btn-font-weight: 500; }
+  .btn { white-space: nowrap; }  /* 中文短標籤在窄欄位裡不要逐字換行 */
+  .btn-brand, .btn-primary, .btn-success {
+    --bs-btn-color: #fff; --bs-btn-bg: var(--ma-ink); --bs-btn-border-color: var(--ma-ink);
+    --bs-btn-hover-color: #fff; --bs-btn-hover-bg: var(--ma-ink-hover); --bs-btn-hover-border-color: var(--ma-ink-hover);
+    --bs-btn-active-color: #fff; --bs-btn-active-bg: var(--ma-ink-hover); --bs-btn-active-border-color: var(--ma-ink-hover);
+    --bs-btn-disabled-color: #fff; --bs-btn-disabled-bg: var(--ma-gray); --bs-btn-disabled-border-color: var(--ma-gray);
+  }
+  .btn-outline-secondary, .btn-outline-primary, .btn-outline-success {
+    --bs-btn-color: var(--ma-ink); --bs-btn-bg: #fff; --bs-btn-border-color: var(--ma-ink);
+    --bs-btn-hover-color: var(--ma-ink); --bs-btn-hover-bg: var(--ma-platinum); --bs-btn-hover-border-color: var(--ma-ink);
+    --bs-btn-active-color: var(--ma-ink); --bs-btn-active-bg: var(--ma-border); --bs-btn-active-border-color: var(--ma-ink);
+    --bs-btn-disabled-color: var(--ma-gray); --bs-btn-disabled-bg: #fff; --bs-btn-disabled-border-color: var(--ma-gray);
+  }
+  .btn-danger {
+    --bs-btn-color: #fff; --bs-btn-bg: var(--ma-red-strong); --bs-btn-border-color: var(--ma-red-strong);
+    --bs-btn-hover-color: #fff; --bs-btn-hover-bg: var(--ma-red-strong-hover); --bs-btn-hover-border-color: var(--ma-red-strong-hover);
+    --bs-btn-active-color: #fff; --bs-btn-active-bg: var(--ma-red-strong-hover); --bs-btn-active-border-color: var(--ma-red-strong-hover);
+    --bs-btn-disabled-color: #fff; --bs-btn-disabled-bg: var(--ma-red-strong); --bs-btn-disabled-border-color: var(--ma-red-strong);
+  }
+  .btn-outline-danger {
+    --bs-btn-color: var(--ma-red-strong); --bs-btn-bg: #fff; --bs-btn-border-color: var(--ma-red-strong);
+    --bs-btn-hover-color: #fff; --bs-btn-hover-bg: var(--ma-red-strong); --bs-btn-hover-border-color: var(--ma-red-strong);
+    --bs-btn-active-color: #fff; --bs-btn-active-bg: var(--ma-red-strong-hover); --bs-btn-active-border-color: var(--ma-red-strong-hover);
+    --bs-btn-disabled-color: var(--ma-red-strong); --bs-btn-disabled-bg: #fff; --bs-btn-disabled-border-color: var(--ma-red-strong);
+  }
+
+  /* 表格：白金表頭、淡色 hover、細分隔線 */
+  .table { --bs-table-border-color: var(--ma-divider); --bs-table-hover-bg: var(--ma-row-hover); --bs-table-hover-color: var(--ma-ink); }
+  .table-light { --bs-table-bg: var(--ma-platinum); --bs-table-color: var(--ma-ink); --bs-table-border-color: var(--ma-divider); }
+  .table thead th { font-weight: 600; }
+  /* 卡片內的表格：首尾欄與卡片標題對齊 */
+  .card .table > :not(caption) > * > :first-child { padding-left: 1rem; }
+  .card .table > :not(caption) > * > :last-child { padding-right: 1rem; }
+
+  /* 頁籤 / 分頁 / 進度條 */
+  .nav-tabs {
+    --bs-nav-tabs-border-color: var(--ma-border);
+    --bs-nav-link-color: var(--ma-muted);
+    --bs-nav-link-hover-color: var(--ma-ink);
+    --bs-nav-tabs-link-hover-border-color: transparent transparent var(--ma-border);
+    --bs-nav-tabs-link-active-color: var(--ma-ink);
+    --bs-nav-tabs-link-active-bg: #fff;
+    --bs-nav-tabs-link-active-border-color: var(--ma-border) var(--ma-border) #fff;
+  }
+  .nav-tabs .nav-link.active { font-weight: 600; }
+  .pagination {
+    --bs-pagination-color: var(--ma-ink);
+    --bs-pagination-border-color: var(--ma-border);
+    --bs-pagination-hover-color: var(--ma-ink);
+    --bs-pagination-hover-bg: var(--ma-platinum);
+    --bs-pagination-hover-border-color: var(--ma-border);
+    --bs-pagination-focus-color: var(--ma-ink);
+    --bs-pagination-focus-bg: var(--ma-platinum);
+    --bs-pagination-focus-box-shadow: none;
+    --bs-pagination-active-bg: var(--ma-ink);
+    --bs-pagination-active-border-color: var(--ma-ink);
+    --bs-pagination-disabled-color: var(--ma-gray);
+    --bs-pagination-disabled-bg: #fff;
+    --bs-pagination-disabled-border-color: var(--ma-border);
+  }
+  .progress { --bs-progress-bg: var(--ma-platinum); --bs-progress-bar-bg: var(--ma-ink); }
+
+  /* 狀態徽章：靠明度與圖示區分
+     success = 已驗證 / 啟用（深底白字 + 勾）、warning / primary = 待核對 / 進行中（白底深框）、
+     secondary = 未綁定 / 停用（灰藍底深字）、danger = 鎖定 / 高風險（深紅底白字） */
+  .badge { --bs-badge-border-radius: 50rem; --bs-badge-font-weight: 600; --bs-badge-padding-x: .7em; }
+  .badge.text-bg-success::before { content: "✓"; margin-right: .3em; }
+  .badge.text-bg-warning, .badge.text-bg-primary {
+    color: var(--ma-ink) !important;
+    background-color: #fff !important;
+    box-shadow: inset 0 0 0 1.5px var(--ma-ink);
+  }
+  .badge.text-bg-secondary { color: var(--ma-ink) !important; background-color: var(--ma-gray) !important; }
+  .badge.text-bg-info {
+    color: var(--ma-ink) !important;
+    background-color: var(--ma-platinum) !important;
+    box-shadow: inset 0 0 0 1px var(--ma-gray);
+  }
+  .text-bg-light { color: var(--ma-ink) !important; }
+
+  /* 提示框：成功 / 說明 = 白金底、警告 = 白底深框、錯誤 = 白底紅框 */
+  .alert { --bs-alert-border-radius: 12px; --bs-alert-link-color: var(--ma-ink); }
+  .alert-success, .alert-info, .alert-secondary {
+    --bs-alert-color: var(--ma-ink); --bs-alert-bg: var(--ma-platinum); --bs-alert-border-color: var(--ma-border);
+  }
+  .alert-warning { --bs-alert-color: var(--ma-ink); --bs-alert-bg: #fff; --bs-alert-border-color: var(--ma-ink); }
+  .alert-danger {
+    --bs-alert-color: var(--ma-ink); --bs-alert-bg: #fff; --bs-alert-border-color: var(--ma-red-strong);
+    border-left-width: 4px;
+  }
+</style>

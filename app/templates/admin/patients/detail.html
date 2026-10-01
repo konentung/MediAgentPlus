@@ -12,7 +12,7 @@
 <div id="loading" class="text-secondary py-5 text-center">載入中…</div>
 
 <div id="content" class="d-none">
-  <div class="card border-0 shadow-sm mb-3">
+  <div class="card mb-3">
     <div class="card-body">
       <div class="d-flex flex-wrap align-items-start justify-content-between gap-3">
         <div>
@@ -58,7 +58,7 @@
     <div class="tab-pane fade" id="tab-care" role="tabpanel">
       <div class="row g-3">
         <div class="col-lg-6">
-          <div class="card border-0 shadow-sm h-100">
+          <div class="card h-100">
             <div class="card-header bg-white d-flex justify-content-between align-items-center">
               <span class="fw-bold">風險警示</span>
               <button class="btn btn-sm btn-outline-secondary" data-perm="patient:write" data-bs-toggle="modal" data-bs-target="#flag-modal">新增</button>
@@ -67,7 +67,7 @@
           </div>
         </div>
         <div class="col-lg-6">
-          <div class="card border-0 shadow-sm h-100">
+          <div class="card h-100">
             <div class="card-header bg-white d-flex justify-content-between align-items-center">
               <span class="fw-bold">追蹤事項</span>
               <button class="btn btn-sm btn-outline-secondary" data-perm="patient:write" data-bs-toggle="modal" data-bs-target="#followup-modal">新增</button>
@@ -79,7 +79,7 @@
     </div>
 
     <div class="tab-pane fade" id="tab-notes" role="tabpanel">
-      <form class="card border-0 shadow-sm mb-3" id="note-form">
+      <form class="card mb-3" id="note-form">
         <div class="card-body">
           <label class="form-label fw-semibold" for="note-body">新增備註</label>
           <textarea class="form-control" id="note-body" name="body" rows="2" required></textarea>
@@ -95,10 +95,10 @@
     <div class="tab-pane fade" id="tab-history" role="tabpanel">
       <div class="row g-3">
         <div class="col-lg-6">
-          <div class="card border-0 shadow-sm"><div class="card-header bg-white fw-bold">送出紀錄</div><ul class="list-group list-group-flush" id="submissions"></ul></div>
+          <div class="card"><div class="card-header bg-white fw-bold">送出紀錄</div><ul class="list-group list-group-flush" id="submissions"></ul></div>
         </div>
         <div class="col-lg-6">
-          <div class="card border-0 shadow-sm"><div class="card-header bg-white fw-bold">院方審核 / 修正</div><ul class="list-group list-group-flush" id="reviews"></ul></div>
+          <div class="card"><div class="card-header bg-white fw-bold">院方審核 / 修正</div><ul class="list-group list-group-flush" id="reviews"></ul></div>
         </div>
       </div>
     </div>
@@ -236,7 +236,7 @@ Admin.boot(async function (ctx) {
         if (f.key === "national_id") value = profile.national_id;
         return '<div class="col-5 col-lg-4 text-secondary small py-1">' + esc(f.label) + '</div><div class="col-7 col-lg-8 py-1" data-value="' + f.key + '">' + display(f, value) + "</div>";
       }).join("");
-      return '<div class="col-lg-6"><div class="card border-0 shadow-sm h-100"><div class="card-header bg-white fw-bold">' + step.number + ". " + esc(step.title) + '</div><div class="card-body"><div class="row g-0 small">' + rows + "</div></div></div></div>";
+      return '<div class="col-lg-6"><div class="card h-100"><div class="card-header bg-white fw-bold">' + step.number + ". " + esc(step.title) + '</div><div class="card-body"><div class="row g-0 small">' + rows + "</div></div></div></div>";
     }).join("");
   }
 
@@ -288,7 +288,7 @@ Admin.boot(async function (ctx) {
     if (!detail.encounters.length) { wrap.innerHTML = '<div class="text-secondary small">尚無就診紀錄</div>'; return; }
     wrap.innerHTML = detail.encounters.map(function (e) {
       var dx = (e.diagnoses || []).map(function (d) { return esc((d.icd10_code ? d.icd10_code + " " : "") + (d.description || "")); }).join("；");
-      return '<div class="card border-0 shadow-sm mb-2"><div class="card-body">' +
+      return '<div class="card mb-2"><div class="card-body">' +
         '<div class="d-flex justify-content-between"><div><span class="badge text-bg-light border me-2">' + esc(label("encounter_types", e.encounter_type)) + "</span><b>" + esc(e.visit_date) + "</b> " + esc(e.department || "") + (e.attending_physician ? " · " + esc(e.attending_physician) : "") + "</div>" +
         (e.discharge_code ? '<span class="badge text-bg-info">出院代碼 ' + esc(e.discharge_code) + "</span>" : "") + "</div>" +
         (dx ? '<div class="small mt-2">診斷：' + dx + "</div>" : "") +
