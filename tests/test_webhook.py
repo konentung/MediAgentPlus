@@ -134,3 +134,16 @@ def test_redelivered_event_is_processed_once(post_line_event, container):
     fresh = {**event, "webhookEventId": "evt-new"}
     post_line_event(fresh)
     assert len(container.line_client.replies) == 2
+
+
+def test_follow_syncs_line_profile(post_line_event, container):
+    """加好友當下就把 LINE 顯示名稱 / 頭像存進 users；取不到也照樣送歡迎訊息。"""
+    post_line_event(_event("follow", user_id="U-profile", follow={"isUnblocked": False}))
+    user = container.users.get_by_line_user_id("U-profile")
+    assert user.display_name == "LINE U-profile" and user.picture_url.endswith("U-profile.png")
+
+    container.line_client.fail_profile = True
+    resp = post_line_event(_event("follow", user_id="U-noprofile", follow={"isUnblocked": False}))
+    assert resp.status_code == 200
+    assert container.users.get_by_line_user_id("U-noprofile").display_name is None
+    assert container.line_client.replies

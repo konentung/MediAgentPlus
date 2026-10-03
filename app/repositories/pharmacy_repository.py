@@ -104,7 +104,11 @@ class SqlAlchemyPharmacyRepository:
         if query:
             contains = f"%{query}%"
             stmt = stmt.where(
-                db.or_(PharmacyModel.name.ilike(contains), PharmacyModel.address.ilike(contains))
+                db.or_(
+                    PharmacyModel.id.ilike(contains),
+                    PharmacyModel.name.ilike(contains),
+                    PharmacyModel.address.ilike(contains),
+                )
             )
         return paginate(stmt, page, per_page)
 

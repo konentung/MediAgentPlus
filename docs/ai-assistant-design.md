@@ -65,7 +65,7 @@ AssistantHandler（Intent.ASSISTANT）
 ```bash
 後台 /admin/knowledge →「系統資料匯入」一次選多個科別 txt 上傳 →「計算向量」（背景工作，可中斷重跑）
 切段規則改了 →「重建片段」（不必重新上傳；向量會清掉）→ 再「計算向量」
-後台「試搜」確認檢索結果（關鍵字 + 語意，顯示科別與小節）
+後台「搜尋」確認檢索結果（關鍵字 + 語意，顯示科別與小節）
 ```
 
 ## 4. 知識庫（`knowledge_documents` + `knowledge_chunks`）
@@ -98,7 +98,7 @@ Markdown `#` 只有 68 行；36% 的文章有連續 8 行以上短行（表格�
 - 範圍：通用文件所有人檢索得到；院所文件只有 `preferred_hospital_id` 或所屬院所是它的使用者檢索得到。
 - 權限：讀取 = 所有院方角色；新增 / 修改 / 刪除 / Markdown 匯入 = `EDUCATION_CONTENT_MANAGE`（院所綁自己）；
   通用文件與衛教 txt 匯入 / 重建片段只有 SUPER_ADMIN。
-- 後台 `/admin/knowledge`：列表、編輯、停用、多檔 Markdown 匯入、試搜。
+- 後台 `/admin/knowledge`：列表、編輯、停用、多檔 Markdown 匯入、搜尋。
 
 ## 5. 決策格式（`app/domain/assistant_schema.py`）
 

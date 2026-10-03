@@ -44,11 +44,14 @@
 
 <div class="card mt-4" data-perm="patient:read">
   <div class="card-header bg-white fw-bold">最新待核對病人</div>
-  <div class="table-responsive">
-    <table class="table table-hover mb-0 align-middle">
-      <thead class="table-light"><tr><th>姓名</th><th>手機</th><th>填表人</th><th>送出時間</th><th></th></tr></thead>
-      <tbody id="recent-pending"><tr><td colspan="5" class="text-secondary text-center py-4">載入中…</td></tr></tbody>
-    </table>
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-sm table-hover align-middle mb-0">
+        <thead class="table-light"><tr><th>姓名</th><th>手機</th><th>填表人</th><th>送出時間</th><th></th></tr></thead>
+        <tbody id="recent-pending"></tbody>
+      </table>
+    </div>
+    <p class="small text-secondary mt-3 mb-0 d-none" id="recent-empty">目前沒有待核對的病人。</p>
   </div>
 </div>
 {% endblock %}
@@ -64,14 +67,11 @@ Admin.boot(async function (ctx) {
 
   var rows = await ctx.api("/api/v1/admin/patients?status=pending");
   var tbody = document.getElementById("recent-pending");
-  if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="5" class="text-secondary text-center py-4">目前沒有待核對的病人</td></tr>';
-    return;
-  }
+  document.getElementById("recent-empty").classList.toggle("d-none", rows.length > 0);
   tbody.innerHTML = rows.slice(0, 10).map(function (p) {
     return "<tr><td>" + Admin.esc(p.full_name) + "</td><td>" + Admin.esc(p.phone) + "</td>" +
       "<td>" + (p.filler_relation === "family" ? "家屬代填" : "本人") + "</td>" +
-      "<td>" + Admin.fmtDate(p.submitted_at) + "</td>" +
+      "<td class='small text-secondary'>" + Admin.fmtDate(p.submitted_at) + "</td>" +
       '<td class="text-end"><a class="btn btn-sm btn-brand" href="/admin/patients/' + encodeURIComponent(p.user_id) + '">核對</a></td></tr>';
   }).join("");
 });

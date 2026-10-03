@@ -245,7 +245,7 @@ FLASK_ENV=production gunicorn -w 1 --threads 4 --timeout 120 -b 0.0.0.0:5000 wsg
 1. 「匯入 Markdown」上傳 `data/knowledge/*.md`（通用知識種子）。
 2. 「系統資料匯入」一次選取 `衛教內文_依科別分類/` 下的所有 `NN_科別.txt` 上傳（全台醫院衛教，約 91MB，走本機網址不要經 ngrok；匯入約一分鐘）。
 3. 「計算向量」（41,737 片段約 7 分鐘、US$0.25；背景執行、可中斷重跑）。
-4. 「試搜」確認檢索（關鍵字 + 語意）。
+4. 「搜尋」確認檢索（關鍵字 + 語意）。
 
 OpenAI 一次約 2–6 秒；`AI_TIMEOUT_SECONDS` 預設 60，gunicorn `TIMEOUT` 預設 120。
 `AI_ENABLED=false` 時文字退回關鍵字比對。院所自己的衛教 / FAQ 在後台「AI 知識庫」上傳 Markdown 即可，不需改程式。

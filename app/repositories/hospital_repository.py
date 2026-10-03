@@ -22,6 +22,7 @@ class HospitalRepository(Protocol):
         region: str | None,
         tier: str | None,
         active_only: bool,
+        district: str | None = None,
         page: int,
         per_page: int,
     ) -> tuple[list[dict[str, Any]], int]: ...
@@ -74,10 +75,11 @@ class SqlAlchemyHospitalRepository:
         region: str | None,
         tier: str | None,
         active_only: bool,
+        district: str | None = None,
         page: int,
         per_page: int,
     ) -> tuple[list[dict[str, Any]], int]:
-        """後台「所有院所」表格：代碼 / 名稱 / 地址關鍵字、縣市、層級篩選。"""
+        """後台「所有院所」表格：代碼 / 名稱 / 地址關鍵字、縣市、鄉鎮市區、層級篩選。"""
         stmt = db.select(HospitalModel).order_by(HospitalModel.name, HospitalModel.id)
         if active_only:
             stmt = stmt.where(HospitalModel.active.is_(True))
@@ -93,6 +95,10 @@ class SqlAlchemyHospitalRepository:
         if region:
             variants = {region, region.replace("台", "臺"), region.replace("臺", "台")}
             stmt = stmt.where(HospitalModel.region.in_(list(variants)))
+        if district:
+            # 院所主檔沒有鄉鎮市區欄位，用「地址包含」比對（臺 / 台皆可）
+            names = {district, district.replace("台", "臺"), district.replace("臺", "台")}
+            stmt = stmt.where(db.or_(*[HospitalModel.address.like(f"%{n}%") for n in names]))
         if tier:
             stmt = stmt.where(HospitalModel.capacity_tier == tier)
         return paginate(stmt, page, per_page)

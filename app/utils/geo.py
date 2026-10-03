@@ -47,6 +47,15 @@ def district_centroids() -> tuple[tuple[str, str, float, float], ...]:
         )
 
 
+@lru_cache(maxsize=1)
+def districts_by_city() -> dict[str, tuple[str, ...]]:
+    """縣市 → 鄉鎮市區清單（後台篩選下拉選單用）；鄉鎮市區依名稱排序。"""
+    grouped: dict[str, list[str]] = {}
+    for city, district, _, _ in district_centroids():
+        grouped.setdefault(city, []).append(district)
+    return {city: tuple(sorted(names)) for city, names in grouped.items()}
+
+
 def nearest_district(
     lat: float, lng: float, *, max_km: float = DISTRICT_MAX_KM
 ) -> tuple[str, str] | None:

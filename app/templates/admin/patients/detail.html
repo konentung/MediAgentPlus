@@ -50,7 +50,7 @@
 
     <div class="tab-pane fade" id="tab-encounters" role="tabpanel">
       <div class="d-flex justify-content-end mb-2" data-perm="encounter:manage">
-        <button class="btn btn-sm btn-brand" data-bs-toggle="modal" data-bs-target="#encounter-modal">新增就診 / 住院紀錄</button>
+        <button class="btn btn-sm btn-brand" data-bs-toggle="modal" data-bs-target="#encounter-modal" id="btn-add-encounter">新增就診 / 住院紀錄</button>
       </div>
       <div id="encounters"></div>
     </div>
@@ -119,6 +119,18 @@
   </form></div>
 </div>
 
+<div class="modal fade" id="confirm-hospital-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog"><form class="modal-content" id="confirm-hospital-form">
+    <div class="modal-header"><h2 class="modal-title h6">請病人確認就醫院所</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="關閉"></button></div>
+    <div class="modal-body">
+      <p class="small text-secondary">將推播 LINE 訊息請病人確認是否在這家院所就醫，病人確認後才能核對建檔。</p>
+      <label class="form-label" for="ch-hospital">院所</label>
+      <select class="form-select" id="ch-hospital" name="hospital_id" required></select>
+    </div>
+    <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button><button type="submit" class="btn btn-brand">推播給病人</button></div>
+  </form></div>
+</div>
+
 <div class="modal fade" id="reject-modal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog"><form class="modal-content" id="reject-form">
     <div class="modal-header"><h2 class="modal-title h6">退回補正</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="關閉"></button></div>
@@ -147,6 +159,7 @@
   <div class="modal-dialog modal-lg"><form class="modal-content" id="encounter-form">
     <div class="modal-header"><h2 class="modal-title h6">新增就診 / 住院紀錄</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="關閉"></button></div>
     <div class="modal-body row g-3">
+      <div class="col-12 d-none" id="e-hospital-wrap"><label class="form-label" for="e-hospital">就醫院所</label><select class="form-select" id="e-hospital" name="hospital_id"></select></div>
       <div class="col-md-4"><label class="form-label" for="e-type">類型</label><select class="form-select" id="e-type" name="encounter_type" required></select></div>
       <div class="col-md-4"><label class="form-label" for="e-date">就診日期</label><input class="form-control" type="date" id="e-date" name="visit_date" required></div>
       <div class="col-md-4"><label class="form-label" for="e-dept">科別</label><input class="form-control" id="e-dept" name="department" maxlength="50"></div>
@@ -241,7 +254,8 @@ Admin.boot(async function (ctx) {
   }
 
   function renderHeader() {
-    var p = detail.profile, u = detail.user, r = detail.record;
+    // draft = 建檔前先新增就診紀錄時開的暫存紀錄，還不算建檔
+    var p = detail.profile, u = detail.user, r = isDraft(detail.record) ? null : detail.record;
     document.getElementById("crumb-name").textContent = p.full_name || "（未填姓名）";
     document.getElementById("p-name").textContent = p.full_name || "（未填姓名）";
     var badge = document.getElementById("p-status");
@@ -282,11 +296,19 @@ Admin.boot(async function (ctx) {
     }
   }
 
+  function isDraft(record) { return !!record && record.status === "draft"; }
+
   function renderEncounters() {
     var wrap = document.getElementById("encounters");
-    if (!detail.record) { wrap.innerHTML = '<div class="text-secondary small">病人尚未在本院建檔，建檔後才能新增就診紀錄。</div>'; return; }
-    if (!detail.encounters.length) { wrap.innerHTML = '<div class="text-secondary small">尚無就診紀錄</div>'; return; }
-    wrap.innerHTML = detail.encounters.map(function (e) {
+    var unverified = !detail.record || isDraft(detail.record);
+    // 沒有所屬院所的帳號（SUPER_ADMIN）替還沒被任何院所新增的病人新增紀錄時，要指定是哪家院所
+    var needHospital = !detail.record && !ctx.me.hospital_id && !detail.profile.preferred_hospital_id;
+    document.getElementById("e-hospital-wrap").classList.toggle("d-none", !needHospital);
+    document.getElementById("e-hospital").required = needHospital;
+    if (needHospital) Admin.hospitalOptions(document.getElementById("e-hospital"), true);
+    var hint = unverified ? '<div class="alert alert-warning small">病人尚未在本院建檔：可以先新增就診 / 住院紀錄，系統會推播 LINE 請病人確認在本院就醫。病人同意並完成核對建檔後紀錄才正式生效；病人回答「不是」時這些紀錄會刪除。</div>' : "";
+    if (!detail.encounters.length) { wrap.innerHTML = hint + '<div class="text-secondary small">尚無就診紀錄</div>'; return; }
+    wrap.innerHTML = hint + detail.encounters.map(function (e) {
       var dx = (e.diagnoses || []).map(function (d) { return esc((d.icd10_code ? d.icd10_code + " " : "") + (d.description || "")); }).join("；");
       return '<div class="card mb-2"><div class="card-body">' +
         '<div class="d-flex justify-content-between"><div><span class="badge text-bg-light border me-2">' + esc(label("encounter_types", e.encounter_type)) + "</span><b>" + esc(e.visit_date) + "</b> " + esc(e.department || "") + (e.attending_physician ? " · " + esc(e.attending_physician) : "") + "</div>" +
@@ -431,9 +453,22 @@ Admin.boot(async function (ctx) {
     if (reason === null) return;
     act("POST", API + "/lock", { reason: reason }, "已鎖定帳號");
   });
+  var CONFIRM_SENT = "已推播給病人，病人在 LINE 上按「是，我在這裡就醫」後即可核對建檔";
   document.getElementById("btn-request-confirm").addEventListener("click", function () {
+    // 沒有所屬院所的帳號（SUPER_ADMIN）要先選院所，否則 API 會回「請指定 hospital_id」
+    if (!ctx.me.hospital_id) {
+      var select = document.getElementById("ch-hospital");
+      Admin.hospitalOptions(select, true);
+      select.value = detail.profile.preferred_hospital_id || "";
+      bootstrap.Modal.getOrCreateInstance(document.getElementById("confirm-hospital-modal")).show();
+      return;
+    }
     if (!window.confirm("將推播 LINE 訊息請病人確認是否在本院就醫，確定？")) return;
-    act("POST", API + "/request-hospital-confirmation", {}, "已推播給病人，病人在 LINE 上按「是，我在這裡就醫」後即可核對建檔");
+    act("POST", API + "/request-hospital-confirmation", {}, CONFIRM_SENT);
+  });
+  document.getElementById("confirm-hospital-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    act("POST", API + "/request-hospital-confirmation", Admin.formData(e.target), CONFIRM_SENT, "confirm-hospital-modal");
   });
   document.getElementById("btn-unlock").addEventListener("click", function () {
     if (!window.confirm("解除鎖定後病人可以重新填寫資料，確定？")) return;

@@ -71,7 +71,7 @@ class EventDispatcher:
         user = None
         principal = Principal.anonymous()
         if line_user_id:
-            # 首次接觸即建立 GUEST；顯示名稱可之後由 get_profile 補齊
+            # 首次接觸即建立 GUEST；顯示名稱 / 頭像在加好友時由 FollowHandler 向 LINE 取得
             user = self._container.users.get_or_create_by_line(line_user_id)
             principal = self._container.users.to_principal(user)
         return BotContext(

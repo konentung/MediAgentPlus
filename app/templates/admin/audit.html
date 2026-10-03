@@ -2,14 +2,33 @@
 {% block title %}稽核紀錄{% endblock %}
 
 {% block content %}
-<h1 class="h4 mb-1">稽核紀錄</h1>
-<p class="text-secondary small mb-3">高敏感操作的紀錄：讀取身分證明碼、鎖定 / 解除鎖定帳號。最新 100 筆。</p>
-<div class="card">
-  <div class="table-responsive">
-    <table class="table table-hover align-middle mb-0">
-      <thead class="table-light"><tr><th>時間</th><th>操作</th><th>操作者</th><th>病人</th><th>院所</th><th>IP</th><th>備註</th></tr></thead>
-      <tbody id="rows"><tr><td colspan="7" class="text-center text-secondary py-4">載入中…</td></tr></tbody>
-    </table>
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4 mb-0">稽核紀錄</h1>
+  <span class="small text-secondary" id="table-stats">—</span>
+</div>
+<div class="card mb-3">
+  <div class="card-body">
+    <form class="row g-2 mb-3" id="filter-form" role="search">
+      <div class="col-md-7"><input class="form-control" type="search" name="q" placeholder="關鍵字：操作者 / 病人 / 院所 / IP / 備註" aria-label="關鍵字"></div>
+      <div class="col-md-3">
+        <select class="form-select" name="action" aria-label="操作">
+          <option value="">全部操作</option>
+          <option value="patient.lock">鎖定帳號</option>
+          <option value="patient.unlock">解除鎖定</option>
+        </select>
+      </div>
+      <div class="col-md-2 d-flex gap-2">
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="submit">篩選</button>
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="reset">清除</button>
+      </div>
+    </form>
+    <div class="table-responsive">
+      <table class="table table-sm table-hover align-middle mb-0">
+        <thead class="table-light"><tr><th>時間</th><th>操作</th><th>操作者</th><th>病人</th><th>院所</th><th>IP</th><th>備註</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <p class="small text-secondary mt-3 mb-0 d-none" id="table-empty">沒有符合的紀錄。</p>
   </div>
 </div>
 {% endblock %}
@@ -18,18 +37,33 @@
 <script>
 Admin.boot(async function (ctx) {
   var ACTION = { "patient.lock": "鎖定帳號", "patient.unlock": "解除鎖定" };
-  var rows = await ctx.api("/api/v1/admin/audit");
-  var tbody = document.getElementById("rows");
-  if (!rows.length) { tbody.innerHTML = '<tr><td colspan="7" class="text-center text-secondary py-4">尚無紀錄</td></tr>'; return; }
-  tbody.innerHTML = rows.map(function (r) {
-    return "<tr><td class='small text-secondary text-nowrap'>" + Admin.fmtDate(r.created_at) + "</td>" +
-      "<td>" + Admin.esc(ACTION[r.action] || r.action) + "</td>" +
-      "<td class='small'>" + Admin.esc(r.actor_id) + "</td>" +
-      "<td class='small'>" + (r.target_user_id ? '<a href="/admin/patients/' + encodeURIComponent(r.target_user_id) + '">' + Admin.esc(r.target_user_id) + "</a>" : "—") + "</td>" +
-      "<td>" + Admin.esc(Admin.hospitalName(r.hospital_id)) + "</td>" +
-      "<td class='small text-secondary'>" + Admin.esc(r.ip_address || "—") + "</td>" +
-      "<td class='small'>" + Admin.esc(r.detail && r.detail.reason ? r.detail.reason : "") + "</td></tr>";
-  }).join("");
+  var filterForm = document.getElementById("filter-form");
+  var all = await ctx.api("/api/v1/admin/audit");
+
+  // 只有最新 100 筆，篩選直接在前端做
+  function render() {
+    var q = filterForm.elements.q.value.trim().toLowerCase(), action = filterForm.elements.action.value;
+    var rows = all.filter(function (r) {
+      if (action && r.action !== action) return false;
+      var text = [r.actor_id, r.target_user_id, Admin.hospitalName(r.hospital_id), r.ip_address, r.detail && r.detail.reason].join(" ").toLowerCase();
+      return !q || text.indexOf(q) >= 0;
+    });
+    document.getElementById("table-stats").textContent = "共 " + rows.length + " 筆";
+    document.getElementById("table-empty").classList.toggle("d-none", rows.length > 0);
+    document.getElementById("rows").innerHTML = rows.map(function (r) {
+      return "<tr><td class='small text-secondary text-nowrap'>" + Admin.fmtDate(r.created_at) + "</td>" +
+        "<td>" + Admin.esc(ACTION[r.action] || r.action) + "</td>" +
+        "<td class='small'>" + Admin.esc(r.actor_id) + "</td>" +
+        "<td class='small'>" + (r.target_user_id ? '<a href="/admin/patients/' + encodeURIComponent(r.target_user_id) + '">' + Admin.esc(r.target_user_id) + "</a>" : "—") + "</td>" +
+        "<td>" + Admin.esc(Admin.hospitalName(r.hospital_id)) + "</td>" +
+        "<td class='small text-secondary'>" + Admin.esc(r.ip_address || "—") + "</td>" +
+        "<td class='small'>" + Admin.esc(r.detail && r.detail.reason ? r.detail.reason : "") + "</td></tr>";
+    }).join("");
+  }
+  filterForm.addEventListener("submit", function (e) { e.preventDefault(); render(); });
+  // reset 事件在欄位清空前觸發，等清空後再重畫
+  filterForm.addEventListener("reset", function () { setTimeout(render, 0); });
+  render();
 });
 </script>
 {% endblock %}

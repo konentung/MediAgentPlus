@@ -2,29 +2,32 @@
 {% block title %}人員與角色{% endblock %}
 
 {% block content %}
-<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+<div class="d-flex justify-content-between align-items-center mb-3">
   <h1 class="h4 mb-0">人員與角色</h1>
-  <form class="d-flex gap-2" id="search-form" role="search">
-    <input class="form-control" type="search" name="q" placeholder="顯示名稱或使用者 ID" style="min-width: 260px;">
-    <div class="form-check form-switch d-flex align-items-center ms-2">
-      <input class="form-check-input" type="checkbox" id="all-users">
-      <label class="form-check-label small ms-1" for="all-users">含一般使用者</label>
+  <span class="small text-secondary" id="table-stats">—</span>
+</div>
+<div class="card mb-3">
+  <div class="card-body">
+    <form class="row g-2 mb-3" id="filter-form" role="search">
+      <div class="col-md-7"><input class="form-control" type="search" name="q" placeholder="關鍵字：顯示名稱 / 使用者 ID" aria-label="關鍵字"></div>
+      <div class="col-md-3 d-flex align-items-center">
+        <div class="form-check form-switch mb-0">
+          <input class="form-check-input" type="checkbox" id="all-users" name="all">
+          <label class="form-check-label small" for="all-users">含一般使用者</label>
+        </div>
+      </div>
+      <div class="col-md-2 d-flex gap-2">
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="submit">篩選</button>
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="reset">清除</button>
+      </div>
+    </form>
+    <div class="table-responsive">
+      <table class="table table-sm table-hover align-middle mb-0">
+        <thead class="table-light"><tr><th>顯示名稱</th><th>使用者 ID</th><th>角色</th><th>院所</th><th>綁定狀態</th><th>指派角色</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
     </div>
-    <button class="btn btn-outline-secondary" type="submit">搜尋</button>
-  </form>
-</div>
-
-<div class="alert alert-secondary small">
-  院所人員需先用 LINE 登入過本系統一次（帳號才會出現在這裡），再由院所管理員指派角色。
-  院所管理員只能指派院內人員、醫護、院所管理員三種角色，且只能指派給本院所。
-</div>
-
-<div class="card">
-  <div class="table-responsive">
-    <table class="table table-hover align-middle mb-0">
-      <thead class="table-light"><tr><th>顯示名稱</th><th>使用者 ID</th><th>角色</th><th>院所</th><th>綁定狀態</th><th style="width: 320px;">指派角色</th></tr></thead>
-      <tbody id="rows"><tr><td colspan="6" class="text-center text-secondary py-4">載入中…</td></tr></tbody>
-    </table>
+    <p class="small text-secondary mt-3 mb-0 d-none" id="table-empty">沒有符合的使用者。</p>
   </div>
 </div>
 {% endblock %}
@@ -34,29 +37,39 @@
 Admin.boot(async function (ctx) {
   // 可指派的角色由後端 ROLE_ASSIGNABLE_BY 決定（/api/v1/auth/me 回傳）
   var ASSIGNABLE = ctx.me.assignable_roles || [];
+  var isSuper = ctx.me.role === "super_admin";
+
+  var filterForm = document.getElementById("filter-form");
+  function reload() { load().catch(function (err) { Admin.toast(err.message, "danger"); }); }
 
   async function load() {
-    var q = document.querySelector('#search-form input[name="q"]').value.trim();
-    var all = document.getElementById("all-users").checked;
+    var q = filterForm.elements.q.value.trim();
+    var all = filterForm.elements.all.checked;
     var users = await ctx.api("/api/v1/admin/users?q=" + encodeURIComponent(q) + "&staff=" + (all ? "0" : "1"));
     var tbody = document.getElementById("rows");
-    if (!users.length) { tbody.innerHTML = '<tr><td colspan="6" class="text-center text-secondary py-4">沒有符合的使用者</td></tr>'; return; }
+    document.getElementById("table-stats").textContent = "共 " + users.length + " 筆";
+    document.getElementById("table-empty").classList.toggle("d-none", users.length > 0);
     tbody.innerHTML = users.map(function (u) {
+      // 目標的角色不在可指派範圍（例如院所管理員看到系統管理員）或是自己：不顯示指派表單
+      var editable = ASSIGNABLE.indexOf(u.role) >= 0 && u.user_id !== ctx.me.user_id;
       var options = ASSIGNABLE.map(function (r) { return '<option value="' + r + '"' + (r === u.role ? " selected" : "") + ">" + Admin.esc(Admin.label("roles", r)) + "</option>"; }).join("");
+      var assign = !editable ? '<span class="small text-secondary">' + (u.user_id === ctx.me.user_id ? "不能修改自己的角色" : "無法指派") + "</span>" :
+        '<form class="row g-2" data-user="' + Admin.esc(u.user_id) + '" novalidate><div class="col-md"><select class="form-select form-select-sm" name="role" aria-label="角色">' + options + "</select></div>" +
+        (isSuper ? '<div class="col-md"><input class="form-control form-control-sm" data-hospital-picker data-current="' + Admin.esc(u.hospital_id || "") + '" placeholder="院所名稱或代碼（留空 = 不指派）" aria-label="院所"><input type="hidden" name="hospital_id"></div>' : "") +
+        '<div class="col-md-auto"><button class="btn btn-sm btn-brand" type="submit">儲存</button></div></form>';
       return "<tr><td>" + Admin.esc(u.display_name || "—") + "</td><td class='small text-secondary'>" + Admin.esc(u.user_id) + "</td>" +
         "<td>" + Admin.esc(Admin.label("roles", u.role)) + "</td><td>" + Admin.esc(Admin.hospitalName(u.hospital_id)) + "</td>" +
-        "<td>" + Admin.esc(Admin.label("binding_statuses", u.binding_status)) + "</td>" +
-        '<td><form class="d-flex gap-2" data-user="' + u.user_id + '"><select class="form-select form-select-sm" name="role">' + options + "</select>" +
-        (ctx.me.role === "super_admin" ? '<select class="form-select form-select-sm" name="hospital_id" data-current="' + Admin.esc(u.hospital_id || "") + '"></select>' : "") +
-        '<button class="btn btn-sm btn-brand" type="submit">儲存</button></form></td></tr>';
+        "<td>" + Admin.esc(Admin.label("binding_statuses", u.binding_status)) + "</td><td>" + assign + "</td></tr>";
     }).join("");
-    tbody.querySelectorAll('select[name="hospital_id"]').forEach(function (sel) {
-      Admin.hospitalOptions(sel, true, "（不指派院所）");
-      sel.value = sel.getAttribute("data-current");
-    });
     tbody.querySelectorAll("form[data-user]").forEach(function (form) {
+      var input = form.querySelector("[data-hospital-picker]"), picker = null;
+      if (input) {
+        picker = Admin.hospitalPicker(input, form.elements.hospital_id);
+        picker.set(input.getAttribute("data-current"));
+      }
       form.addEventListener("submit", async function (e) {
         e.preventDefault();
+        if (picker && !picker.validate()) { Admin.toast("找不到這家院所，請從選單挑選或輸入院所代碼", "warning"); return; }
         try {
           await ctx.api("/api/v1/admin/users/" + form.getAttribute("data-user") + "/role", { method: "PUT", body: Admin.formData(form) });
           Admin.toast("已更新角色");
@@ -65,8 +78,9 @@ Admin.boot(async function (ctx) {
       });
     });
   }
-  document.getElementById("search-form").addEventListener("submit", function (e) { e.preventDefault(); load(); });
-  document.getElementById("all-users").addEventListener("change", load);
+  filterForm.addEventListener("submit", function (e) { e.preventDefault(); reload(); });
+  // reset 事件在欄位清空前觸發，等清空後再重新載入
+  filterForm.addEventListener("reset", function () { setTimeout(reload, 0); });
   await load();
 });
 </script>

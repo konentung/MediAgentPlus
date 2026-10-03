@@ -198,3 +198,25 @@ def test_import_json_rows_template_format_and_permission(client, make_user, auth
         "/api/v1/admin/hospitals/import/template", headers=auth_header(superadmin)
     )
     assert template.status_code == 200 and "departments" in template.get_data(as_text=True)
+
+
+def test_district_options_and_hospital_district_filter(client, make_user, auth_header):
+    """後台篩選：縣市 → 鄉鎮市區下拉資料，以及院所清單依鄉鎮市區（地址包含）篩選。"""
+    superadmin = make_user(Role.SUPER_ADMIN)
+    headers = auth_header(superadmin)
+    options = client.get("/api/v1/admin/districts", headers=headers).get_json()["data"]
+    assert options[0]["city"] == "台北市" and "大安區" in options[0]["districts"]
+    assert len(options) == 22
+    patient = make_user(Role.PATIENT)
+    assert client.get("/api/v1/admin/districts", headers=auth_header(patient)).status_code == 403
+
+    for hid, address in (("D1", "臺北市大安區仁愛路四段 1 號"), ("D2", "台北市信義區松仁路 2 號")):
+        body = {"id": hid, "name": f"{hid} 診所", "region": "台北市", "address": address}
+        assert client.post("/api/v1/admin/hospitals", json=body, headers=headers).status_code == 201
+
+    data = client.get(
+        "/api/v1/admin/hospitals?region=台北市&district=大安區", headers=headers
+    ).get_json()["data"]
+    assert [h["id"] for h in data["items"]] == ["D1"]
+    # 每列帶從地址解析的縣市 / 鄉鎮市區（臺 → 台）
+    assert (data["items"][0]["city"], data["items"][0]["district"]) == ("台北市", "大安區")

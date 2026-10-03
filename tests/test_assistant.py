@@ -233,11 +233,13 @@ def test_knowledge_admin_api_permissions(client, make_user, auth_header):
         ).status_code
         == 422
     )
-    # 讀取：客服看得到，試搜可用
-    rows = client.get("/api/v1/admin/knowledge", headers=auth_header(agent)).get_json()["data"]
+    # 讀取：院所管理員看得到，搜尋可用
+    rows = client.get("/api/v1/admin/knowledge", headers=auth_header(h1_admin)).get_json()["data"]
     assert {r["title"] for r in rows} == {"通用 FAQ", "本院"}
     assert (
-        client.get("/api/v1/admin/knowledge/search?q=FAQ", headers=auth_header(agent)).status_code
+        client.get(
+            "/api/v1/admin/knowledge/search?q=FAQ", headers=auth_header(h1_admin)
+        ).status_code
         == 200
     )
     # 匯入

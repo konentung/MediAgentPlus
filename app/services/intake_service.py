@@ -31,6 +31,10 @@ from app.domain.principal import Principal
 from app.extensions import db
 from app.line.client import LineMessagingClient
 from app.line.messages.builder import MessageBuilder as M
+from app.repositories.patient_record_repository import (
+    RECORD_STATUS_DRAFT,
+    PatientRecordRepository,
+)
 from app.repositories.patient_repository import (
     PROFILE_META_KEYS,
     NationalIdDigest,
@@ -61,7 +65,9 @@ class IntakeService:
         hospitals: HospitalService,
         cipher: FieldCipher,
         line_client: Callable[[], LineMessagingClient],
+        records: PatientRecordRepository,
     ) -> None:
+        self._records = records
         self._patients = patients
         self._users = users
         self._hospitals = hospitals
@@ -195,6 +201,10 @@ class IntakeService:
             self._patients.set_hospital(principal.user_id, hospital_id, confirmed=True)
         elif profile.get("preferred_hospital_id") == hospital_id:
             self._patients.set_hospital(principal.user_id, None, confirmed=False)
+            # 院方在建檔前先新增的就診紀錄（暫存）跟著作廢；已核對建檔的紀錄不動
+            record = self._records.get(principal.user_id, hospital_id)
+            if record is not None and record["status"] == RECORD_STATUS_DRAFT:
+                self._records.delete(record["id"])
         return hospital
 
     def _ensure_can_edit(self, principal: Principal) -> None:

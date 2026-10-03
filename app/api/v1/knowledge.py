@@ -1,8 +1,8 @@
 """知識庫（RAG）後台 API：/api/v1/admin/knowledge/*，頁面在 /admin/knowledge。
 
-- 讀取：任何院方角色（看得到通用 + 自己院所的文件）
+- 讀取：EDUCATION_CONTENT_MANAGE（院所管理員 / 系統管理員；看得到通用 + 自己院所的文件）
 - 新增 / 修改 / 刪除 / 匯入：EDUCATION_CONTENT_MANAGE；通用文件只有 SUPER_ADMIN 能改
-- search：試搜，看某個問題會檢索到哪些片段
+- search：搜尋，看某個問題會檢索到哪些片段
 - jobs：衛教 txt 匯入、重建片段、向量計算，背景執行；只有 SUPER_ADMIN（REFERENCE_DATA_MANAGE）
 """
 
@@ -10,16 +10,15 @@ from __future__ import annotations
 
 from flask import Blueprint, request
 
-from app.auth.decorators import current_principal, require_permission, require_role
+from app.auth.decorators import current_principal, require_permission
 from app.core.container import get_container
 from app.core.exceptions import ValidationError
 from app.core.ratelimit import rate_limit
 from app.core.responses import ok
-from app.domain.enums import Permission, Role
+from app.domain.enums import Permission
 from app.services.knowledge_service import CATEGORIES, parse_markdown
 
 admin_knowledge_bp = Blueprint("admin_knowledge", __name__, url_prefix="/admin/knowledge")
-STAFF = [r for r in Role if r.is_staff]
 
 
 def _optional_json_body() -> dict:
@@ -40,13 +39,13 @@ def _json_body() -> dict:
 
 
 @admin_knowledge_bp.get("")
-@require_role(*STAFF)
+@require_permission(Permission.EDUCATION_CONTENT_MANAGE)
 def list_documents():
     return ok(get_container().knowledge.list(current_principal()), categories=CATEGORIES)
 
 
 @admin_knowledge_bp.get("/search")
-@require_role(*STAFF)
+@require_permission(Permission.EDUCATION_CONTENT_MANAGE)
 def search_documents():
     query = (request.args.get("q") or "").strip()
     if not query:
@@ -115,7 +114,7 @@ def start_embed():
 
 
 @admin_knowledge_bp.get("/<document_id>")
-@require_role(*STAFF)
+@require_permission(Permission.EDUCATION_CONTENT_MANAGE)
 def get_document(document_id: str):
     return ok(get_container().knowledge.get(current_principal(), document_id))
 

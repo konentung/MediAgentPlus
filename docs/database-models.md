@@ -259,7 +259,7 @@ LIFF `/liff/intake` 六步驟表單的落點。欄位定義單一來源是 `app/
 | `hospital_id` | FK → hospitals (RESTRICT) | 建檔院所。 |
 | `medical_record_no` | String(32) index | 院內病歷號，核對時由院方填。 |
 | `source` | String(16) | 建檔來源，目前固定 `liff_form`（由自填表核對而來）。 |
-| `status` | String(16) | 檔案狀態，目前固定 `active`；保留給日後停用 / 合併。 |
+| `status` | String(16) | `draft` = 還沒核對建檔，院方先新增就診紀錄時開的暫存（病人否認就醫時整筆刪除）；`active` = 已核對建檔。 |
 | `identity_method` | String(16) | 身份核對方式：`nhi_card`（健保卡）/ `id_card`（身分證）/ `in_person`（現場）/ `phone`（電話）。 |
 | `identity_verified_at` | DateTime | 核對通過時間；`PatientRecordService.verify()` 同時把 `users.binding_status` 改為 `verified`、角色改為 `patient` / `family`。 |
 | `identity_verified_by` | String(32) | 核對者。 |

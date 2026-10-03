@@ -9,9 +9,11 @@
     /admin/settings           院所設定（本院資料、所有院所）
     /admin/pharmacies         藥局（開放資料查詢；系統管理員可匯入藥局 CSV）
     /admin/drugs              藥品（健保用藥主檔查詢；系統管理員可匯入健保用藥 CSV）
-    /admin/knowledge          知識庫（AI 助理 RAG 的檢索來源）：文件維護、Markdown 匯入、試搜；
+    /admin/knowledge          知識庫（AI 助理 RAG 的檢索來源）：文件維護、Markdown 匯入、搜尋；
                               系統管理員另有「系統資料匯入」（衛教 txt / 重建片段 / 算向量）
-    /admin/permissions        權限矩陣（查閱）
+    /admin/imports            資料匯入：院所 / 藥局 / 藥品 CSV、知識庫 Markdown、衛教 txt，
+                              以及知識庫背景工作（重建片段 / 算向量）；各清單頁不再有匯入表單
+    /admin/permissions        權限表（查閱）
     /admin/audit              稽核紀錄（鎖定 / 解鎖帳號）
 
 頁面骨架不含資料、不需登入即可 render；登入狀態與權限由 admin/base.html 的 JS 以
@@ -32,7 +34,7 @@ from app.services import patient_record_service as prs
 
 admin_pages_bp = Blueprint("admin_pages", __name__, url_prefix="/admin")
 
-# 權限的中文說明（院所設定頁的權限矩陣用）；新增 Permission 時要一起補，tests 會檢查
+# 權限的中文說明（院所設定頁的權限表用）；新增 Permission 時要一起補，tests 會檢查
 PERMISSION_DESCRIPTIONS: dict[Permission, str] = {
     Permission.CONSULT_SYMPTOM: "病況諮詢（我不舒服）",
     Permission.CONSULT_HOSPITAL: "急診動態分流（找醫院、壅塞燈號）",
@@ -89,7 +91,7 @@ ADMIN_CHOICES = {
         "unbound": "未填寫",
         "pending": "待核對",
         "verified": "已建檔",
-        "locked": "已鎖定",
+        "locked": "黑名單",
     },
     "roles": {
         "guest": "訪客",
@@ -182,6 +184,11 @@ def knowledge():
         active="knowledge",
         categories_json=json.dumps(CATEGORIES, ensure_ascii=False),
     )
+
+
+@admin_pages_bp.get("/imports")
+def imports():
+    return render_template("admin/imports.html", active="imports")
 
 
 @admin_pages_bp.get("/permissions")

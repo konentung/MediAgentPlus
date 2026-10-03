@@ -127,14 +127,14 @@ tests/                     pytest（RBAC、JWT、OAuth、LIFF、webhook、intake
 | GET | /api/v1/liff/reminders/history?days=7 | reminder:manage_own | 推播與回報紀錄 |
 | GET | /api/v1/triage/board?lat=&lng=（或 ?area=01） | 公開（rate limit） | 依使用者位置列最近 8 家急救責任醫院 + 燈號，`recommended` = 最近且未壅塞者；`?area=` 為 LIFF 縣市切換用 |
 | GET | /api/v1/triage/areas | 公開 | 地區代碼與燈號門檻說明 |
-| GET | /api/v1/admin/knowledge[/{id}]、/search?q= | 院方角色 | AI 知識庫文件（通用 + 本院）、試搜 |
+| GET | /api/v1/admin/knowledge[/{id}]、/search?q= | education:content_manage | AI 知識庫文件（通用 + 本院）、搜尋 |
 | POST / PATCH / DELETE | /api/v1/admin/knowledge[/{id}] | education:content_manage | 新增 / 修改 / 刪除文件（院所綁自己；通用只有 SUPER_ADMIN） |
 | POST | /api/v1/admin/knowledge/import | education:content_manage | 上傳多個 Markdown（multipart `files`），同檔名更新 |
 | GET | /api/v1/admin/knowledge/jobs[/{id}] | reference_data:manage | 知識庫統計 + 進行中 / 最近的維護工作（頁面輪詢） |
 | POST | /api/v1/admin/knowledge/jobs/department-import | reference_data:manage | 上傳依科別分類的衛教 txt（multipart `files` 多檔，`min_chars` / `limit`），背景匯入為通用文件並記科別，回 202 |
 | POST | /api/v1/admin/knowledge/jobs/rechunk | reference_data:manage | 用目前切段規則重建所有片段（背景；向量清空），回 202 |
 | POST | /api/v1/admin/knowledge/jobs/embed | reference_data:manage | 替還沒有向量的片段計算 embedding（背景、可重跑），同一時間只跑一個工作 |
-| GET | /api/v1/admin/permissions | 院方角色 | 權限矩陣 |
+| GET | /api/v1/admin/permissions | staff:manage | 權限表 |
 | GET | /api/v1/admin/dashboard | patient:read | 待核對數、到期追蹤、開放工單 |
 | GET | /api/v1/admin/hospitals?q=&region=&tier=&page=&all= | 院方角色 | 院所表格分頁（每頁 15 筆；all=1 含停用，僅 SUPER_ADMIN） |
 | GET | /api/v1/admin/hospitals/options | 院方角色 | 下拉選單用的院所（只有醫院層級，不含診所） |
@@ -142,7 +142,7 @@ tests/                     pytest（RBAC、JWT、OAuth、LIFF、webhook、intake
 | POST | /api/v1/admin/hospitals/import | hospital:manage | CSV 批次匯入（multipart `file` 或 JSON `rows`；支援自家範本、健保署特約機構、衛福部醫療機構基本資料三種欄名，後者提供 `departments` 科別），同代碼更新、否則新增；`?only_hospitals=1` 略過診所 |
 | GET | /api/v1/admin/hospitals/import/template | hospital:manage | 下載匯入範本 CSV |
 | PATCH | /api/v1/admin/hospitals/{id} | hospital:settings / hospital:manage | 修改院所資料；`active` 只有 SUPER_ADMIN 能改 |
-| GET | /api/v1/admin/pharmacies?city=&district=&q=&page= | 院方角色 | 藥局表格分頁（每頁 15 筆） |
+| GET | /api/v1/admin/pharmacies?city=&district=&q=&page= | medication:manage | 藥局表格分頁（每頁 15 筆） |
 | POST | /api/v1/admin/pharmacies/import | reference_data:manage | 藥局 CSV 匯入（健保署特約醫事機構或衛福部藥局格式，multipart `file` 或 JSON `rows`） |
 | GET | /api/v1/admin/drugs?q=&page= | 院方角色 | 藥品主檔表格分頁（每頁 15 筆） |
 | POST | /api/v1/admin/drugs/import | reference_data:manage | 健保用藥品項 CSV 匯入（同代號只留最新） |
@@ -175,14 +175,15 @@ tests/                     pytest（RBAC、JWT、OAuth、LIFF、webhook、intake
 | /liff/settings | 病人設定頁（Rich Menu「設定」→ LIFF）：綁定狀態、資料摘要、進入表單 |
 | /liff/prescriptions/{id} | 處方辨識結果：看原始照片、修改藥品清單、確認、進入建立提醒 |
 | /liff/er?area=01 或 ?lat=&lng= | 急診即時看板（公開資料，不需登入，LINE 內外都能開）：「用我的位置」依距離推薦，或看各縣市燈號與等候人數 |
-| /admin/knowledge | 院方後台：AI 知識庫文件維護、Markdown 匯入、試搜；系統管理員可在頁上匯入衛教內文 txt、重建片段與計算向量（背景工作、進度輪詢） |
+| /admin/knowledge | 院方後台：AI 知識庫文件維護、Markdown 匯入、搜尋；系統管理員可在頁上匯入衛教內文 txt、重建片段與計算向量（背景工作、進度輪詢） |
 | /liff/reminders?prescription={id} | 服藥提醒總覽 / 新增 / 編輯；帶 `prescription` 會先載入該處方的建議排程 |
 | /admin | 院方後台儀表板；未登入 / 過期 / 非院方帳號一律導向 `/admin/login` |
 | /admin/login | 後台登入頁（「使用 LINE 登入」按鈕），`?next=` 登入後回原頁、`?error=` 顯示原因。LIFF 端不走這頁 |
 | /admin/patients、/admin/patients/{user_id} | 病人列表 / 詳情（核對、修正、就診、風險、追蹤、備註） |
 | /admin/feedback、/admin/staff | 意見回饋、人員角色 |
-| /admin/pharmacies、/admin/drugs | 藥局 / 藥品參考資料查詢；系統管理員在各自頁面匯入開放資料 CSV（上傳顯示進度） |
-| /admin/settings、/admin/permissions、/admin/audit | 院所設定（本院資料、所有院所管理與匯入）、權限矩陣查閱、稽核紀錄 |
+| /admin/pharmacies、/admin/drugs | 藥局 / 藥品參考資料查詢 |
+| /admin/imports | 資料匯入：院所 / 藥局 / 藥品 CSV、知識庫 Markdown、衛教 txt（上傳顯示進度），以及知識庫背景工作（重建片段 / 計算向量） |
+| /admin/settings、/admin/permissions、/admin/audit | 院所設定（本院資料、所有院所管理與匯入）、權限表查閱、稽核紀錄 |
 
 後台頁面骨架不需登入即可開啟，頁內 JS 用 `sessionStorage` 的 JWT 打 API，真正的授權在 API 端。
 
@@ -199,15 +200,15 @@ tests/                     pytest（RBAC、JWT、OAuth、LIFF、webhook、intake
 
 ## 角色與權限
 
-後台「權限矩陣」頁（`GET /api/v1/admin/permissions`）可看完整矩陣。摘要：
+後台「權限表」頁（`GET /api/v1/admin/permissions`）可看完整矩陣。摘要：
 
 | 角色 | 說明 | 重點權限 |
 |---|---|---|
 | guest | 加好友但未驗證 | 病況諮詢、找醫院、藥物單次查詢、通用衛教、意見回饋 |
 | patient / family | 驗證通過（本人 / 家屬） | guest 全部 + 個人化衛教、服藥提醒、個資讀寫 |
 | hospital_staff | 院內人員（管病人） | 意見回饋處理、對話讀取、病患讀取 / 修正 / 核對建檔、就診紀錄 |
-| medical_staff | 醫護（管藥 / 衛教） | 病患讀取（遮罩）、對話讀取、處方 / 服藥紀錄管理（`medication:manage`，後台頁面待做）、衛教內容管理 |
-| hospital_admin | 院所管理員 | hospital_staff + medical_staff + 人員管理、院所設定、Rich Menu、稽核 |
+| medical_staff | 醫護（管藥） | 病患讀取（遮罩）、對話讀取、處方 / 服藥紀錄管理（`medication:manage`，後台頁面待做）、藥局查詢 |
+| hospital_admin | 院所管理員 | hospital_staff + medical_staff + 衛教內容 / AI 知識庫管理、權限表、人員管理、院所設定、Rich Menu、稽核 |
 | super_admin | 系統管理員（開發 / 維運方，不屬於任何院所） | 全部 + 院所管理、參考資料匯入、系統管理 |
 
 角色分三方：用戶端（guest / patient / family）、院方（hospital_staff / medical_staff / hospital_admin，必須有所屬院所）、

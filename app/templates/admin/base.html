@@ -41,12 +41,13 @@
         <li class="nav-item" data-perm="patient:read"><a class="nav-link {{ 'active' if active == 'patients' }}" href="{{ url_for('admin_pages.patients') }}">病人資料</a></li>
         <li class="nav-item" data-perm="feedback:manage"><a class="nav-link {{ 'active' if active == 'feedback' }}" href="{{ url_for('admin_pages.feedback') }}">意見回饋</a></li>
         <li class="nav-item" data-perm="staff:manage"><a class="nav-link {{ 'active' if active == 'staff' }}" href="{{ url_for('admin_pages.staff') }}">人員與角色</a></li>
-        <li class="nav-item"><a class="nav-link {{ 'active' if active == 'knowledge' }}" href="{{ url_for('admin_pages.knowledge') }}">AI 知識庫</a></li>
-        <li class="nav-item"><a class="nav-link {{ 'active' if active == 'pharmacies' }}" href="{{ url_for('admin_pages.pharmacies') }}">藥局</a></li>
+        <li class="nav-item" data-perm="education:content_manage"><a class="nav-link {{ 'active' if active == 'knowledge' }}" href="{{ url_for('admin_pages.knowledge') }}">AI 知識庫</a></li>
+        <li class="nav-item" data-perm="medication:manage"><a class="nav-link {{ 'active' if active == 'pharmacies' }}" href="{{ url_for('admin_pages.pharmacies') }}">藥局</a></li>
         <li class="nav-item"><a class="nav-link {{ 'active' if active == 'drugs' }}" href="{{ url_for('admin_pages.drugs') }}">藥品</a></li>
+        <li class="nav-item" data-perm="education:content_manage"><a class="nav-link {{ 'active' if active == 'imports' }}" href="{{ url_for('admin_pages.imports') }}">資料匯入</a></li>
         <li class="nav-item" data-perm="hospital:settings"><a class="nav-link {{ 'active' if active == 'settings' }}" href="{{ url_for('admin_pages.settings') }}">院所設定</a></li>
         <li class="nav-item" data-perm="audit:read"><a class="nav-link {{ 'active' if active == 'audit' }}" href="{{ url_for('admin_pages.audit') }}">稽核紀錄</a></li>
-        <li class="nav-item"><a class="nav-link {{ 'active' if active == 'permissions' }}" href="{{ url_for('admin_pages.permissions') }}">權限矩陣</a></li>
+        <li class="nav-item" data-perm="staff:manage"><a class="nav-link {{ 'active' if active == 'permissions' }}" href="{{ url_for('admin_pages.permissions') }}">權限表</a></li>
       </ul>
       <div class="sidebar-user mt-auto pt-3 small">
         <div id="me-name" class="fw-semibold text-truncate"></div>
@@ -204,6 +205,73 @@
       });
     }
 
+    // 院所選取器：文字框 + datalist，可打名稱關鍵字或院所代碼篩選；選到的院所代碼寫進 hidden（表單送出用）。
+    // 選單只有醫院層級；診所等不在選單內的院所可直接輸入代碼，由後端檢查是否存在。
+    var HOSPITAL_CODE = /^[A-Za-z0-9][A-Za-z0-9_-]{1,31}$/;
+    function hospitalLabel(id) { return hospitals[id] ? hospitals[id].name + "（" + id + "）" : id; }
+    function hospitalPicker(input, hidden) {
+      var list = document.getElementById("hospital-datalist");
+      if (!list) {
+        list = document.createElement("datalist");
+        list.id = "hospital-datalist";
+        Object.keys(hospitals).forEach(function (id) {
+          var opt = document.createElement("option");
+          opt.value = hospitalLabel(id);
+          list.appendChild(opt);
+        });
+        document.body.appendChild(list);
+      }
+      input.setAttribute("list", "hospital-datalist");
+      input.setAttribute("autocomplete", "off");
+      // 文字 → 院所代碼：空字串 = 不指派；認不得回 null
+      function resolve(text) {
+        text = text.trim();
+        if (!text) return "";
+        var tail = text.match(/（([^（）]+)）$/);
+        if (tail && hospitals[tail[1]]) return tail[1];
+        if (hospitals[text]) return text;
+        var byName = Object.keys(hospitals).filter(function (id) { return hospitals[id].name === text; });
+        if (byName.length === 1) return byName[0];
+        return HOSPITAL_CODE.test(text) ? text : null;
+      }
+      function sync() {
+        var id = resolve(input.value);
+        hidden.value = id || "";
+        input.classList.toggle("is-invalid", id === null);
+        if (id) input.value = hospitalLabel(id);
+        return id !== null;
+      }
+      input.addEventListener("change", sync);
+      return {
+        set: function (id) { hidden.value = id || ""; input.value = id ? hospitalLabel(id) : ""; input.classList.remove("is-invalid"); },
+        validate: sync
+      };
+    }
+
+    // 篩選用的縣市 / 鄉鎮市區連動下拉：選了縣市才列出該縣市的鄉鎮市區；表單 reset 時一併還原
+    var districtData = null;
+    async function districtSelects(citySelect, districtSelect) {
+      if (!districtData) districtData = await api("/api/v1/admin/districts");
+      function fill(select, emptyLabel, values) {
+        select.innerHTML = '<option value="">' + esc(emptyLabel) + "</option>";
+        values.forEach(function (value) {
+          var opt = document.createElement("option");
+          opt.value = value; opt.textContent = value;
+          select.appendChild(opt);
+        });
+      }
+      function fillDistricts() {
+        var picked = districtData.filter(function (c) { return c.city === citySelect.value; })[0];
+        fill(districtSelect, picked ? "全部鄉鎮市區" : "鄉鎮市區（先選縣市）", picked ? picked.districts : []);
+        districtSelect.disabled = !picked;
+      }
+      fill(citySelect, "全部縣市", districtData.map(function (c) { return c.city; }));
+      fillDistricts();
+      citySelect.addEventListener("change", fillDistricts);
+      // reset 事件在欄位清空前觸發，等清空後再重畫鄉鎮市區
+      if (citySelect.form) citySelect.form.addEventListener("reset", function () { setTimeout(fillDistricts, 0); });
+    }
+
     function esc(text) {
       return String(text == null ? "" : text).replace(/[&<>"']/g, function (c) {
         return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
@@ -277,7 +345,7 @@
       }
     }
 
-    return { boot: boot, api: api, upload: upload, pagination: pagination, can: can, label: label, esc: esc, fmtDate: fmtDate, toast: toast, formData: formData, options: options, choices: CHOICES, hospitalName: hospitalName, hospitalOptions: hospitalOptions };
+    return { boot: boot, api: api, upload: upload, pagination: pagination, can: can, label: label, esc: esc, fmtDate: fmtDate, toast: toast, formData: formData, options: options, choices: CHOICES, hospitalName: hospitalName, hospitalOptions: hospitalOptions, hospitalPicker: hospitalPicker, districtSelects: districtSelects };
   })();
 </script>
 {% block scripts %}{% endblock %}

@@ -361,6 +361,7 @@ def test_list_users_scoped_to_hospital(client, make_user, auth_header):
         "/admin/settings",
         "/admin/permissions",
         "/admin/audit",
+        "/admin/imports",
     ],
 )
 def test_admin_pages_render_shell(client, path):
@@ -551,3 +552,166 @@ def test_correct_profile_cannot_move_patient_to_other_hospital(
         headers=auth_header(staff),
     )
     assert resp.status_code == 422
+
+
+def test_super_admin_claims_verifies_and_adds_encounter(
+    client, make_user, auth_header, post_line_event
+):
+    """SUPER_ADMIN 沒有所屬院所：指定 hospital_id 才能請病人確認，之後建檔、新增住院紀錄。"""
+    admin = make_user(Role.SUPER_ADMIN, BindingStatus.UNBOUND)
+    user = make_user(Role.GUEST, line_user_id="Upatient")
+    assert fill_all(client, auth_header(user)).status_code == 200
+    headers = auth_header(admin)
+    base = f"/api/v1/admin/patients/{user.id}"
+
+    # 沒有所屬院所：沒指定院所不能新增就診紀錄、也不能請病人確認
+    encounter = {"encounter_type": "inpatient", "visit_date": "2026-10-01"}
+    assert client.post(f"{base}/encounters", json=encounter, headers=headers).status_code == 422
+    resp = client.post(f"{base}/request-hospital-confirmation", json={}, headers=headers)
+    assert resp.status_code == 422
+
+    resp = client.post(
+        f"{base}/request-hospital-confirmation", json={"hospital_id": H1}, headers=headers
+    )
+    assert resp.status_code == 200, resp.get_json()
+    post_line_event(
+        _event(
+            "postback",
+            user_id="Upatient",
+            postback={"data": postback_data(Intent.HOSPITAL_CONFIRM, hospital_id=H1, answer="yes")},
+        )
+    )
+    resp = client.post(f"{base}/verify", json={"hospital_id": H1}, headers=headers)
+    assert resp.status_code == 200, resp.get_json()
+    resp = client.post(f"{base}/encounters", json=encounter, headers=headers)
+    assert resp.status_code == 201, resp.get_json()
+
+
+@pytest.mark.parametrize("role", [Role.HOSPITAL_ADMIN, Role.HOSPITAL_STAFF])
+def test_hospital_roles_assign_hospital_before_record(
+    client, make_user, auth_header, post_line_event, role
+):
+    """院所管理員 / 院內人員：還沒建檔就能把病人指定到本院，病人同意後才建檔、新增就診紀錄。"""
+    actor = make_user(role, BindingStatus.UNBOUND, hospital_id=H1)
+    user = make_user(Role.GUEST, line_user_id="Upatient")
+    assert fill_all(client, auth_header(user)).status_code == 200
+    headers = auth_header(actor)
+    base = f"/api/v1/admin/patients/{user.id}"
+
+    # 還沒人新增的病人：找得到本人、可以直接指定到本院（不需要先建檔）
+    found = client.get("/api/v1/admin/patients/unclaimed?phone=0912345678", headers=headers)
+    assert [p["user_id"] for p in found.get_json()["data"]] == [user.id]
+    resp = client.post(f"{base}/request-hospital-confirmation", json={}, headers=headers)
+    assert resp.status_code == 200, resp.get_json()
+    pending = client.get("/api/v1/admin/patients?status=pending", headers=headers).get_json()
+    assert [p["user_id"] for p in pending["data"]] == [user.id]
+
+    # 病人還沒同意：不能建檔
+    assert client.post(f"{base}/verify", json={}, headers=headers).status_code == 409
+    post_line_event(
+        _event(
+            "postback",
+            user_id="Upatient",
+            postback={"data": postback_data(Intent.HOSPITAL_CONFIRM, hospital_id=H1, answer="yes")},
+        )
+    )
+    assert client.post(f"{base}/verify", json={}, headers=headers).status_code == 200
+    encounter = {"encounter_type": "inpatient", "visit_date": "2026-10-01"}
+    assert client.post(f"{base}/encounters", json=encounter, headers=headers).status_code == 201
+
+
+def _answer_hospital(post_line_event, answer: str) -> None:
+    post_line_event(
+        _event(
+            "postback",
+            user_id="Upatient",
+            postback={
+                "data": postback_data(Intent.HOSPITAL_CONFIRM, hospital_id=H1, answer=answer)
+            },
+        )
+    )
+
+
+@pytest.fixture()
+def unclaimed_patient(client, make_user, auth_header):
+    """填完表、已送出，還沒被任何院所新增的病人。"""
+    user = make_user(Role.GUEST, line_user_id="Upatient")
+    assert fill_all(client, auth_header(user)).status_code == 200
+    return user
+
+
+ENCOUNTER = {"encounter_type": "inpatient", "visit_date": "2026-10-01"}
+
+
+def test_encounter_before_record_creates_draft_and_asks_patient(
+    app, client, staff, unclaimed_patient, auth_header, post_line_event
+):
+    """沒建檔也能新增就診紀錄：自動把病人指定到本院、推播確認，病人同意並核對後轉成正式建檔。"""
+    headers = auth_header(staff)
+    base = f"/api/v1/admin/patients/{unclaimed_patient.id}"
+    line = app.extensions["container"].line_client
+    pushed_before = len(line.pushes)
+
+    resp = client.post(f"{base}/encounters", json=ENCOUNTER, headers=headers)
+    assert resp.status_code == 201, resp.get_json()
+    assert len(line.pushes) == pushed_before + 1  # 請病人確認就醫院所
+    detail = client.get(base, headers=headers).get_json()["data"]
+    assert detail["record"]["status"] == "draft"
+    assert detail["profile"]["preferred_hospital_id"] == H1
+    assert detail["user"]["binding_status"] == BindingStatus.PENDING.value
+    assert len(detail["encounters"]) == 1
+
+    # 第二筆不再重複推播；病人還沒同意不能建檔
+    assert client.post(f"{base}/encounters", json=ENCOUNTER, headers=headers).status_code == 201
+    assert len(line.pushes) == pushed_before + 1
+    assert client.post(f"{base}/verify", json={}, headers=headers).status_code == 409
+
+    _answer_hospital(post_line_event, "yes")
+    resp = client.post(f"{base}/verify", json={"medical_record_no": "MRN1"}, headers=headers)
+    assert resp.status_code == 200, resp.get_json()
+    detail = client.get(base, headers=headers).get_json()["data"]
+    assert detail["record"]["status"] == "active"
+    assert detail["record"]["medical_record_no"] == "MRN1"
+    assert detail["record"]["identity_verified_at"]
+    assert detail["user"]["binding_status"] == BindingStatus.VERIFIED.value
+    assert len(detail["encounters"]) == 2
+
+
+def test_patient_denial_deletes_draft_encounters(
+    app, client, staff, unclaimed_patient, auth_header, post_line_event
+):
+    headers = auth_header(staff)
+    base = f"/api/v1/admin/patients/{unclaimed_patient.id}"
+    assert client.post(f"{base}/encounters", json=ENCOUNTER, headers=headers).status_code == 201
+
+    _answer_hospital(post_line_event, "no")
+    container = app.extensions["container"]
+    assert container.patient_record_repo.list_for_user(unclaimed_patient.id) == []
+    assert container.patient_repo.get_profile(unclaimed_patient.id)["preferred_hospital_id"] is None
+    # 病人回到「沒人新增」：本院看不到了
+    assert client.get(base, headers=headers).status_code == 403
+
+
+def test_encounter_draft_rejected_for_patient_of_other_hospital(
+    client, make_user, submitted_patient, auth_header
+):
+    other = make_user(Role.HOSPITAL_STAFF, BindingStatus.UNBOUND, hospital_id=H2)
+    resp = client.post(
+        f"/api/v1/admin/patients/{submitted_patient.id}/encounters",
+        json=ENCOUNTER,
+        headers=auth_header(other),
+    )
+    assert resp.status_code == 409
+
+
+def test_invalid_encounter_does_not_claim_patient(
+    app, client, staff, unclaimed_patient, auth_header
+):
+    resp = client.post(
+        f"/api/v1/admin/patients/{unclaimed_patient.id}/encounters",
+        json={"encounter_type": "inpatient"},
+        headers=auth_header(staff),
+    )
+    assert resp.status_code == 422
+    profile = app.extensions["container"].patient_repo.get_profile(unclaimed_patient.id)
+    assert profile["preferred_hospital_id"] is None

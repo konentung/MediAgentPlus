@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.core.exceptions import AuthorizationError, NotFoundError, ValidationError
-from app.domain.enums import Role
+from app.domain.enums import SYSTEM_ROLES, Role
 from app.domain.principal import Principal
 from app.domain.rbac import AccessPolicy
 from app.repositories.user_repository import UserRecord, UserRepository
@@ -85,7 +85,8 @@ class UserService:
         ):
             raise AuthorizationError("不得修改其他院所人員的角色")
 
-        if clear_hospital:
+        if clear_hospital or role in SYSTEM_ROLES:
+            # 系統方角色不屬於任何院所；留著院所會出現在該院所的人員清單裡
             effective_hospital = None
         else:
             effective_hospital = hospital_id or target.hospital_id or actor.hospital_id

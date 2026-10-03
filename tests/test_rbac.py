@@ -66,10 +66,28 @@ def test_admin_endpoint_rejects_end_user(client, make_user, auth_header):
 
 
 def test_admin_endpoint_allows_staff(client, make_user, auth_header):
-    agent = make_user(Role.HOSPITAL_STAFF, hospital_id="H1")
-    resp = client.get("/api/v1/admin/permissions", headers=auth_header(agent))
+    admin = make_user(Role.HOSPITAL_ADMIN, hospital_id="H1")
+    resp = client.get("/api/v1/admin/permissions", headers=auth_header(admin))
     assert resp.status_code == 200
     assert "hospital_staff" in resp.get_json()["data"]
+
+
+def test_backoffice_page_visibility_by_role(client, make_user, auth_header):
+    """院內人員：AI 知識庫 / 藥局 / 權限表都看不到；醫護只看得到藥局；院所管理員全部可看。"""
+    agent = make_user(Role.HOSPITAL_STAFF, hospital_id="H1")
+    nurse = make_user(Role.MEDICAL_STAFF, hospital_id="H1")
+    admin = make_user(Role.HOSPITAL_ADMIN, hospital_id="H1")
+    expected = {
+        "/api/v1/admin/permissions": (403, 403, 200),
+        "/api/v1/admin/knowledge": (403, 403, 200),
+        "/api/v1/admin/knowledge/search?q=FAQ": (403, 403, 200),
+        "/api/v1/admin/pharmacies": (403, 200, 200),
+    }
+    for path, codes in expected.items():
+        got = tuple(
+            client.get(path, headers=auth_header(u)).status_code for u in (agent, nurse, admin)
+        )
+        assert got == codes, path
 
 
 def test_set_role_respects_hospital_boundary(client, make_user, auth_header):
@@ -105,3 +123,22 @@ def test_every_permission_has_chinese_description():
 
     assert set(PERMISSION_DESCRIPTIONS) == set(Permission)
     assert all(desc.strip() for desc in PERMISSION_DESCRIPTIONS.values())
+
+
+def test_system_admin_never_belongs_to_a_hospital(client, make_user, auth_header):
+    """升為系統管理員時清掉院所；院所管理員的人員清單不列系統方帳號（否則會被顯示成訪客）。"""
+    superadmin = make_user(Role.SUPER_ADMIN)
+    admin = make_user(Role.HOSPITAL_ADMIN, hospital_id="H1")
+    staff = make_user(Role.HOSPITAL_STAFF, hospital_id="H1")
+    resp = client.put(
+        f"/api/v1/admin/users/{staff.id}/role",
+        json={"role": "super_admin", "hospital_id": "H1"},
+        headers=auth_header(superadmin),
+    )
+    assert resp.status_code == 200 and resp.get_json()["data"]["hospital_id"] is None
+
+    # 舊資料：仍掛著院所的系統管理員也不出現在院所管理員的清單
+    legacy = make_user(Role.SUPER_ADMIN, hospital_id="H1")
+    rows = client.get("/api/v1/admin/users", headers=auth_header(admin)).get_json()["data"]
+    assert legacy.id not in {r["user_id"] for r in rows}
+    assert all(r["role"] != "super_admin" for r in rows)

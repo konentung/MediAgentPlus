@@ -48,7 +48,6 @@ _MEDICAL_STAFF: frozenset[P] = _PUBLIC | frozenset(
         P.CONVERSATION_READ,
         P.PATIENT_READ,
         P.MEDICATION_MANAGE,
-        P.EDUCATION_CONTENT_MANAGE,
     }
 )
 
@@ -56,6 +55,7 @@ _HOSPITAL_ADMIN: frozenset[P] = (
     _HOSPITAL_STAFF
     | _MEDICAL_STAFF
     | {
+        P.EDUCATION_CONTENT_MANAGE,
         P.STAFF_MANAGE,
         P.HOSPITAL_SETTINGS,
         P.AUDIT_READ,
@@ -129,7 +129,7 @@ class AccessPolicy:
 
     @staticmethod
     def matrix() -> dict[str, list[str]]:
-        """輸出完整角色權限矩陣（供後台顯示 / 稽核）。"""
+        """輸出完整角色權限表（供後台顯示 / 稽核）。"""
         return {
             role.value: sorted(p.value for p in perms) for role, perms in ROLE_PERMISSIONS.items()
         }

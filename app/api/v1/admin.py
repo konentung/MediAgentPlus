@@ -16,8 +16,10 @@ from app.core.container import get_container
 from app.core.exceptions import ValidationError
 from app.core.ratelimit import rate_limit
 from app.core.responses import ok
-from app.domain.enums import STAFF_ROLES, Permission, Role
+from app.domain.enums import STAFF_ROLES, SYSTEM_ROLES, Permission, Role
 from app.domain.rbac import AccessPolicy
+from app.domain.triage_rules import AREA_GROUPS, AREA_NAMES
+from app.utils.geo import districts_by_city
 
 admin_bp = Blueprint("admin", __name__, url_prefix="/admin")
 
@@ -47,7 +49,7 @@ def _json_body() -> dict:
 
 
 @admin_bp.get("/permissions")
-@require_role(*[r for r in Role if r.is_staff])
+@require_permission(Permission.STAFF_MANAGE)
 def permission_matrix():
     return ok(AccessPolicy.matrix())
 
@@ -70,16 +72,30 @@ def hospital_options():
     return ok(get_container().hospitals.options(ensure_id=current_principal().hospital_id))
 
 
+@admin_bp.get("/districts")
+@require_role(*STAFF_ROLES)
+def list_districts():
+    """後台篩選用的縣市 → 鄉鎮市區下拉選單（離線資料 tw_districts.csv），縣市依北中南東排序。"""
+    grouped = districts_by_city()
+    ordered = [AREA_NAMES[code] for _, codes in AREA_GROUPS for code in codes]
+    cities = [c for c in ordered if c in grouped] + sorted(set(grouped) - set(ordered))
+    return ok([{"city": city, "districts": list(grouped[city])} for city in cities])
+
+
 @admin_bp.get("/hospitals")
 @require_role(*[r for r in Role if r.is_staff])
 def list_hospitals():
-    """後台「所有院所」表格：分頁（每頁 15 筆）、q / region / tier 篩選；all=1 含停用。"""
+    """後台「所有院所」表格：分頁（每頁 15 筆）、q / region / district / tier 篩選。
+
+    all=1 含停用（只有 SUPER_ADMIN）。
+    """
     args = request.args
     include_inactive = args.get("all") == "1" and current_principal().role is Role.SUPER_ADMIN
     return ok(
         get_container().hospitals.paginate(
             query=args.get("q"),
             region=args.get("region"),
+            district=args.get("district"),
             tier=args.get("tier"),
             include_inactive=include_inactive,
             page=_page_arg(),
@@ -148,7 +164,7 @@ def _csv_rows_from_request() -> list[dict]:
 
 
 @admin_bp.get("/pharmacies")
-@require_role(*STAFF_ROLES)
+@require_permission(Permission.MEDICATION_MANAGE)
 def list_pharmacies():
     """後台「藥局」頁：表格分頁（每頁 15 筆），可用 city / district / q（名稱或地址）篩選。"""
     args = request.args
@@ -204,6 +220,9 @@ def list_users():
         include_unassigned=not staff_only and hospital_scope is not None,
         query=request.args.get("q") or None,
     )
+    if hospital_scope is not None:
+        # 院所管理員管不到系統方帳號，不列出（前端沒有對應的角色選項，會誤顯示成訪客）
+        users = [u for u in users if u.role not in SYSTEM_ROLES]
     return ok([get_container().users.to_principal(u).to_dict() for u in users])
 
 

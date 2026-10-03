@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -30,6 +31,7 @@ class FakeLineClient:
         self.loading: list[tuple[str, int]] = []
         self.downloaded: list[str] = []
         self.fail_push = False
+        self.fail_profile = False
 
     def reply(self, reply_token, messages):
         self.replies.append((reply_token, list(messages)))
@@ -45,6 +47,13 @@ class FakeLineClient:
     def get_message_content(self, message_id):
         self.downloaded.append(message_id)
         return TINY_PNG
+
+    def get_profile(self, user_id):
+        if self.fail_profile:
+            raise RuntimeError("LINE profile failed")
+        return SimpleNamespace(
+            display_name=f"LINE {user_id}", picture_url=f"https://example.test/{user_id}.png"
+        )
 
 
 def sample_extraction(**overrides) -> PrescriptionExtraction:

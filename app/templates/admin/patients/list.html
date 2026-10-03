@@ -2,12 +2,9 @@
 {% block title %}病人資料{% endblock %}
 
 {% block content %}
-<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+<div class="d-flex justify-content-between align-items-center mb-3">
   <h1 class="h4 mb-0">病人資料</h1>
-  <form class="d-flex gap-2" id="search-form" role="search">
-    <input class="form-control" type="search" name="q" placeholder="姓名 / 手機 / 身分證末四碼 / 病歷號" style="min-width: 280px;">
-    <button class="btn btn-outline-secondary" type="submit">搜尋</button>
-  </form>
+  <span class="small text-secondary" id="table-stats">—</span>
 </div>
 
 <div class="card mb-3" data-perm="patient:verify">
@@ -19,27 +16,39 @@
       <div class="col-auto small text-secondary pb-1">或</div>
       <div class="col-sm-3"><label class="form-label small mb-0">姓名</label><input class="form-control form-control-sm" name="name"></div>
       <div class="col-sm-2"><label class="form-label small mb-0">身分證末四碼</label><input class="form-control form-control-sm" name="last4" maxlength="4" inputmode="numeric"></div>
+      <div class="col-sm-3 d-none" id="claim-hospital-wrap"><label class="form-label small mb-0" for="claim-hospital">加入的院所</label><select class="form-select form-select-sm" id="claim-hospital" name="hospital_id"></select></div>
       <div class="col-auto"><button class="btn btn-sm btn-brand" type="submit">尋找</button></div>
     </form>
     <div id="claim-results" class="mt-3 d-none"></div>
   </div>
 </div>
 
-<ul class="nav nav-tabs mb-3" id="status-tabs" role="tablist">
-  <li class="nav-item"><a class="nav-link" href="#" data-status="pending">待核對</a></li>
-  <li class="nav-item"><a class="nav-link" href="#" data-status="active">已建檔</a></li>
-  <li class="nav-item"><a class="nav-link" href="#" data-status="locked">已鎖定</a></li>
-  <li class="nav-item"><a class="nav-link" href="#" data-status="all">全部</a></li>
-</ul>
-
-<div class="card">
-  <div class="table-responsive">
-    <table class="table table-hover align-middle mb-0">
-      <thead class="table-light">
-        <tr><th>姓名</th><th>身分證末四碼</th><th>出生日期</th><th>手機</th><th>填表人</th><th>就醫院所</th><th>病歷號</th><th>狀態</th><th>送出時間</th><th></th></tr>
-      </thead>
-      <tbody id="rows"><tr><td colspan="10" class="text-center text-secondary py-4">載入中…</td></tr></tbody>
-    </table>
+<div class="card mb-3">
+  <div class="card-body">
+    <form class="row g-2 mb-3" id="filter-form" role="search">
+      <div class="col-md-7"><input class="form-control" type="search" name="q" placeholder="關鍵字：姓名 / 手機 / 身分證末四碼 / 病歷號" aria-label="關鍵字"></div>
+      <div class="col-md-3">
+        <select class="form-select" name="status" aria-label="狀態">
+          <option value="all">全部狀態</option>
+          <option value="pending">待核對</option>
+          <option value="active">已建檔</option>
+          <option value="locked">黑名單</option>
+        </select>
+      </div>
+      <div class="col-md-2 d-flex gap-2">
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="submit">篩選</button>
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="reset">清除</button>
+      </div>
+    </form>
+    <div class="table-responsive">
+      <table class="table table-sm table-hover align-middle mb-0">
+        <thead class="table-light">
+          <tr><th>姓名</th><th>身分證末四碼</th><th>出生日期</th><th>手機</th><th>填表人</th><th>就醫院所</th><th>病歷號</th><th>狀態</th><th>送出時間</th><th></th></tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <p class="small text-secondary mt-3 mb-0 d-none" id="table-empty">沒有符合條件的病人。</p>
   </div>
 </div>
 {% endblock %}
@@ -48,23 +57,21 @@
 <script>
 Admin.boot(async function (ctx) {
   var params = new URLSearchParams(window.location.search);
-  var state = { status: params.get("status") || "pending", q: params.get("q") || "" };
-  var tabs = document.querySelectorAll("#status-tabs [data-status]");
-  var searchInput = document.querySelector('#search-form input[name="q"]');
-  searchInput.value = state.q;
+  var state = { status: params.get("status") || "all", q: params.get("q") || "" };
+  var filterForm = document.getElementById("filter-form");
+  filterForm.elements.q.value = state.q;
+  filterForm.elements.status.value = state.status;
+  // 網址帶了不認得的狀態時退回「全部狀態」
+  if (!filterForm.elements.status.value) { state.status = "all"; filterForm.elements.status.value = "all"; }
 
   var BADGE = { pending: "text-bg-warning", verified: "text-bg-success", locked: "text-bg-danger", unbound: "text-bg-secondary" };
 
   async function load() {
-    tabs.forEach(function (t) { t.classList.toggle("active", t.getAttribute("data-status") === state.status); });
     history.replaceState(null, "", "?status=" + state.status + (state.q ? "&q=" + encodeURIComponent(state.q) : ""));
     var tbody = document.getElementById("rows");
-    tbody.innerHTML = '<tr><td colspan="10" class="text-center text-secondary py-4">載入中…</td></tr>';
     var rows = await ctx.api("/api/v1/admin/patients?status=" + state.status + "&q=" + encodeURIComponent(state.q));
-    if (!rows.length) {
-      tbody.innerHTML = '<tr><td colspan="10" class="text-center text-secondary py-4">沒有符合條件的病人</td></tr>';
-      return;
-    }
+    document.getElementById("table-stats").textContent = "共 " + rows.length + " 筆";
+    document.getElementById("table-empty").classList.toggle("d-none", rows.length > 0);
     tbody.innerHTML = rows.map(function (p) {
       return "<tr>" +
         "<td class='fw-semibold'>" + Admin.esc(p.full_name) + "</td>" +
@@ -81,15 +88,22 @@ Admin.boot(async function (ctx) {
     }).join("");
   }
 
-  tabs.forEach(function (t) {
-    t.addEventListener("click", function (e) { e.preventDefault(); state.status = t.getAttribute("data-status"); load(); });
+  function reload() { load().catch(function (err) { Admin.toast(err.message, "danger"); }); }
+  filterForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    state = { status: filterForm.elements.status.value, q: filterForm.elements.q.value.trim() };
+    reload();
   });
-  document.getElementById("search-form").addEventListener("submit", function (e) {
-    e.preventDefault(); state.q = searchInput.value.trim(); load();
-  });
+  filterForm.addEventListener("reset", function () { state = { status: "all", q: "" }; reload(); });
   // 新增病人：精準比對還沒被任何院所新增的病人 → 加入本院並推播 LINE 請病人確認
   if (ctx.can("patient:verify")) {
     var claimForm = document.getElementById("claim-form"), claimBox = document.getElementById("claim-results");
+    // 沒有所屬院所的帳號（SUPER_ADMIN）要自己選把病人加進哪家院所，否則 API 會回「請指定 hospital_id」
+    var claimHospital = document.getElementById("claim-hospital");
+    if (!ctx.me.hospital_id) {
+      document.getElementById("claim-hospital-wrap").classList.remove("d-none");
+      Admin.hospitalOptions(claimHospital, true);
+    }
     claimForm.addEventListener("submit", async function (e) {
       e.preventDefault();
       var f = claimForm.elements;
@@ -99,19 +113,20 @@ Admin.boot(async function (ctx) {
         var found = await ctx.api("/api/v1/admin/patients/unclaimed?" + qs);
         claimBox.classList.remove("d-none");
         if (!found.length) { claimBox.innerHTML = '<div class="text-secondary small">找不到符合的病人：可能還沒填表送出、資料不一致，或已由其他院所新增。</div>'; return; }
-        claimBox.innerHTML = '<div class="table-responsive"><table class="table table-sm align-middle mb-0"><thead class="table-light"><tr><th>姓名</th><th>身分證末四碼</th><th>出生日期</th><th>手機</th><th>填表人</th><th>送出時間</th><th></th></tr></thead><tbody>' +
+        claimBox.innerHTML = '<div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead class="table-light"><tr><th>姓名</th><th>身分證末四碼</th><th>出生日期</th><th>手機</th><th>填表人</th><th>送出時間</th><th></th></tr></thead><tbody>' +
           found.map(function (p) {
             return "<tr><td class='fw-semibold'>" + Admin.esc(p.full_name) + "</td><td>****" + Admin.esc(p.national_id_last4) + "</td><td>" + Admin.esc(p.birth_date) + "</td><td>" + Admin.esc(p.phone) + "</td><td>" + (p.filler_relation === "family" ? "家屬代填" : "本人") + "</td><td class='small text-secondary'>" + Admin.fmtDate(p.submitted_at) + "</td>" +
               '<td class="text-end"><button class="btn btn-sm btn-brand" data-claim="' + Admin.esc(p.user_id) + '">加入本院並請病人確認</button></td></tr>';
           }).join("") + "</tbody></table></div>";
         claimBox.querySelectorAll("[data-claim]").forEach(function (b) {
           b.addEventListener("click", async function () {
+            if (!ctx.me.hospital_id && !claimHospital.value) { Admin.toast("請先選擇要加入的院所", "danger"); return; }
             b.disabled = true;
             try {
-              await ctx.api("/api/v1/admin/patients/" + b.getAttribute("data-claim") + "/request-hospital-confirmation", { method: "POST", body: {} });
+              await ctx.api("/api/v1/admin/patients/" + b.getAttribute("data-claim") + "/request-hospital-confirmation", { method: "POST", body: ctx.me.hospital_id ? {} : { hospital_id: claimHospital.value } });
               Admin.toast("已加入本院並推播給病人，病人在 LINE 上確認後即可核對建檔");
               claimBox.classList.add("d-none"); claimForm.reset();
-              state.status = "pending"; await load();
+              state.status = "pending"; filterForm.elements.status.value = "pending"; await load();
             } catch (err) { Admin.toast(err.message, "danger"); b.disabled = false; }
           });
         });

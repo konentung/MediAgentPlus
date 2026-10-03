@@ -1,0 +1,256 @@
+{% extends "admin/base.html" %}
+{% block title %}資料匯入{% endblock %}
+
+{% block content %}
+<h1 class="h4 mb-3">資料匯入</h1>
+<div class="card mb-3">
+  <div class="card-body">
+    <form class="row g-3" id="import-form">
+      <div class="col-md-4">
+        <label class="form-label fw-bold small" for="import-type">資料類型</label>
+        <select class="form-select" id="import-type" name="type"></select>
+      </div>
+      <div class="col-md-8">
+        <label class="form-label fw-bold small" for="import-file">檔案</label>
+        <input class="form-control" id="import-file" type="file" name="file" required>
+      </div>
+
+      <div class="col-12 small text-secondary">
+        <div class="d-none" data-help="hospitals">
+          支援兩種格式：<a href="/api/v1/admin/hospitals/import/template" id="template-link">自家範本</a>（欄位 id, name, region, address, contact_phone, capacity_tier, departments, lat, lng），
+          或健保署「特約醫事機構」/ 衛福部「醫療機構與人員基本資料」開放資料。代碼已存在的院所會被更新，不存在的會新增；藥局等非院所列會自動略過。
+          建議先匯健保署特約機構檔（層級）再匯衛福部檔（科別）。
+        </div>
+        <div class="d-none" data-help="pharmacies">
+          健保署「特約醫事機構」（只取藥局列；欄位 醫事機構代碼、醫事機構種類…）或衛福部「藥局基本資料」（只補非健保特約；欄位 機構名稱、是否為健保特約藥局…）。重新上傳會以代碼更新既有資料。
+        </div>
+        <div class="d-none" data-help="drugs">
+          健保署「健保用藥品項」檔（欄位：藥品代號、藥品英文名稱、藥品中文名稱、成分、劑型、ATC代碼、有效迄日），同一藥品代號只保留有效迄日最新的一列。
+          檔案約 96MB：伺服器端匯入只要幾秒，時間幾乎都花在上傳，<b>經 ngrok 等外部網址上傳會很慢甚至中斷，請直接用本機網址操作</b>。
+        </div>
+        <div class="d-none" data-help="markdown">
+          AI 知識庫文件，可一次選多個 .md。檔案開頭可放 front matter：<code>title</code> / <code>category</code> / <code>tags</code>；沒有就用第一個 # 標題或檔名。同檔名重複上傳會更新同一份。院所管理員匯入的文件一律歸本院。
+        </div>
+        <div class="d-none" data-help="department">
+          全台醫院衛教內文（依科別分類的 <code>01_心臟內科.txt</code> … 每科一檔，可一次選多檔）匯入為通用文件並記下科別。「非衛教」檔會整檔略過；「未分類」照收但不記科別。
+          在背景執行，進度見下方「知識庫背景工作」；匯入後要再「計算向量」語意檢索才會生效。
+        </div>
+      </div>
+
+      <div class="col-12 d-none" data-extra="hospitals">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="only-hospitals" name="only_hospitals">
+          <label class="form-check-label" for="only-hospitals">只匯入醫院（略過診所）</label>
+        </div>
+      </div>
+      <div class="col-md-3 d-none" data-extra="department">
+        <label class="form-label small mb-1" for="min-chars">內文最少字數</label>
+        <input class="form-control form-control-sm" id="min-chars" type="number" name="min_chars" value="200" min="0">
+      </div>
+      <div class="col-md-3 d-none" data-extra="department">
+        <label class="form-label small mb-1" for="import-limit">最多匯入篇數</label>
+        <input class="form-control form-control-sm" id="import-limit" type="number" name="limit" min="1" placeholder="不限">
+      </div>
+
+      <div class="col-12"><button class="btn btn-brand" id="import-submit" type="submit">開始匯入</button></div>
+    </form>
+    <div class="mt-3 d-none" id="import-progress">
+      <div class="progress" role="progressbar" aria-label="上傳進度" aria-valuemin="0" aria-valuemax="100" style="height: .5rem;">
+        <div class="progress-bar" id="import-bar" style="width: 0%"></div>
+      </div>
+      <div class="small text-secondary mt-1" id="import-status"></div>
+    </div>
+    <div class="alert small mt-3 mb-0 d-none" id="import-result"></div>
+    <p class="small text-secondary mb-0 d-none" id="import-none">你的帳號沒有可以匯入的資料類型。</p>
+  </div>
+</div>
+
+<div class="card mb-3 d-none" id="jobs-card">
+  <div class="card-header bg-white d-flex justify-content-between align-items-center">
+    <span class="fw-bold">知識庫背景工作（系統管理員）</span>
+    <span class="small text-secondary" id="system-stats">—</span>
+  </div>
+  <div class="card-body">
+    <p class="small text-secondary">
+      衛教內文匯入、重建片段、計算向量都在背景執行、可重跑，同一時間只會跑一個工作。切段規則改了可按「重建片段」不必重新上傳；向量只算還沒有的片段。
+    </p>
+    <form class="row g-2 align-items-end" id="embed-form">
+      <div class="col-md-3">
+        <label class="form-label small mb-1" for="embed-batch">計算向量：每批片段數</label>
+        <input class="form-control form-control-sm" id="embed-batch" type="number" name="batch" value="200" min="1" max="1000">
+      </div>
+      <div class="col-md-auto"><button class="btn btn-sm btn-brand" type="submit" data-job-start>計算向量</button></div>
+      <div class="col-md-auto"><button class="btn btn-sm btn-outline-secondary" type="button" id="rechunk-btn" data-job-start>重建片段</button></div>
+      <div class="col-12 form-text">計算向量會呼叫 OpenAI <code>EMBEDDING_MODEL</code>，數萬個片段約需數分鐘並產生 API 費用。</div>
+    </form>
+    <div class="alert alert-info small mt-3 mb-0 d-none" id="job-active"></div>
+    <div class="table-responsive mt-3">
+      <table class="table table-sm table-hover align-middle mb-0">
+        <thead class="table-light"><tr><th>工作</th><th>狀態</th><th>參數</th><th>結果</th><th>開始</th><th>結束</th></tr></thead>
+        <tbody id="job-recent"></tbody>
+      </table>
+    </div>
+    <p class="small text-secondary mt-3 mb-0 d-none" id="job-empty">還沒有執行過背景工作。</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+Admin.boot(async function (ctx) {
+  // 每種資料：需要的權限、上傳端點、檔案限制；說明文字與額外選項在上方 data-help / data-extra
+  var TYPES = [
+    { key: "hospitals", label: "院所（CSV）", perm: "hospital:manage", url: "/api/v1/admin/hospitals/import", accept: ".csv,text/csv", multiple: false },
+    { key: "pharmacies", label: "藥局（CSV）", perm: "reference_data:manage", url: "/api/v1/admin/pharmacies/import", accept: ".csv,text/csv", multiple: false },
+    { key: "drugs", label: "藥品：健保用藥（CSV）", perm: "reference_data:manage", url: "/api/v1/admin/drugs/import", accept: ".csv,text/csv", multiple: false },
+    { key: "markdown", label: "AI 知識庫文件（Markdown）", perm: "education:content_manage", url: "/api/v1/admin/knowledge/import", accept: ".md,text/markdown", multiple: true },
+    { key: "department", label: "衛教內文：依科別分類（txt）", perm: "reference_data:manage", url: "/api/v1/admin/knowledge/jobs/department-import", accept: ".txt,text/plain", multiple: true }
+  ].filter(function (t) { return ctx.can(t.perm); });
+
+  var form = document.getElementById("import-form"), typeSelect = document.getElementById("import-type"), fileInput = document.getElementById("import-file");
+  var btn = document.getElementById("import-submit"), progress = document.getElementById("import-progress");
+  var bar = document.getElementById("import-bar"), status = document.getElementById("import-status"), result = document.getElementById("import-result");
+  var canJobs = ctx.can("reference_data:manage");
+
+  if (!TYPES.length) {
+    form.classList.add("d-none");
+    document.getElementById("import-none").classList.remove("d-none");
+    return;
+  }
+  TYPES.forEach(function (t) {
+    var opt = document.createElement("option");
+    opt.value = t.key; opt.textContent = t.label;
+    typeSelect.appendChild(opt);
+  });
+  function current() { return TYPES.filter(function (t) { return t.key === typeSelect.value; })[0]; }
+  function applyType() {
+    var t = current();
+    fileInput.value = ""; fileInput.accept = t.accept; fileInput.multiple = t.multiple;
+    document.querySelectorAll("[data-help],[data-extra]").forEach(function (el) {
+      el.classList.toggle("d-none", (el.getAttribute("data-help") || el.getAttribute("data-extra")) !== t.key);
+    });
+    result.classList.add("d-none");
+  }
+  typeSelect.addEventListener("change", applyType);
+  // 網址可帶 ?type= 直接選好類型（各清單頁連過來用）
+  var wanted = new URLSearchParams(window.location.search).get("type");
+  if (wanted && TYPES.some(function (t) { return t.key === wanted; })) typeSelect.value = wanted;
+  applyType();
+
+  // 院所範本下載要帶 Bearer，不能直接用連結
+  document.getElementById("template-link").addEventListener("click", async function (e) {
+    e.preventDefault();
+    try {
+      var resp = await fetch("/api/v1/admin/hospitals/import/template", { headers: { Authorization: "Bearer " + sessionStorage.getItem("access_token"), "ngrok-skip-browser-warning": "1" } });
+      if (!resp.ok) throw new Error("範本下載失敗");
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(await resp.blob()); a.download = "hospitals_template.csv"; a.click();
+    } catch (err) { Admin.toast(err.message, "danger"); }
+  });
+
+  function errorList(errors) {
+    if (!errors || !errors.length) return "";
+    return "<ul class='mb-0 mt-1 ps-3'>" + errors.slice(0, 10).map(function (x) {
+      return "<li>" + Admin.esc(x.file || "第 " + x.row + " 列") + "：" + Admin.esc(x.message) + "</li>";
+    }).join("") + (errors.length > 10 ? "<li>…其餘 " + (errors.length - 10) + " 筆</li>" : "") + "</ul>";
+  }
+  function summarize(t, r) {
+    if (t.key === "department") return "已開始背景匯入：" + Admin.esc(r.kind_label) + "，進度見下方「知識庫背景工作」。";
+    var parts = ["新增 <b>" + r.created + "</b>", "更新 <b>" + r.updated + "</b>"];
+    if (r.skipped !== undefined) parts.push("略過 " + r.skipped);
+    if (r.errors) parts.push("錯誤 " + r.errors.length);
+    return parts.join("、") + errorList(r.errors);
+  }
+  function setProgress(pct, text) { bar.style.width = pct + "%"; status.textContent = text; }
+
+  form.addEventListener("submit", async function (e) {
+    e.preventDefault();
+    var t = current(), files = Array.prototype.slice.call(fileInput.files);
+    if (!files.length) return;
+    var url = t.url, fields = {};
+    if (t.key === "hospitals") url += "?only_hospitals=" + (form.elements.only_hospitals.checked ? "1" : "0");
+    if (t.key === "department") {
+      fields.min_chars = form.elements.min_chars.value || "200";
+      if (form.elements.limit.value) fields.limit = form.elements.limit.value;
+    }
+    var sizeMB = (files.reduce(function (n, f) { return n + f.size; }, 0) / 1048576).toFixed(1);
+    btn.disabled = true; result.classList.add("d-none"); progress.classList.remove("d-none");
+    setProgress(0, "上傳中 0%（" + sizeMB + " MB）");
+    try {
+      var r = await Admin.upload(url, t.multiple ? files : files[0], function (pct) {
+        setProgress(pct, pct < 100 ? "上傳中 " + pct + "%（" + sizeMB + " MB）" : "上傳完成，伺服器匯入中…");
+      }, fields);
+      result.className = "alert alert-" + (r.errors && r.errors.length ? "warning" : "success") + " small mt-3 mb-0";
+      result.innerHTML = summarize(t, r);
+      fileInput.value = "";
+      if (t.key === "department" && canJobs) await loadJobs();
+    } catch (err) {
+      result.className = "alert alert-danger small mt-3 mb-0"; result.textContent = err.message;
+    } finally { btn.disabled = false; progress.classList.add("d-none"); }
+  });
+
+  // ---- 知識庫背景工作（只有 reference_data:manage = 系統管理員）：重建片段 / 計算向量 + 輪詢進度 ----
+  var pollTimer = null;
+  var STATUS_LABEL = { queued: "排隊中", running: "執行中", succeeded: "完成", failed: "失敗" };
+  var STATUS_CLASS = { queued: "secondary", running: "primary", succeeded: "success", failed: "danger" };
+
+  function describeParams(j) {
+    var p = j.params || {};
+    if (j.kind === "department_txt") return (p.filenames || []).length + " 個檔・≥" + p.min_chars + " 字" + (p.limit ? "・最多 " + p.limit + " 篇" : "");
+    if (j.kind === "rechunk") return "文件 " + p.documents + " 篇";
+    return "每批 " + p.batch + "・待算 " + p.pending;
+  }
+  function describeResult(j) {
+    if (j.status === "failed") return '<span class="text-danger">' + Admin.esc(j.error || "") + "</span>";
+    var r = j.result || j.progress || {};
+    if (j.kind === "department_txt") {
+      if (r.read === undefined) return "—";
+      var c = r.chunks || {};
+      return "新增 " + r.created + "・更新 " + r.updated + "・略過 " + r.skipped + "・重複 " + r.duplicates + "（讀取 " + r.read + " 篇）" +
+        (c.count ? "；片段 " + c.count + " 個、中位數 " + c.median + " 字、過短 " + c.under_min + "、過長 " + c.over_hard_max : "");
+    }
+    if (j.kind === "rechunk" && r.chunks !== undefined && r.documents !== undefined && r.done === undefined) return "文件 " + r.documents + " 篇 → 片段 " + r.chunks + " 個";
+    if (r.embedded !== undefined) return "完成 " + r.embedded + " 個片段";
+    return r.done === undefined ? "—" : r.done + " / " + r.total;
+  }
+  function renderJobs(data) {
+    document.getElementById("system-stats").textContent = "文件 " + data.stats.documents + " 篇・片段 " + data.stats.chunks + " 個・已有向量 " + data.stats.embedded + " 個";
+    var activeBox = document.getElementById("job-active"), running = !!data.active;
+    document.querySelectorAll("[data-job-start]").forEach(function (b) { b.disabled = running; });
+    activeBox.classList.toggle("d-none", !running);
+    if (running) {
+      activeBox.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>' +
+        Admin.esc(data.active.kind_label) + "（" + STATUS_LABEL[data.active.status] + "）　" + describeResult(data.active);
+      if (!pollTimer) pollTimer = setInterval(loadJobs, 3000);
+    } else if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    document.getElementById("job-empty").classList.toggle("d-none", data.recent.length > 0);
+    document.getElementById("job-recent").innerHTML = data.recent.map(function (j) {
+      return "<tr><td>" + Admin.esc(j.kind_label) + '</td><td><span class="badge text-bg-' + STATUS_CLASS[j.status] + '">' + STATUS_LABEL[j.status] + "</span></td><td class='small text-secondary'>" + describeParams(j) + "</td><td class='small'>" + describeResult(j) + "</td><td class='small text-secondary text-nowrap'>" + Admin.fmtDate(j.started_at || j.created_at) + "</td><td class='small text-secondary text-nowrap'>" + Admin.fmtDate(j.finished_at) + "</td></tr>";
+    }).join("");
+  }
+  async function loadJobs() {
+    try { renderJobs(await ctx.api("/api/v1/admin/knowledge/jobs")); }
+    catch (err) { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } Admin.toast(err.message, "danger"); }
+  }
+  async function startJob(path, body) {
+    var job = await ctx.api(path, { method: "POST", body: body });
+    Admin.toast("已開始：" + job.kind_label);
+    await loadJobs();
+  }
+  if (canJobs) {
+    document.getElementById("jobs-card").classList.remove("d-none");
+    document.getElementById("rechunk-btn").addEventListener("click", async function () {
+      if (!confirm("用目前的切段規則重建所有片段？已算好的向量會清掉，完成後要再按「計算向量」。")) return;
+      try { await startJob("/api/v1/admin/knowledge/jobs/rechunk", {}); }
+      catch (err) { Admin.toast(err.message, "danger"); }
+    });
+    document.getElementById("embed-form").addEventListener("submit", async function (e) {
+      e.preventDefault();
+      try { await startJob("/api/v1/admin/knowledge/jobs/embed", { batch: Number(e.target.elements.batch.value) || 200 }); }
+      catch (err) { Admin.toast(err.message, "danger"); }
+    });
+    await loadJobs();
+  }
+});
+</script>
+{% endblock %}

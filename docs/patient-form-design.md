@@ -256,7 +256,7 @@ Flask + Jinja + Bootstrap 5 render 頁面骨架，頁面內 JS 以 `fetch()` 打
 2. 共用的 `admin/base.html` 內建 JS：讀 `sessionStorage.access_token`；沒有就導向 `/admin/login`；
    有就先打 `GET /api/v1/auth/me`，不是 staff 角色則顯示「無權限」頁並提供登出。
 3. 所有資料請求帶 `Authorization: Bearer`，401（到期）就回登入頁重新登入。
-4. 側欄選單依 `/api/v1/admin/permissions` 回傳的權限矩陣顯示 / 隱藏（例如 CS_AGENT 看不到「人員與角色」）。
+4. 側欄選單依 `/api/v1/admin/permissions` 回傳的權限表顯示 / 隱藏（例如 CS_AGENT 看不到「人員與角色」）。
    **真正的授權仍由 API 端 decorator 決定**，前端隱藏只是體驗。
 
 院所隔離同樣由 API 端 `AccessPolicy.can_access_hospital()` 處理，頁面不用自己判斷 `hospital_id`；

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 from app.core.exceptions import (
@@ -18,7 +18,7 @@ from app.core.exceptions import (
     NotFoundError,
     ValidationError,
 )
-from app.domain.enums import BindingStatus, Role
+from app.domain.enums import BindingStatus, Permission, Role
 from app.domain.intake_schema import ALL_FIELDS, validate_step
 from app.domain.principal import Principal
 from app.domain.rbac import AccessPolicy
@@ -26,7 +26,12 @@ from app.line.client import LineMessagingClient
 from app.line.messages import common
 from app.line.messages.builder import MessageBuilder as M
 from app.repositories.audit_repository import AuditRepository
-from app.repositories.patient_record_repository import CHILD_MODELS, PatientRecordRepository
+from app.repositories.patient_record_repository import (
+    CHILD_MODELS,
+    RECORD_STATUS_ACTIVE,
+    RECORD_STATUS_DRAFT,
+    PatientRecordRepository,
+)
 from app.repositories.patient_repository import (
     PatientRepository,
     PatientSearch,
@@ -147,7 +152,7 @@ class PatientRecordService:
         note = self._text(note, 500)  # 修改：note 不是字串時資料庫 adapter 會失敗
 
         record = self._records.get(user_id, hospital)
-        if record is not None:
+        if record is not None and record["status"] != RECORD_STATUS_DRAFT:
             # 已建檔：只是更新病歷號，不重跑核對、不再推播
             if medical_record_no:
                 record = self._records.update(record["id"], medical_record_no=medical_record_no)
@@ -166,14 +171,25 @@ class PatientRecordService:
                 details={"hospital_confirmation_required": True},
             )
 
-        record = self._records.create(
-            user_id=user_id,
-            hospital_id=hospital,
-            medical_record_no=medical_record_no,
-            identity_method=identity_method,
-            identity_verified_by=actor.user_id,
-            created_by=actor.user_id,
-        )
+        if record is None:
+            record = self._records.create(
+                user_id=user_id,
+                hospital_id=hospital,
+                medical_record_no=medical_record_no,
+                identity_method=identity_method,
+                identity_verified_by=actor.user_id,
+                created_by=actor.user_id,
+            )
+        else:
+            # 建檔前就先新增過就診紀錄：把暫存紀錄轉正，底下的就診紀錄原樣保留
+            record = self._records.update(
+                record["id"],
+                status=RECORD_STATUS_ACTIVE,
+                medical_record_no=medical_record_no or record["medical_record_no"],
+                identity_method=identity_method,
+                identity_verified_by=actor.user_id,
+                identity_verified_at=datetime.now(UTC),
+            )
         self._patients.review_latest_submission(
             user_id, status="reviewed", reviewed_by=actor.user_id or "", note=note
         )
@@ -230,6 +246,19 @@ class PatientRecordService:
         """把病人加進本院（`preferred_hospital_id` = 本院、尚未確認）並推播 LINE 請病人自己按
         「是，我在這家院所就醫」；病人確認後本院才能核對建檔。已由其他院所新增的病人不能碰。"""
         hospital = self._resolve_hospital(actor, hospital_id)
+        profile, user = self._load_claimable(user_id, hospital)
+        record = self._records.get(user_id, hospital)
+        if record is not None and record["status"] != RECORD_STATUS_DRAFT:
+            raise ConflictError("病人已在本院建檔，不需要再確認")
+        if profile.get("preferred_hospital_id") == hospital and profile.get(
+            "hospital_confirmed_at"
+        ):
+            raise ConflictError("病人已確認在本院就醫，可以直接核對建檔")
+        name = self._assign_and_notify(profile, user, hospital)
+        return {"requested": True, "hospital_id": hospital, "hospital_name": name}
+
+    def _load_claimable(self, user_id: str, hospital: str) -> tuple[dict[str, Any], UserRecord]:
+        """把病人指定到 `hospital` 的共同前提：已送出、未鎖定、沒有被其他院所新增。"""
         profile = self._patients.get_profile(user_id)
         user = self._users.get_by_id(user_id)
         if profile is None or user is None:
@@ -238,24 +267,24 @@ class PatientRecordService:
             raise ValidationError("病人尚未送出表單")
         if user.binding_status is BindingStatus.LOCKED:
             raise ConflictError("帳號已鎖定，請先解除鎖定")
-        if self._records.get(user_id, hospital) is not None:
-            raise ConflictError("病人已在本院建檔，不需要再確認")
         current = profile.get("preferred_hospital_id")
         if current and current != hospital:
             raise ConflictError("這位病人已由其他院所新增，處理中")
-        if current == hospital and profile.get("hospital_confirmed_at"):
-            raise ConflictError("病人已確認在本院就醫，可以直接核對建檔")
+        return profile, user
+
+    def _assign_and_notify(self, profile: dict[str, Any], user: UserRecord, hospital: str) -> str:
+        """寫入 `preferred_hospital_id`（尚未確認）並推播 LINE 請病人確認；回傳院所名稱。"""
         if not user.line_user_id:
             raise ValidationError("這位使用者沒有 LINE 帳號，無法推播")
-        if current != hospital:
-            self._patients.set_hospital(user_id, hospital, confirmed=False)
+        if profile.get("preferred_hospital_id") != hospital:
+            self._patients.set_hospital(user.id, hospital, confirmed=False)
         name = self._hospitals.get(hospital)["name"]
         try:
             self._line().push(user.line_user_id, common.hospital_confirm_messages(name, hospital))
         except Exception as exc:  # noqa: BLE001 - 推播失敗要讓院方知道，而不是默默成功
-            logger.warning("Hospital confirmation push failed for %s: %s", user_id, exc)
+            logger.warning("Hospital confirmation push failed for %s: %s", user.id, exc)
             raise ExternalServiceError("LINE 推播失敗，請稍後再試") from exc
-        return {"requested": True, "hospital_id": hospital, "hospital_name": name}
+        return name
 
     def set_locked(
         self, actor: Principal, user_id: str, *, locked: bool, reason: str | None = None
@@ -317,8 +346,11 @@ class PatientRecordService:
         return IntakeService.mask_profile(self._patients.get_profile(user_id) or {})
 
     def add_encounter(self, actor: Principal, user_id: str, body: dict[str, Any]) -> dict[str, Any]:
-        record = self._require_record(actor, user_id)
-        values = self._encounter_values(body, creating=True)
+        """新增就診 / 住院紀錄。**不需要先建檔**：病人還沒在本院建檔時，先把病人指定到本院
+        （推播 LINE 請病人確認）並開一筆未核對的暫存紀錄；病人同意、院方核對後轉為正式建檔，
+        病人回答「不是」則整筆刪除（`IntakeService.confirm_hospital()`）。"""
+        values = self._encounter_values(body, creating=True)  # 先驗證，欄位有錯就不會推播
+        record = self._record_or_draft(actor, user_id, self._text(body.get("hospital_id"), 32))
         return self._records.add_child(
             "encounters", record["id"], created_by=actor.user_id, **values
         )
@@ -444,6 +476,29 @@ class PatientRecordService:
         if not AccessPolicy.can_access_hospital(actor, record["hospital_id"]):
             raise AuthorizationError("不得操作其他院所的病人資料")
         return record
+
+    def _record_or_draft(
+        self, actor: Principal, user_id: str, hospital_id: str | None
+    ) -> dict[str, Any]:
+        if self._record_for(actor, user_id) is not None:
+            return self._require_record(actor, user_id)
+        profile = self._patients.get_profile(user_id) or {}
+        # 院方帳號一律是自己的院所；SUPER_ADMIN 用指定的，沒指定就用病人已被加入的院所
+        target = hospital_id or actor.hospital_id or profile.get("preferred_hospital_id")
+        hospital = self._resolve_hospital(actor, target)
+        profile, user = self._load_claimable(user_id, hospital)
+        if profile.get("preferred_hospital_id") != hospital:
+            # 還沒人新增的病人：等同「加入本院並請病人確認」，需要同樣的權限
+            if not AccessPolicy.has_permission(actor, Permission.PATIENT_VERIFY):
+                raise AuthorizationError("沒有把病人加入本院的權限")
+            self._assign_and_notify(profile, user, hospital)
+        return self._records.create(
+            user_id=user_id,
+            hospital_id=hospital,
+            status=RECORD_STATUS_DRAFT,
+            identity_verified_at=None,
+            created_by=actor.user_id,
+        )
 
     def _update_child(
         self, collection: str, record_id: str, child_id: str, values: dict[str, Any]

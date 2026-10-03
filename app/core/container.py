@@ -179,7 +179,12 @@ class ServiceContainer:
         line_client = LineMessagingClient(cfg["LINE_CHANNEL_ACCESS_TOKEN"])
         # Service 透過 getter 取用 line_client，測試替換 container.line_client 時才會一起生效
         intake = IntakeService(
-            patient_repo, user_repo, hospitals, cipher, lambda: container.line_client
+            patient_repo,
+            user_repo,
+            hospitals,
+            cipher,
+            lambda: container.line_client,
+            patient_record_repo,
         )
         patient_records = PatientRecordService(
             patient_repo,

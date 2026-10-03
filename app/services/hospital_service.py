@@ -14,6 +14,7 @@ from app.domain.enums import Role
 from app.domain.principal import Principal
 from app.domain.rbac import AccessPolicy
 from app.repositories.hospital_repository import HospitalRepository
+from app.services.pharmacy_service import parse_address
 from app.utils.geo import parse_coords
 
 HOSPITAL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{1,31}$")
@@ -99,23 +100,30 @@ class HospitalService:
         *,
         query: str | None = None,
         region: str | None = None,
+        district: str | None = None,
         tier: str | None = None,
         include_inactive: bool = False,
         page: int = 1,
     ) -> dict[str, Any]:
-        """後台「所有院所」表格（每頁 15 筆）。"""
+        """後台「所有院所」表格（每頁 15 筆）；每列多帶從地址解析出的 `city` / `district`。"""
         tier = (tier or "").strip() or None
         if tier is not None and tier not in CAPACITY_TIERS:
             raise ValidationError("capacity_tier 不合法", details={"allowed": list(CAPACITY_TIERS)})
         rows, total = self._hospitals.paginate(
             query=(query or "").strip() or None,
             region=(region or "").strip() or None,
+            district=(district or "").strip() or None,
             tier=tier,
             active_only=not include_inactive,
             page=page,
             per_page=PAGE_SIZE,
         )
-        return page_payload(rows, total, page)
+        items = []
+        for row in rows:
+            city, parsed_district = parse_address(row.get("address"))
+            shown_city = (row.get("region") or city or "").replace("臺", "台") or None
+            items.append({**row, "city": shown_city, "district": parsed_district})
+        return page_payload(items, total, page)
 
     def get(self, hospital_id: str) -> dict[str, Any]:
         hospital = self._hospitals.get(hospital_id)

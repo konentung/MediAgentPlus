@@ -27,12 +27,16 @@ CHILD_MODELS: dict[str, type[db.Model]] = {
     "notes": PatientRecordNoteModel,
 }
 _DATE_COLUMNS = {"visit_date", "admitted_at", "discharged_at", "due_date"}
+# `patient_records.status`：draft = 還沒核對建檔，只是讓院方先掛就診紀錄的暫存；active = 已核對建檔
+RECORD_STATUS_DRAFT = "draft"
+RECORD_STATUS_ACTIVE = "active"
 
 
 class PatientRecordRepository(Protocol):
     def get(self, user_id: str, hospital_id: str) -> dict[str, Any] | None: ...
     def get_by_id(self, record_id: str) -> dict[str, Any] | None: ...
     def list_for_user(self, user_id: str) -> list[dict[str, Any]]: ...
+    def delete(self, record_id: str) -> None: ...
     def create(self, **values: Any) -> dict[str, Any]: ...
     def update(self, record_id: str, **changes: Any) -> dict[str, Any]: ...
     def add_child(self, collection: str, record_id: str, **values: Any) -> dict[str, Any]: ...
@@ -76,10 +80,21 @@ class SqlAlchemyPatientRecordRepository:
         return [row_to_dict(r) for r in rows]
 
     def create(self, **values: Any) -> dict[str, Any]:
-        row = PatientRecordModel(identity_verified_at=datetime.now(UTC), **values)
+        # 暫存紀錄（draft）會明確傳 identity_verified_at=None；正式建檔預設為現在
+        row = PatientRecordModel(**{"identity_verified_at": datetime.now(UTC), **values})
         db.session.add(row)
         db.session.commit()
         return row_to_dict(row)
+
+    def delete(self, record_id: str) -> None:
+        """刪除整筆院方紀錄，連同底下的就診 / 風險 / 追蹤 / 備註。"""
+        row = db.session.get(PatientRecordModel, record_id)
+        if row is None:
+            return
+        for model in CHILD_MODELS.values():  # SQLite 預設不啟用外鍵 CASCADE，子表明確刪除
+            db.session.execute(db.delete(model).where(model.record_id == record_id))
+        db.session.delete(row)
+        db.session.commit()
 
     def update(self, record_id: str, **changes: Any) -> dict[str, Any]:
         row = db.session.get(PatientRecordModel, record_id)

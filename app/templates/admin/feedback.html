@@ -2,24 +2,33 @@
 {% block title %}意見回饋{% endblock %}
 
 {% block content %}
-<div class="d-flex align-items-center justify-content-between mb-3">
+<div class="d-flex justify-content-between align-items-center mb-3">
   <h1 class="h4 mb-0">意見回饋</h1>
-  <div class="d-flex gap-2">
-    <select class="form-select form-select-sm" id="status-filter" style="width: auto;">
-      <option value="open">待處理</option>
-      <option value="resolved">已處理</option>
-      <option value="">全部</option>
-    </select>
-    <button class="btn btn-outline-secondary btn-sm" id="btn-reload">重新整理</button>
-  </div>
+  <span class="small text-secondary" id="table-stats">—</span>
 </div>
-<p class="small text-secondary">使用者從 LINE「意見回饋」表單送出。只看得到本院病人（已確認就醫院所）與本院人員的回饋；沒有院所的回饋由系統管理員處理。</p>
-<div class="card">
-  <div class="table-responsive">
-    <table class="table table-hover align-middle mb-0">
-      <thead class="table-light"><tr><th style="width: 140px;">時間</th><th style="width: 100px;">類別</th><th>內容</th><th style="width: 160px;">使用者 / 聯絡方式</th><th style="width: 90px;">狀態</th><th style="width: 130px;"></th></tr></thead>
-      <tbody id="rows"><tr><td colspan="6" class="text-center text-secondary py-4">載入中…</td></tr></tbody>
-    </table>
+<div class="card mb-3">
+  <div class="card-body">
+    <form class="row g-2 mb-3" id="filter-form" role="search">
+      <div class="col-md-7"><input class="form-control" type="search" name="q" placeholder="關鍵字：內容 / 使用者 / 聯絡方式" aria-label="關鍵字"></div>
+      <div class="col-md-3">
+        <select class="form-select" name="status" aria-label="狀態">
+          <option value="open">待處理</option>
+          <option value="resolved">已處理</option>
+          <option value="">全部狀態</option>
+        </select>
+      </div>
+      <div class="col-md-2 d-flex gap-2">
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="submit">篩選</button>
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="reset">清除</button>
+      </div>
+    </form>
+    <div class="table-responsive">
+      <table class="table table-sm table-hover align-middle mb-0">
+        <thead class="table-light"><tr><th>時間</th><th>類別</th><th>內容</th><th>使用者 / 聯絡方式</th><th>狀態</th><th></th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <p class="small text-secondary mt-3 mb-0 d-none" id="table-empty">沒有符合的回饋。</p>
   </div>
 </div>
 {% endblock %}
@@ -27,28 +36,30 @@
 {% block scripts %}
 <script>
 Admin.boot(async function (ctx) {
+  var filterForm = document.getElementById("filter-form");
+  function reload() { load().catch(function (err) { Admin.toast(err.message, "danger"); }); }
+
   async function load() {
     var tbody = document.getElementById("rows");
-    var status = document.getElementById("status-filter").value;
+    var status = filterForm.elements.status.value, q = filterForm.elements.q.value.trim().toLowerCase();
     var items = await ctx.api("/api/v1/admin/feedback" + (status ? "?status=" + status : ""));
-    if (!items.length) {
-      tbody.innerHTML = '<tr><td colspan="6" class="text-center text-secondary py-4">沒有回饋</td></tr>';
-      return;
-    }
+    // 狀態由 API 篩選，關鍵字在前端比對（API 不分頁）
+    if (q) items = items.filter(function (f) { return [f.content, f.display_name, f.contact].join(" ").toLowerCase().indexOf(q) >= 0; });
+    document.getElementById("table-stats").textContent = "共 " + items.length + " 筆";
+    document.getElementById("table-empty").classList.toggle("d-none", items.length > 0);
     tbody.innerHTML = items.map(function (f) {
       var who = (f.display_name ? Admin.esc(f.display_name) : "<span class='text-secondary'>匿名</span>") +
-        (f.user_id ? " <a href='/admin/patients/" + Admin.esc(f.user_id) + "' class='small'>檢視</a>" : "") +
         (f.contact ? "<div class='small text-secondary'>" + Admin.esc(f.contact) + "</div>" : "");
       var badge = f.status === "open" ? "text-bg-warning" : "text-bg-success";
       var action = f.status === "open"
         ? '<button class="btn btn-sm btn-brand" data-resolve="' + f.id + '">標記已處理</button>'
         : '<div class="small text-secondary">' + Admin.esc(f.resolver_note || "") + '</div><button class="btn btn-sm btn-link p-0" data-reopen="' + f.id + '">重新開啟</button>';
-      return "<tr><td class='small text-secondary'>" + Admin.fmtDate(f.created_at) + "</td>" +
+      return "<tr><td class='small text-secondary text-nowrap'>" + Admin.fmtDate(f.created_at) + "</td>" +
         "<td>" + Admin.esc(Admin.label("feedback_categories", f.category)) + "</td>" +
-        "<td style='white-space: pre-wrap;'>" + Admin.esc(f.content) + "</td>" +
+        "<td class='text-break' style='white-space: pre-wrap;'>" + Admin.esc(f.content) + "</td>" +
         "<td>" + who + "</td>" +
         "<td><span class='badge " + badge + "'>" + Admin.esc(Admin.label("feedback_statuses", f.status)) + "</span></td>" +
-        "<td class='text-end'>" + action + "</td></tr>";
+        "<td class='text-end text-nowrap'>" + action + "</td></tr>";
     }).join("");
     tbody.querySelectorAll("[data-resolve]").forEach(function (b) {
       b.addEventListener("click", async function () {
@@ -70,8 +81,9 @@ Admin.boot(async function (ctx) {
       });
     });
   }
-  document.getElementById("btn-reload").addEventListener("click", load);
-  document.getElementById("status-filter").addEventListener("change", load);
+  filterForm.addEventListener("submit", function (e) { e.preventDefault(); reload(); });
+  // reset 事件在欄位清空前觸發，等清空後再重新載入
+  filterForm.addEventListener("reset", function () { setTimeout(reload, 0); });
   await load();
 });
 </script>

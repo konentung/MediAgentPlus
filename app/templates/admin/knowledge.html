@@ -5,80 +5,41 @@
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h1 class="h4 mb-0">AI 知識庫</h1>
   <div class="d-flex gap-2" data-perm="education:content_manage">
-    <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#import-modal" type="button">匯入 Markdown</button>
+    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('admin_pages.imports') }}?type=markdown">匯入 Markdown</a>
     <button class="btn btn-sm btn-brand" id="btn-new" type="button">新增文件</button>
   </div>
 </div>
-<p class="small text-secondary">
-  LINE 機器人的 AI 助理回答問題時，會先從這裡檢索相關片段（jieba 斷詞 + BM25），只依據檢索到的內容回答。
-  「通用」文件所有使用者都查得到（只有系統管理員能改）；院所文件只有常去院所是本院的病人會查到。
-</p>
-
 <div class="card mb-3">
   <div class="card-body">
     <form class="d-flex gap-2" id="search-form" role="search">
-      <input class="form-control" id="search-q" placeholder="試搜：輸入病人可能會問的話，看會檢索到哪些片段" required>
-      <button class="btn btn-outline-secondary text-nowrap" type="submit">試搜</button>
+      <input class="form-control" id="search-q" placeholder="搜尋：輸入病人可能會問的話，看會檢索到哪些片段" required>
+      <button class="btn btn-outline-secondary text-nowrap" type="submit">搜尋</button>
     </form>
     <div id="search-result" class="mt-3 d-none"></div>
   </div>
 </div>
 
-<div class="card mb-3 d-none" id="system-card">
-  <div class="card-header bg-white d-flex justify-content-between align-items-center">
-    <span class="fw-bold">系統資料匯入（系統管理員）</span>
-    <span class="small text-secondary" id="system-stats">—</span>
-  </div>
-  <div class="card-body">
-    <p class="small text-secondary mb-3">
-      全台醫院衛教內文（依科別分類的 <code>01_心臟內科.txt</code> … 每科一檔，可一次選多檔）匯入為通用文件並記下科別，之後再「計算向量」讓語意檢索生效。
-      工作都在背景執行、可重跑：同網址的文件會更新（補科別、依新規則重切）、重複內文略過、向量只算還沒有的片段。切段規則改了可按「重建片段」不必重新上傳。同一時間只會跑一個工作。
-    </p>
-    <div class="row g-3">
-      <div class="col-md-7">
-        <form class="border rounded p-3 h-100" id="he-form">
-          <label class="form-label fw-bold small">匯入衛教內文（依科別分類的 txt）</label>
-          <input class="form-control form-control-sm" type="file" name="files" accept=".txt,text/plain" multiple required>
-          <div class="form-text">「非衛教」檔會整檔略過；「未分類」照收但不記科別。</div>
-          <div class="row g-2 mt-1">
-            <div class="col-6"><label class="form-label small mb-0">內文最少字數</label><input class="form-control form-control-sm" type="number" name="min_chars" value="200" min="0"></div>
-            <div class="col-6"><label class="form-label small mb-0">最多匯入篇數</label><input class="form-control form-control-sm" type="number" name="limit" min="1" placeholder="不限"></div>
-          </div>
-          <div class="d-flex gap-2 mt-3 align-items-center">
-            <button class="btn btn-sm btn-brand" type="submit">開始匯入</button>
-            <button class="btn btn-sm btn-outline-secondary" type="button" id="rechunk-btn">重建片段</button>
-            <span class="small text-secondary" id="he-progress"></span>
-          </div>
-        </form>
-      </div>
-      <div class="col-md-5">
-        <form class="border rounded p-3 h-100" id="embed-form">
-          <label class="form-label fw-bold small">計算向量（OpenAI embedding）</label>
-          <div class="form-text mb-2">替尚未有向量的片段呼叫 <code>EMBEDDING_MODEL</code>，數萬個片段約需數分鐘並產生 API 費用。</div>
-          <label class="form-label small mb-0">每批片段數</label>
-          <input class="form-control form-control-sm" type="number" name="batch" value="200" min="1" max="1000">
-          <button class="btn btn-sm btn-brand mt-3" type="submit">開始計算</button>
-        </form>
-      </div>
-    </div>
-    <div class="alert alert-info small mt-3 mb-0 d-none" id="job-active"></div>
-    <div class="mt-3 d-none" id="job-recent-wrap">
-      <div class="small fw-bold mb-1">最近的工作</div>
-      <div class="table-responsive"><table class="table table-sm small mb-0"><thead class="table-light"><tr><th>工作</th><th>狀態</th><th>參數</th><th>結果</th><th>開始</th><th>結束</th></tr></thead><tbody id="job-recent"></tbody></table></div>
-    </div>
-  </div>
-</div>
-
-<div class="card">
+<div class="card mb-3">
   <div class="card-header bg-white d-flex justify-content-between align-items-center">
     <span class="fw-bold">文件</span>
-    <select class="form-select form-select-sm w-auto" id="filter-category"><option value="">全部分類</option></select>
+    <span class="small text-secondary" id="table-stats">—</span>
   </div>
-  <div class="table-responsive">
-    <table class="table table-hover align-middle mb-0 small">
-      <thead class="table-light"><tr><th>標題</th><th>分類</th><th>範圍</th><th>標籤</th><th>來源</th><th>狀態</th><th>更新</th><th></th></tr></thead>
-      <tbody id="rows"><tr><td colspan="8" class="text-center text-secondary py-4">載入中…</td></tr></tbody>
-    </table>
+  <div class="card-body">
+    <form class="row g-2 mb-3" id="filter-form" role="search">
+      <div class="col-md-7"><input class="form-control" type="search" name="q" placeholder="關鍵字：標題 / 標籤 / 來源" aria-label="關鍵字"></div>
+      <div class="col-md-3"><select class="form-select" id="filter-category" name="category" aria-label="分類"><option value="">全部分類</option></select></div>
+      <div class="col-md-2 d-flex gap-2">
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="submit">篩選</button>
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="reset">清除</button>
+      </div>
+    </form>
+    <div class="table-responsive">
+      <table class="table table-sm table-hover align-middle mb-0">
+        <thead class="table-light"><tr><th>標題</th><th>分類</th><th>範圍</th><th>標籤</th><th>來源</th><th>狀態</th><th>更新</th><th></th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <p class="small text-secondary mt-3 mb-0 d-none" id="table-empty">沒有符合的文件。可用「匯入 Markdown」上傳通用種子，系統管理員可在「資料匯入」頁匯入全台醫院衛教內文。</p>
   </div>
 </div>
 
@@ -99,17 +60,6 @@
   </form></div>
 </div>
 
-<div class="modal fade" id="import-modal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog"><form class="modal-content" id="import-form">
-    <div class="modal-header"><h2 class="modal-title h6">匯入 Markdown</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="關閉"></button></div>
-    <div class="modal-body">
-      <p class="small text-secondary">可一次選多個 .md。檔案開頭可放 front matter：<code>---<br>title: 標題<br>category: education<br>tags: 出院, 傷口<br>---</code>；沒有就用第一個 # 標題或檔名。同檔名重複上傳會更新同一份。</p>
-      <input class="form-control" type="file" name="files" accept=".md,text/markdown" multiple required>
-      <div class="alert alert-secondary small mt-3 mb-0 d-none" id="import-result"></div>
-    </div>
-    <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">關閉</button><button type="submit" class="btn btn-brand" id="import-submit">開始匯入</button></div>
-  </form></div>
-</div>
 {% endblock %}
 
 {% block scripts %}
@@ -122,6 +72,7 @@ Admin.boot(async function (ctx) {
   var docs = [];
   var modal = new bootstrap.Modal(document.getElementById("doc-modal"));
 
+  var filterForm = document.getElementById("filter-form");
   var filter = document.getElementById("filter-category");
   var docCategory = document.getElementById("doc-category");
   Object.keys(CATEGORIES).forEach(function (k) {
@@ -142,16 +93,21 @@ Admin.boot(async function (ctx) {
   }
   function render() {
     var tbody = document.getElementById("rows");
-    var rows = docs.filter(function (d) { return !filter.value || d.category === filter.value; });
-    if (!rows.length) { tbody.innerHTML = '<tr><td colspan="8" class="text-center text-secondary py-4">還沒有文件。可用「匯入 Markdown」上傳通用種子，系統管理員可在上方匯入全台醫院衛教內文。</td></tr>'; return; }
+    var q = filterForm.elements.q.value.trim().toLowerCase();
+    var rows = docs.filter(function (d) {
+      if (filter.value && d.category !== filter.value) return false;
+      return !q || [d.title, d.tags.join(" "), d.source].join(" ").toLowerCase().indexOf(q) >= 0;
+    });
+    document.getElementById("table-stats").textContent = "共 " + rows.length + " 筆";
+    document.getElementById("table-empty").classList.toggle("d-none", rows.length > 0);
     tbody.innerHTML = rows.map(function (d) {
       var editable = canEdit && (d.hospital_id ? true : isSuper);
       return "<tr class='" + (d.active ? "" : "text-secondary") + "'><td>" + Admin.esc(d.title) + "</td><td>" + Admin.esc(d.category_label) + "</td>" +
         "<td>" + (d.hospital_id ? Admin.esc(Admin.hospitalName(d.hospital_id)) : '<span class="badge text-bg-secondary">通用</span>') + "</td>" +
         "<td>" + d.tags.map(function (t) { return '<span class="badge text-bg-light text-dark border me-1">' + Admin.esc(t) + "</span>"; }).join("") + "</td>" +
-        "<td class='text-secondary'>" + Admin.esc(d.source || "—") + "</td>" +
+        "<td class='small text-secondary text-break'>" + Admin.esc(d.source || "—") + "</td>" +
         "<td>" + (d.active ? '<span class="badge text-bg-success">啟用</span>' : '<span class="badge text-bg-secondary">停用</span>') + "</td>" +
-        "<td class='text-nowrap'>" + Admin.fmtDate(d.updated_at) + "</td>" +
+        "<td class='small text-secondary text-nowrap'>" + Admin.fmtDate(d.updated_at) + "</td>" +
         '<td class="text-end text-nowrap">' + (editable ?
           '<button class="btn btn-sm btn-outline-secondary" data-edit="' + d.id + '">編輯</button> ' +
           '<button class="btn btn-sm btn-outline-secondary" data-toggle="' + d.id + '" data-active="' + d.active + '">' + (d.active ? "停用" : "啟用") + "</button> " +
@@ -171,7 +127,9 @@ Admin.boot(async function (ctx) {
       catch (err) { Admin.toast(err.message, "danger"); }
     }); });
   }
-  filter.addEventListener("change", render);
+  filterForm.addEventListener("submit", function (e) { e.preventDefault(); render(); });
+  // reset 事件在欄位清空前觸發，等清空後再重畫
+  filterForm.addEventListener("reset", function () { setTimeout(render, 0); });
 
   var form = document.getElementById("doc-form");
   async function openDoc(id, readOnly) {
@@ -217,114 +175,6 @@ Admin.boot(async function (ctx) {
       }).join("") : '<div class="text-secondary small">沒有檢索到相關片段，AI 會回答「知識庫沒有資料」並建議詢問原院所。</div>';
     } catch (err) { Admin.toast(err.message, "danger"); }
   });
-
-  document.getElementById("import-form").addEventListener("submit", async function (e) {
-    e.preventDefault();
-    var input = e.target.elements.files, btn = document.getElementById("import-submit"), box = document.getElementById("import-result");
-    var data = new FormData(); Array.prototype.forEach.call(input.files, function (f) { data.append("files", f); });
-    btn.disabled = true; box.classList.add("d-none");
-    try {
-      var resp = await fetch("/api/v1/admin/knowledge/import", { method: "POST", body: data, headers: { Authorization: "Bearer " + sessionStorage.getItem("access_token"), "ngrok-skip-browser-warning": "1" } });
-      var body = await resp.json();
-      if (!resp.ok) throw new Error(body.error ? body.error.message : "匯入失敗");
-      var r = body.data;
-      box.className = "alert alert-" + (r.errors.length ? "warning" : "success") + " small mt-3 mb-0";
-      box.innerHTML = "新增 <b>" + r.created + "</b>、更新 <b>" + r.updated + "</b>" + (r.errors.length ? "<ul class='mb-0 mt-1 ps-3'>" + r.errors.map(function (x) { return "<li>" + Admin.esc(x.file) + "：" + Admin.esc(x.message) + "</li>"; }).join("") + "</ul>" : "");
-      await load();
-    } catch (err) { box.className = "alert alert-danger small mt-3 mb-0"; box.textContent = err.message; }
-    finally { btn.disabled = false; }
-  });
-
-  // ---- 系統資料匯入（只有 reference_data:manage = 系統管理員）：背景工作 + 輪詢進度 ----
-  if (ctx.can("reference_data:manage")) {
-    var sysCard = document.getElementById("system-card");
-    sysCard.classList.remove("d-none");
-    var pollTimer = null;
-    var authHeaders = { Authorization: "Bearer " + sessionStorage.getItem("access_token"), "ngrok-skip-browser-warning": "1" };
-    var STATUS_LABEL = { queued: "排隊中", running: "執行中", succeeded: "完成", failed: "失敗" };
-    var STATUS_CLASS = { queued: "secondary", running: "primary", succeeded: "success", failed: "danger" };
-
-    function describeParams(j) {
-      var p = j.params || {};
-      if (j.kind === "department_txt") return (p.filenames || []).length + " 個檔・≥" + p.min_chars + " 字" + (p.limit ? "・最多 " + p.limit + " 篇" : "");
-      if (j.kind === "rechunk") return "文件 " + p.documents + " 篇";
-      return "每批 " + p.batch + "・待算 " + p.pending;
-    }
-    function describeResult(j) {
-      if (j.status === "failed") return '<span class="text-danger">' + Admin.esc(j.error || "") + "</span>";
-      var r = j.result || j.progress || {};
-      if (j.kind === "department_txt") {
-        if (r.read === undefined) return "—";
-        var c = r.chunks || {};
-        return "新增 " + r.created + "・更新 " + r.updated + "・略過 " + r.skipped + "・重複 " + r.duplicates + "（讀取 " + r.read + " 篇）" +
-          (c.count ? "；片段 " + c.count + " 個、中位數 " + c.median + " 字、過短 " + c.under_min + "、過長 " + c.over_hard_max : "");
-      }
-      if (j.kind === "rechunk" && r.chunks !== undefined && r.documents !== undefined && r.done === undefined) return "文件 " + r.documents + " 篇 → 片段 " + r.chunks + " 個";
-      if (r.embedded !== undefined) return "完成 " + r.embedded + " 個片段";
-      return r.done === undefined ? "—" : r.done + " / " + r.total;
-    }
-    function renderJobs(data) {
-      document.getElementById("system-stats").textContent = "文件 " + data.stats.documents + " 篇・片段 " + data.stats.chunks + " 個・已有向量 " + data.stats.embedded + " 個";
-      var activeBox = document.getElementById("job-active");
-      var running = !!data.active;
-      sysCard.querySelectorAll("button[type=submit]").forEach(function (b) { b.disabled = running; });
-      if (running) {
-        activeBox.classList.remove("d-none");
-        activeBox.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>' +
-          Admin.esc(data.active.kind_label) + "（" + STATUS_LABEL[data.active.status] + "）　" + describeResult(data.active);
-        if (!pollTimer) pollTimer = setInterval(loadJobs, 3000);
-      } else {
-        activeBox.classList.add("d-none");
-        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; load(); }
-      }
-      var wrap = document.getElementById("job-recent-wrap");
-      wrap.classList.toggle("d-none", !data.recent.length);
-      document.getElementById("job-recent").innerHTML = data.recent.map(function (j) {
-        return "<tr><td>" + Admin.esc(j.kind_label) + '</td><td><span class="badge text-bg-' + STATUS_CLASS[j.status] + '">' + STATUS_LABEL[j.status] + "</span></td><td class='text-secondary'>" + describeParams(j) + "</td><td>" + describeResult(j) + "</td><td class='text-nowrap'>" + Admin.fmtDate(j.started_at || j.created_at) + "</td><td class='text-nowrap'>" + Admin.fmtDate(j.finished_at) + "</td></tr>";
-      }).join("");
-    }
-    async function loadJobs() {
-      try { renderJobs(await ctx.api("/api/v1/admin/knowledge/jobs")); }
-      catch (err) { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } Admin.toast(err.message, "danger"); }
-    }
-    async function startJob(url, init) {
-      var resp = await fetch(url, Object.assign({ method: "POST" }, init));
-      var body = await resp.json().catch(function () { return {}; });
-      if (!resp.ok) throw new Error(body.error ? body.error.message : "啟動失敗");
-      Admin.toast("已開始：" + body.data.kind_label);
-      await loadJobs();
-    }
-    document.getElementById("he-form").addEventListener("submit", async function (e) {
-      e.preventDefault();
-      var form = e.target, btn = form.querySelector("button[type=submit]"), progress = document.getElementById("he-progress");
-      var files = Array.prototype.slice.call(form.elements.files.files);
-      var fields = { min_chars: form.elements.min_chars.value || "200" };
-      if (form.elements.limit.value) fields.limit = form.elements.limit.value;
-      var sizeMB = (files.reduce(function (n, f) { return n + f.size; }, 0) / 1048576).toFixed(1);
-      btn.disabled = true;
-      try {
-        // 幾十個檔加起來近 100MB，用 XHR 顯示上傳進度（走本機網址，不要經 ngrok）
-        var job = await Admin.upload("/api/v1/admin/knowledge/jobs/department-import", files, function (pct) {
-          progress.textContent = pct < 100 ? "上傳中 " + pct + "%（" + sizeMB + " MB）" : "上傳完成，伺服器匯入中…";
-        }, fields);
-        Admin.toast("已開始：" + job.kind_label); progress.textContent = ""; form.reset(); await loadJobs();
-      } catch (err) { Admin.toast(err.message, "danger"); progress.textContent = ""; btn.disabled = false; }
-    });
-    document.getElementById("rechunk-btn").addEventListener("click", async function (e) {
-      if (!confirm("用目前的切段規則重建所有片段？已算好的向量會清掉，完成後要再按「計算向量」。")) return;
-      e.target.disabled = true;
-      try { await startJob("/api/v1/admin/knowledge/jobs/rechunk", { headers: Object.assign({ "Content-Type": "application/json" }, authHeaders), body: "{}" }); }
-      catch (err) { Admin.toast(err.message, "danger"); e.target.disabled = false; }
-    });
-    document.getElementById("embed-form").addEventListener("submit", async function (e) {
-      e.preventDefault();
-      var form = e.target;
-      form.querySelector("button").disabled = true;
-      try { await startJob("/api/v1/admin/knowledge/jobs/embed", { body: JSON.stringify({ batch: Number(form.elements.batch.value) || 200 }), headers: Object.assign({ "Content-Type": "application/json" }, authHeaders) }); }
-      catch (err) { Admin.toast(err.message, "danger"); form.querySelector("button").disabled = false; }
-    });
-    await loadJobs();
-  }
 
   await load();
 });
