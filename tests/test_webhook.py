@@ -147,3 +147,17 @@ def test_follow_syncs_line_profile(post_line_event, container):
     assert resp.status_code == 200
     assert container.users.get_by_line_user_id("U-noprofile").display_name is None
     assert container.line_client.replies
+
+
+def test_message_backfills_missing_line_profile(post_line_event, container):
+    """修正前就加好友、沒有名稱的使用者：下一個事件就補抓 LINE 個人資料。"""
+    container.users.get_or_create_by_line("U-old")
+    assert container.users.get_by_line_user_id("U-old").display_name is None
+    post_line_event(
+        _event(
+            "message",
+            user_id="U-old",
+            message={"type": "text", "id": "m1", "text": "主選單", "quoteToken": "q"},
+        )
+    )
+    assert container.users.get_by_line_user_id("U-old").display_name == "LINE U-old"

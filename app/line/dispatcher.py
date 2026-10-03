@@ -10,7 +10,7 @@ from app.core.container import ServiceContainer
 from app.domain.principal import Principal
 from app.line.context import BotContext
 from app.line.handlers.base import EventHandler
-from app.line.handlers.follow import FollowHandler, UnfollowHandler
+from app.line.handlers.follow import FollowHandler, UnfollowHandler, sync_line_profile
 from app.line.handlers.message import MessageHandler, PostbackHandler
 from app.line.router import IntentRouter
 
@@ -71,8 +71,12 @@ class EventDispatcher:
         user = None
         principal = Principal.anonymous()
         if line_user_id:
-            # 首次接觸即建立 GUEST；顯示名稱 / 頭像在加好友時由 FollowHandler 向 LINE 取得
+            # 首次接觸即建立 GUEST；顯示名稱 / 頭像在加好友時由 FollowHandler 向 LINE 取得，
+            # 還沒有名稱的（修正前加好友、或當時抓失敗）在下一個事件補抓一次
             user = self._container.users.get_or_create_by_line(line_user_id)
+            if not user.display_name:
+                sync_line_profile(self._container, line_user_id)
+                user = self._container.users.get_or_create_by_line(line_user_id)
             principal = self._container.users.to_principal(user)
         return BotContext(
             event=event,
