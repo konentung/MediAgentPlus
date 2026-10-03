@@ -9,10 +9,10 @@ from linebot.v3.messaging import Message
 from app.domain.enums import Intent
 from app.domain.reminder_rules import FREQUENCY_LABELS, TIMING_LABELS
 from app.line.intents import postback_data
+from app.line.messages import theme
 from app.line.messages.builder import MessageBuilder as M
 
 DISCLAIMER = "以上依處方箋內容整理，用藥疑問請洽藥師或原院所。"
-BRAND = "#2F6F62"
 
 
 def menu_messages() -> list[Message]:
@@ -87,19 +87,7 @@ def prescription_result_messages(prescription: dict[str, Any], edit_url: str) ->
         seq, total = prescription.get("refill_seq"), prescription.get("refill_total")
         header_lines.append(f"慢箋 第 {seq or '?'}/{total or '?'} 次")
 
-    contents: list[dict[str, Any]] = [
-        {"type": "text", "text": "辨識結果，請確認是否正確", "weight": "bold", "size": "md"},
-    ]
-    if header_lines:
-        contents.append(
-            {
-                "type": "text",
-                "text": "　".join(header_lines),
-                "size": "xs",
-                "color": "#888888",
-                "wrap": True,
-            }
-        )
+    contents: list[dict[str, Any]] = []  # 修改：標題與處方摘要改放品牌表頭
     for index, item in enumerate(items[:10], start=1):
         detail = "　".join(
             part
@@ -112,98 +100,51 @@ def prescription_result_messages(prescription: dict[str, Any], edit_url: str) ->
             if part
         )
         category = f"（{item['category']}）" if item.get("category") else ""
-        contents.append(
-            {
-                "type": "box",
-                "layout": "vertical",
-                "margin": "md",
-                "contents": [
-                    {
-                        "type": "text",
-                        "text": f"{index}. {item['drug_name']}{category}",
-                        "size": "sm",
-                        "weight": "bold",
-                        "wrap": True,
-                    },
-                    {
-                        "type": "text",
-                        "text": detail or "（用法未辨識）",
-                        "size": "xs",
-                        "color": "#666666",
-                        "wrap": True,
-                    },
+        contents.extend(
+            theme.row(
+                [
+                    theme.text(f"{index}. {item['drug_name']}{category}", bold=True),
+                    theme.secondary_text(detail or "（用法未辨識）"),
                 ],
-            }
+                first=index == 1,
+            )
         )
     if len(items) > 10:
         contents.append(
-            {"type": "text", "text": f"…另有 {len(items) - 10} 項，請到編輯頁查看", "size": "xs"}
+            theme.secondary_text(f"…另有 {len(items) - 10} 項，請到編輯頁查看", margin="md")
         )
     for warning in (prescription.get("warnings") or [])[:3]:
-        contents.append(
-            {
-                "type": "text",
-                "text": f"⚠ {warning}",
-                "size": "xs",
-                "color": "#B45309",
-                "wrap": True,
-                "margin": "sm",
-            }
-        )
-    contents.append(
-        {
-            "type": "text",
-            "text": DISCLAIMER,
-            "size": "xxs",
-            "color": "#999999",
-            "wrap": True,
-            "margin": "lg",
-        }
-    )
+        contents.append(theme.text(f"⚠ {warning}", size="xs", color=theme.RED_STRONG, margin="sm"))
+    contents.append(theme.footnote(DISCLAIMER))
     pid = prescription["id"]
-    bubble = {
-        "type": "bubble",
-        "size": "mega",
-        "body": {"type": "box", "layout": "vertical", "contents": contents},
-        "footer": {
-            "type": "box",
-            "layout": "vertical",
-            "spacing": "sm",
-            "contents": [
+    bubble = theme.bubble(
+        contents,
+        header=theme.header("辨識結果，請確認是否正確", "　".join(header_lines) or None),
+        footer=[
+            theme.primary_button(
                 {
-                    "type": "button",
-                    "style": "primary",
-                    "color": BRAND,
-                    "action": {
-                        "type": "postback",
-                        "label": "✅ 正確，找可領藥的藥局",
-                        "data": postback_data(
-                            Intent.MEDICATION, action="confirm", prescription_id=pid
-                        ),
-                        "displayText": "正確，找藥局",
-                    },
+                    "type": "postback",
+                    "label": "✅ 正確，找可領藥的藥局",
+                    "data": postback_data(Intent.MEDICATION, action="confirm", prescription_id=pid),
+                    "displayText": "正確，找藥局",
                 },
+                height="md",
+            ),
+            theme.primary_button(
                 {
-                    "type": "button",
-                    "style": "primary",
-                    "color": BRAND,
-                    "action": {
-                        "type": "postback",
-                        "label": "⏰ 正確，建立服藥提醒",
-                        "data": postback_data(
-                            Intent.REMINDER, action="create", prescription_id=pid
-                        ),
-                        "displayText": "正確，建立服藥提醒",
-                    },
+                    "type": "postback",
+                    "label": "⏰ 正確，建立服藥提醒",
+                    "data": postback_data(Intent.REMINDER, action="create", prescription_id=pid),
+                    "displayText": "正確，建立服藥提醒",
                 },
-                {
-                    "type": "button",
-                    "style": "secondary",
-                    "action": {"type": "uri", "label": "✏️ 有誤，修改內容", "uri": edit_url},
-                },
-            ],
-        },
-    }
+                height="md",
+            ),
+            theme.secondary_button(
+                {"type": "uri", "label": "✏️ 有誤，修改內容", "uri": edit_url}, height="md"
+            ),
+        ],
+        size="mega",
+    )
     return [M.flex("處方辨識結果", bubble)]
 
 
@@ -274,55 +215,24 @@ def _pharmacy_bubble(p: dict[str, Any]) -> dict[str, Any]:
     buttons: list[dict[str, Any]] = []
     if p.get("address"):
         maps = "https://www.google.com/maps/search/?api=1&query=" + _url_quote(p["address"])
-        buttons.append(
-            {
-                "type": "button",
-                "style": "primary",
-                "color": BRAND,
-                "height": "sm",
-                "action": {"type": "uri", "label": "地圖導航", "uri": maps},
-            }
-        )
+        buttons.append(theme.primary_button({"type": "uri", "label": "地圖導航", "uri": maps}))
     if p.get("phone"):
         tel = "".join(ch for ch in p["phone"] if ch.isdigit() or ch == "+")
         if tel:
             buttons.append(
-                {
-                    "type": "button",
-                    "style": "secondary",
-                    "height": "sm",
-                    "action": {"type": "uri", "label": "撥打電話", "uri": f"tel:{tel}"},
-                }
+                theme.secondary_button({"type": "uri", "label": "撥打電話", "uri": f"tel:{tel}"})
             )
-    bubble: dict[str, Any] = {
-        "type": "bubble",
-        "size": "kilo",
-        "body": {
-            "type": "box",
-            "layout": "vertical",
-            "contents": [
-                {"type": "text", "text": p["name"], "weight": "bold", "size": "md", "wrap": True},
-                {
-                    "type": "text",
-                    "text": p.get("address") or "—",
-                    "size": "xs",
-                    "color": "#666666",
-                    "wrap": True,
-                    "margin": "sm",
-                },
-                {"type": "text", "text": open_text, "size": "xs", "margin": "sm"},
-                {"type": "text", "text": f"今日時段：{today}", "size": "xs", "color": "#888888"},
-            ],
-        },
-    }
-    if buttons:
-        bubble["footer"] = {
-            "type": "box",
-            "layout": "vertical",
-            "spacing": "sm",
-            "contents": buttons,
-        }
-    return bubble
+    # 修改：營業狀態放品牌橫條，藥局名稱維持在內文第一列
+    return theme.bubble(
+        [
+            theme.text(p["name"], size="md", bold=True),
+            theme.secondary_text(p.get("address") or "—", margin="sm"),
+            theme.secondary_text(f"今日時段：{today}", margin="sm"),
+        ],
+        header=theme.brand_strip(open_text),
+        footer=buttons or None,
+        size="kilo",
+    )
 
 
 def _url_quote(text: str) -> str:

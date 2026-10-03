@@ -11,6 +11,7 @@ from linebot.v3.messaging import Message, QuickReply, QuickReplyItem
 
 from app.domain.enums import Intent
 from app.domain.retrieval import hit_label
+from app.line.messages import theme
 from app.line.messages.builder import MessageBuilder as M
 
 AI_FAILED_TEXT = "我暫時無法判斷你的問題，可以從下方選單選擇服務，或稍後再試一次。"
@@ -22,7 +23,6 @@ NO_DISCHARGE_DATA_TEXT = (
     "有傷口紅腫、發燒、疼痛加劇或原本症狀變嚴重時請儘快回診；有生命危險請撥打 119。"
 )
 MAX_SOURCES = 3
-BRAND = "#2F6F62"
 
 
 def action_items(
@@ -83,42 +83,16 @@ def answer_messages(
 
 def _answer_bubble(text: str, sources: list[dict[str, Any]]) -> dict[str, Any]:
     buttons = [
-        {
-            "type": "button",
-            "style": "link",
-            "height": "sm",
-            "action": {"type": "uri", "label": hit_label(hit)[:40], "uri": hit["source"]},
-        }
+        theme.link_button({"type": "uri", "label": hit_label(hit)[:40], "uri": hit["source"]})
         for hit in sources
     ]
-    return {
-        "type": "bubble",
-        "size": "mega",
-        "body": {
-            "type": "box",
-            "layout": "vertical",
-            "spacing": "md",
-            "contents": [
-                {"type": "text", "text": text, "wrap": True, "size": "sm"},
-                {
-                    "type": "text",
-                    "text": DISCLAIMER,
-                    "wrap": True,
-                    "size": "xxs",
-                    "color": "#999999",
-                },
-            ],
-        },
-        "footer": {
-            "type": "box",
-            "layout": "vertical",
-            "spacing": "none",
-            "contents": [
-                {"type": "text", "text": "參考來源（點開看原文）", "size": "xs", "color": BRAND},
-                *buttons,
-            ],
-        },
-    }
+    # 修改：品牌橫條 + 白金分隔的參考來源區
+    return theme.bubble(
+        [theme.text(text), theme.footnote(DISCLAIMER, margin="md")],
+        header=theme.brand_strip(f"{theme.BRAND_NAME} 照護小幫手"),
+        footer=[theme.text("參考來源（點開看原文）", size="xs", color=theme.MUTED), *buttons],
+        size="mega",
+    )
 
 
 def failed_messages() -> list[Message]:

@@ -9,6 +9,7 @@ from linebot.v3.messaging import Message
 from app.domain.enums import Intent
 from app.domain.reminder_rules import FREQUENCY_LABELS, TIMING_LABELS
 from app.line.intents import postback_data
+from app.line.messages import theme
 from app.line.messages.builder import MessageBuilder as M
 
 DISCLAIMER = "以上依處方箋內容整理，用藥疑問請洽藥師或原院所。"
@@ -43,80 +44,34 @@ def list_messages(schedules: list[dict[str, Any]], liff_url: str) -> list[Messag
             ],
         )
         return [M.flex("服藥提醒", bubble)]
-    rows = []
-    for s in schedules[:10]:
+    rows: list[dict[str, Any]] = []
+    for index, s in enumerate(schedules[:10]):
         times = "、".join(s.get("times") or []) or "未設定時間"
         status = STATUS_LABELS.get(s.get("status", "active"), "")
-        rows.append(
-            {
-                "type": "box",
-                "layout": "vertical",
-                "margin": "md",
-                "contents": [
-                    {
-                        "type": "text",
-                        "text": s["drug_name"],
-                        "weight": "bold",
-                        "size": "sm",
-                        "wrap": True,
-                    },
-                    {
-                        "type": "text",
-                        "text": f"{times}　{status}",
-                        "size": "xs",
-                        "color": "#888888",
-                        "wrap": True,
-                    },
-                ],
-            }
+        rows.extend(
+            theme.row(
+                [theme.text(s["drug_name"], bold=True), theme.secondary_text(f"{times}　{status}")],
+                first=index == 0,
+            )
         )
-    bubble = {
-        "type": "bubble",
-        "header": {
-            "type": "box",
-            "layout": "vertical",
-            "backgroundColor": "#2F6F62",
-            "contents": [
-                {"type": "text", "text": "我的服藥提醒", "weight": "bold", "color": "#FFFFFF"}
-            ],
-        },
-        "body": {"type": "box", "layout": "vertical", "contents": rows},
-        "footer": {
-            "type": "box",
-            "layout": "vertical",
-            "contents": [
-                {
-                    "type": "button",
-                    "style": "primary",
-                    "color": "#2F6F62",
-                    "action": {"type": "uri", "label": "管理提醒", "uri": liff_url},
-                }
-            ],
-        },
-    }
+    bubble = theme.bubble(
+        rows,
+        header=theme.header("我的服藥提醒", f"共 {len(schedules)} 項"),
+        footer=[theme.primary_button({"type": "uri", "label": "管理提醒", "uri": liff_url})],
+    )
     return [M.flex("我的服藥提醒", bubble)]
 
 
 def due_messages(items: list[dict[str, Any]], liff_url: str) -> list[Message]:
     """到期提醒：同一人同一批多顆藥合成一則；每顆藥各有「已服用 / 稍後 / 跳過」按鈕。"""
     time_label = items[0]["time_label"] if items else ""
-    contents: list[dict[str, Any]] = [
-        {"type": "text", "text": f"⏰ {time_label} 該吃藥了", "weight": "bold", "size": "lg"},
-    ]
-    for item in items:
+    contents: list[dict[str, Any]] = []  # 修改：「該吃藥了」標題改放品牌表頭
+    for index, item in enumerate(items):
         dose = f"　{item['dose_text']}" if item.get("dose_text") else ""
-        contents.append(
-            {
-                "type": "box",
-                "layout": "vertical",
-                "margin": "lg",
-                "contents": [
-                    {
-                        "type": "text",
-                        "text": f"{item['drug_name']}{dose}",
-                        "wrap": True,
-                        "size": "sm",
-                    },
+        contents.extend(
+            theme.row(
+                [
+                    theme.text(f"{item['drug_name']}{dose}", bold=True),
                     {
                         "type": "box",
                         "layout": "horizontal",
@@ -129,53 +84,27 @@ def due_messages(items: list[dict[str, Any]], liff_url: str) -> list[Message]:
                         ],
                     },
                 ],
-            }
+                first=index == 0,
+            )
         )
-    contents.append(
-        {
-            "type": "text",
-            "text": DISCLAIMER,
-            "size": "xxs",
-            "color": "#999999",
-            "wrap": True,
-            "margin": "lg",
-        }
+    contents.append(theme.footnote(DISCLAIMER))
+    bubble = theme.bubble(
+        contents,
+        header=theme.header(f"⏰ {time_label} 該吃藥了", "服藥小幫手"),
+        footer=[theme.link_button({"type": "uri", "label": "查看所有提醒", "uri": liff_url})],
     )
-    bubble = {
-        "type": "bubble",
-        "body": {"type": "box", "layout": "vertical", "contents": contents},
-        "footer": {
-            "type": "box",
-            "layout": "vertical",
-            "contents": [
-                {
-                    "type": "button",
-                    "style": "link",
-                    "height": "sm",
-                    "action": {"type": "uri", "label": "查看所有提醒", "uri": liff_url},
-                }
-            ],
-        },
-    }
     names = "、".join(i["drug_name"] for i in items)[:60]
     return [M.flex(f"服藥提醒 {time_label}：{names}", bubble)]
 
 
 def _small_button(label: str, action: str, delivery_id: str, secondary: bool = False) -> dict:
-    button: dict[str, Any] = {
-        "type": "button",
-        "style": "secondary" if secondary else "primary",
-        "height": "sm",
-        "action": {
-            "type": "postback",
-            "label": label,
-            "data": postback_data(Intent.REMINDER, action=action, delivery_id=delivery_id),
-            "displayText": label,
-        },
+    action_dict = {
+        "type": "postback",
+        "label": label,
+        "data": postback_data(Intent.REMINDER, action=action, delivery_id=delivery_id),
+        "displayText": label,
     }
-    if not secondary:
-        button["color"] = "#2F6F62"
-    return button
+    return theme.secondary_button(action_dict) if secondary else theme.primary_button(action_dict)
 
 
 def refill_messages(prescription: dict[str, Any], liff_url: str) -> list[Message]:

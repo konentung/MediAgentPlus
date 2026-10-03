@@ -11,13 +11,13 @@
     <form class="row g-2 mb-3" id="filter-form" role="search">
       <div class="col-md-10"><input class="form-control" id="filter-q" type="search" placeholder="關鍵字：藥品代號 / 英文名 / 中文名 / 成分，例如 Paroxetine" aria-label="關鍵字"></div>
       <div class="col-md-2 d-flex gap-2">
-        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="submit">篩選</button>
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="submit">搜尋</button>
         <button class="btn btn-outline-secondary flex-fill text-nowrap" type="reset">清除</button>
       </div>
     </form>
     <div class="table-responsive">
       <table class="table table-sm table-hover align-middle mb-0">
-        <thead class="table-light"><tr><th>藥品代號</th><th>英文名稱</th><th>中文名稱</th><th>成分</th><th>劑型</th><th>ATC</th><th>類別</th></tr></thead>
+        <thead class="table-light"><tr><th>藥品代號</th><th>中文名稱</th><th>成分</th><th>劑型</th><th>類別</th><th class="text-end">詳細</th></tr></thead>
         <tbody id="table-body"></tbody>
       </table>
     </div>
@@ -26,6 +26,20 @@
   </div>
 </div>
 
+<!-- 新增：檢視英文名稱 / ATC（從表格欄位移到這裡，表格只留常用欄位） -->
+<div class="modal fade" id="detail-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered"><div class="modal-content">
+    <div class="modal-header"><h2 class="modal-title h6">藥品詳細 <code id="detail-code"></code></h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="關閉"></button></div>
+    <div class="modal-body">
+      <dl class="row mb-0">
+        <dt class="col-sm-3 small text-secondary">中文名稱</dt><dd class="col-sm-9" id="detail-name-zh"></dd>
+        <dt class="col-sm-3 small text-secondary">英文名稱</dt><dd class="col-sm-9" id="detail-name-en"></dd>
+        <dt class="col-sm-3 small text-secondary">ATC</dt><dd class="col-sm-9 mb-0" id="detail-atc"></dd>
+      </dl>
+    </div>
+    <div class="modal-footer"><button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">關閉</button></div>
+  </div></div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -35,18 +49,36 @@ Admin.boot(async function (ctx) {
   var empty = document.getElementById("table-empty"), pager = document.getElementById("pagination");
   var filterForm = document.getElementById("filter-form"), filterQ = document.getElementById("filter-q");
   var state = { q: "", page: 1 };
+  var rows = [];  // 新增：目前這一頁的藥品，供「檢視」按鈕取資料
+  var detailModal = new bootstrap.Modal(document.getElementById("detail-modal"));
+  var detailCode = document.getElementById("detail-code"), detailNameZh = document.getElementById("detail-name-zh");
+  var detailNameEn = document.getElementById("detail-name-en"), detailAtc = document.getElementById("detail-atc");
 
   async function load() {
     var data = await ctx.api("/api/v1/admin/drugs?q=" + encodeURIComponent(state.q) + "&page=" + state.page);
     statsEl.textContent = "共 " + data.total + " 筆";
     empty.classList.toggle("d-none", data.total > 0);
-    body.innerHTML = data.items.map(function (d) {
-      return "<tr><td><code>" + Admin.esc(d.nhi_code) + "</code></td><td>" + Admin.esc(d.name_en) + "</td><td>" + Admin.esc(d.name_zh || "—") +
+    rows = data.items;
+    body.innerHTML = data.items.map(function (d, i) {  // 修改：英文名稱 / ATC 改由「檢視」按鈕開 modal 顯示
+      return "<tr><td><code>" + Admin.esc(d.nhi_code) + "</code></td><td>" + Admin.esc(d.name_zh || "—") +
         "</td><td class='small'>" + Admin.esc(d.ingredient || "—") + "</td><td>" + Admin.esc(d.dosage_form || "—") +
-        "</td><td>" + Admin.esc(d.atc_code || "—") + "</td><td>" + Admin.esc(d.category || "—") + "</td></tr>";
+        "</td><td>" + Admin.esc(d.category || "—") +
+        "</td><td class='text-end'><button type='button' class='btn btn-sm btn-outline-secondary' data-index='" + i + "'>檢視</button></td></tr>";
     }).join("");
     Admin.pagination(pager, data, function (page) { state.page = page; load().catch(function (err) { Admin.toast(err.message, "danger"); }); });
   }
+
+  body.addEventListener("click", function (e) {  // 新增：事件代理，列重繪後不必重綁
+    var btn = e.target.closest("button[data-index]");
+    if (!btn) return;
+    var d = rows[Number(btn.dataset.index)];
+    if (!d) return;
+    detailCode.textContent = d.nhi_code;
+    detailNameZh.textContent = d.name_zh || "—";
+    detailNameEn.textContent = d.name_en || "—";
+    detailAtc.textContent = d.atc_code || "—";
+    detailModal.show();
+  });
 
   filterForm.addEventListener("submit", function (e) {
     e.preventDefault();

@@ -17,15 +17,15 @@
       <div class="d-flex flex-wrap align-items-start justify-content-between gap-3">
         <div>
           <h1 class="h4 mb-1"><span id="p-name"></span> <span class="badge ms-1" id="p-status"></span></h1>
-          <div class="text-secondary small" id="p-meta"></div>
           <div class="mt-2 d-flex flex-wrap gap-1" id="p-flags"></div>
         </div>
-        <div class="d-flex flex-wrap gap-2" id="header-actions">
+        <div class="d-flex flex-wrap gap-2 flex-grow-1 justify-content-end" id="header-actions">
           <button class="btn btn-brand" data-perm="patient:verify" data-bs-toggle="modal" data-bs-target="#verify-modal" id="btn-verify">核對身份 / 建檔</button>
-          <button class="btn btn-outline-danger" data-perm="patient:verify" data-bs-toggle="modal" data-bs-target="#reject-modal" id="btn-reject">退回補正</button>
+          <button class="btn btn-outline-danger" data-perm="patient:verify" data-bs-toggle="modal" data-bs-target="#reject-modal" id="btn-reject">退回修正</button>
           <button class="btn btn-outline-primary" data-perm="patient:verify" id="btn-request-confirm">請病人確認就醫院所</button>
-          <button class="btn btn-outline-danger" data-perm="patient:verify" id="btn-lock">鎖定帳號</button>
-          <button class="btn btn-outline-success" data-perm="patient:verify" id="btn-unlock">解除鎖定</button>
+          <!-- 黑名單：與一般流程按鈕分開、固定在最右邊（LOCKED 在後台顯示為黑名單） -->
+          <button class="btn btn-outline-dark ms-md-3" data-perm="patient:verify" id="btn-lock">加入黑名單</button>
+          <button class="btn btn-outline-success ms-md-3" data-perm="patient:verify" id="btn-unlock">移出黑名單</button>
         </div>
       </div>
       <div class="alert alert-secondary small mt-3 mb-0 d-none" id="record-info"></div>
@@ -133,7 +133,7 @@
 
 <div class="modal fade" id="reject-modal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog"><form class="modal-content" id="reject-form">
-    <div class="modal-header"><h2 class="modal-title h6">退回補正</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="關閉"></button></div>
+    <div class="modal-header"><h2 class="modal-title h6">退回修正</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="關閉"></button></div>
     <div class="modal-body">
       <label class="form-label" for="r-reason">退回原因（會透過 LINE 通知病人）</label>
       <textarea class="form-control" id="r-reason" name="reason" rows="3" required maxlength="500"></textarea>
@@ -208,6 +208,8 @@ Admin.boot(async function (ctx) {
   var USER_ID = {{ user_id | tojson }};
   var API = "/api/v1/admin/patients/" + USER_ID;
   var SCHEMA = JSON.parse(document.getElementById("intake-schema").textContent);
+  var DISTRICT_DATA = [];
+  ctx.api("/api/v1/admin/districts").then(function (d) { DISTRICT_DATA = d; }).catch(function () {});
   var FIELDS = {};
   SCHEMA.forEach(function (s) { s.fields.forEach(function (f) { FIELDS[f.key] = f; }); });
   var detail = null;
@@ -261,12 +263,7 @@ Admin.boot(async function (ctx) {
     var badge = document.getElementById("p-status");
     badge.className = "badge ms-1 " + (BADGE[u.binding_status] || "text-bg-secondary");
     badge.textContent = label("binding_statuses", u.binding_status);
-    document.getElementById("p-meta").textContent = [
-      "身分證 " + (p.national_id || "—"), "出生 " + (p.birth_date || "—"), "手機 " + (p.phone || "—"),
-      p.filler_relation === "family" ? "家屬代填（" + (p.filler_name || "") + "）" : "本人填寫",
-      "LINE 角色 " + label("roles", u.role),
-      "就醫院所 " + (p.preferred_hospital_id ? Admin.hospitalName(p.preferred_hospital_id) + (p.hospital_confirmed ? "（病人已確認）" : "（尚未確認）") : "未指定（尚未確認）")
-    ].join("　·　");
+    // 修改：標題下方的灰色摘要列（身分證 / 出生 / 手機 / 填寫人 / 角色 / 院所）已移除，各欄位在下方分區顯示
     document.getElementById("p-flags").innerHTML = detail.flags.filter(function (f) { return f.active; }).map(function (f) {
       return '<span class="badge ' + (LEVEL[f.level] || "text-bg-secondary") + '">' + esc(label("flag_types", f.flag_type)) + (f.note ? "：" + esc(f.note) : "") + "</span>";
     }).join("");
@@ -288,7 +285,7 @@ Admin.boot(async function (ctx) {
     var confirmedHere = !!(p.hospital_confirmed && p.preferred_hospital_id && (!myHospital || p.preferred_hospital_id === myHospital));
     document.getElementById("btn-request-confirm").classList.toggle("d-none", !!r || !p.submitted_at || confirmedHere || isLocked || !ctx.can("patient:verify"));
     document.getElementById("btn-verify").disabled = !p.submitted_at || isLocked || (!r && !isPending) || (!r && !confirmedHere);
-    document.getElementById("btn-verify").title = isLocked ? "請先解除鎖定" : (!p.submitted_at ? "病人尚未送出表單" : (!r && !confirmedHere ? "病人尚未確認在本院就醫，請先按「請病人確認就醫院所」" : ""));
+    document.getElementById("btn-verify").title = isLocked ? "請先移出黑名單" : (!p.submitted_at ? "病人尚未送出表單" : (!r && !confirmedHere ? "病人尚未確認在本院就醫，請先按「請病人確認就醫院所」" : ""));
     if (!r && !ctx.me.hospital_id) {
       document.getElementById("v-hospital-wrap").classList.remove("d-none");
       Admin.hospitalOptions(document.getElementById("v-hospital"), true);
@@ -402,7 +399,13 @@ Admin.boot(async function (ctx) {
     var f = FIELDS[cField.value]; var wrap = document.getElementById("c-value-wrap");
     var current = detail ? detail.profile[f.key] : null;
     var input;
-    if (f.type === "select") {
+    if (f.type === "select" && f.options_source === "districts") {
+      // 縣市 / 鄉鎮市區：選項來自 tw_districts.csv，用 datalist 提示可選值；鄉鎮市區只列目前縣市底下的
+      var list = f.key === "address_city" ? DISTRICT_DATA.map(function (d) { return d.city; })
+        : ((DISTRICT_DATA.filter(function (d) { return d.city === (detail && detail.profile.address_city); })[0] || {}).districts || []);
+      input = '<input class="form-control" id="c-value" list="c-value-list" value="' + esc(current == null ? "" : current) + '">' +
+        '<datalist id="c-value-list">' + list.map(function (v) { return '<option value="' + esc(v) + '">'; }).join("") + "</datalist>";
+    } else if (f.type === "select") {
       input = '<select class="form-select" id="c-value"><option value="">（清空）</option>' + f.options.map(function (o) { return '<option value="' + o.value + '"' + (o.value === current ? " selected" : "") + ">" + esc(o.label) + "</option>"; }).join("") + "</select>";
     } else if (f.type === "bool") {
       input = '<select class="form-select" id="c-value"><option value="true"' + (current === true ? " selected" : "") + '>是</option><option value="false"' + (current === false ? " selected" : "") + ">否</option></select>";
@@ -449,9 +452,9 @@ Admin.boot(async function (ctx) {
     act("POST", API + "/notes", Admin.formData(e.target), "已新增備註").then(function () { document.getElementById("note-body").value = ""; });
   });
   document.getElementById("btn-lock").addEventListener("click", function () {
-    var reason = window.prompt("鎖定原因（會記入稽核紀錄）");
+    var reason = window.prompt("加入黑名單的原因（會記入稽核紀錄）");
     if (reason === null) return;
-    act("POST", API + "/lock", { reason: reason }, "已鎖定帳號");
+    act("POST", API + "/lock", { reason: reason }, "已加入黑名單");
   });
   var CONFIRM_SENT = "已推播給病人，病人在 LINE 上按「是，我在這裡就醫」後即可核對建檔";
   document.getElementById("btn-request-confirm").addEventListener("click", function () {
@@ -471,8 +474,8 @@ Admin.boot(async function (ctx) {
     act("POST", API + "/request-hospital-confirmation", Admin.formData(e.target), CONFIRM_SENT, "confirm-hospital-modal");
   });
   document.getElementById("btn-unlock").addEventListener("click", function () {
-    if (!window.confirm("解除鎖定後病人可以重新填寫資料，確定？")) return;
-    act("POST", API + "/unlock", {}, "已解除鎖定");
+    if (!window.confirm("移出黑名單後病人可以重新填寫資料，確定？")) return;
+    act("POST", API + "/unlock", {}, "已移出黑名單");
   });
   await load();
 });

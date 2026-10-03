@@ -17,7 +17,7 @@
 | 設定頁（檢視 / 修改基本資料） | `intents/settings.py` → LIFF `/liff/settings`（`app/liff_pages.py`） |
 | B1–B6 填寫基本資料（LIFF 6 步表單） | `/liff/intake`（`app/templates/liff/intake.html`）、`app/domain/intake_schema.py`、`IntakeService`、`api/v1/liff.py` |
 | B7 院方核對身份 → 建檔 | 後台 `/admin/patients/<user_id>`（`app/admin_pages.py`）、`PatientRecordService.verify()`、`api/v1/admin.py` |
-| B8 退回補正 | `PatientRecordService.reject()`，推播原因給病人 |
+| B8 退回修正 | `PatientRecordService.reject()`，推播原因給病人 |
 | B9 完成通知 | `verify()` 內 `line_client.push()` |
 | 基本資料已填且驗證通過？ | `Principal.is_verified`（`BindingStatus.VERIFIED`） |
 

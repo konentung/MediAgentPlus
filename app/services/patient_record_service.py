@@ -208,7 +208,7 @@ class PatientRecordService:
         if not reason:
             raise ValidationError("請填寫退回原因")
         if user.binding_status is not BindingStatus.PENDING:
-            raise ConflictError("只有待核對的病人可以退回補正")
+            raise ConflictError("只有待核對的病人可以退回修正")
         result = self._patients.review_latest_submission(
             user_id, status="rejected", reviewed_by=actor.user_id or "", note=reason
         )
@@ -227,17 +227,18 @@ class PatientRecordService:
         name: str | None = None,
         last4: str | None = None,
     ) -> list[dict[str, Any]]:
-        """「新增病人」的第一步：用手機或「姓名 + 身分證末四碼」精準找出還沒被任何院所新增的病人。
+        """「搜尋病人」的第一步：用手機 / 姓名 / 身分證末四碼精準找出還沒被任何院所加入的病人。
 
-        不做模糊搜尋，避免院所瀏覽不屬於自己的病人資料；找到後由 `request_hospital_confirmation()`
+        至少填一個條件，填多個則同時符合；每個欄位都是完全相等、不做模糊搜尋，
+        避免院所瀏覽不屬於自己的病人資料。找到後由 `request_hospital_confirmation()`
         把病人加進本院並推播請病人確認。
         """
         self._scope(actor)  # 院方帳號必須有所屬院所（SUPER_ADMIN 不限）
         phone = self._text(phone, 20)
         name = self._text(name, 50)
         last4 = self._text(last4, 4)
-        if not phone and not (name and last4):
-            raise ValidationError("請輸入手機號碼，或姓名加身分證末四碼")
+        if not (phone or name or last4):
+            raise ValidationError("請至少輸入手機號碼、姓名或身分證末四碼其中一項")
         return self._patients.find_unclaimed(phone=phone, name=name, last4=last4)
 
     def request_hospital_confirmation(

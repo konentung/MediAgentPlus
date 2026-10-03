@@ -21,6 +21,7 @@ from typing import Any
 
 from app.core.exceptions import ValidationError
 from app.utils.clock import today_tw
+from app.utils.geo import districts_by_city
 
 Option = tuple[str, str]  # (value, label)
 
@@ -45,8 +46,9 @@ class Field:
     required_if: tuple[str, str] | None = None
     none_flag: str | None = None  # list 型別：勾選此 key 代表「無」，允許空清單
     must_be_true: bool = False  # bool 型別：必須勾選（同意條款）
-    # select 型別：選項改由 API 動態提供（目前只有 "hospitals" → /api/v1/liff/hospitals），
-    # 伺服器端只檢查格式，實際值是否存在由 Service 驗證
+    # select 型別：選項不寫在 schema、由外部資料提供。目前只有 "districts"
+    # （縣市 / 鄉鎮市區，`app/utils/geo.districts_by_city()` = tw_districts.csv），
+    # 頁面把整份縣市 → 鄉鎮市區塞進模板做連動下拉，伺服器端在 `validate_step` 檢查值真的存在
     options_source: str | None = None
 
     def option_label(self, value: Any) -> str:
@@ -197,8 +199,22 @@ INTAKE_STEPS: tuple[Step, ...] = (
                 "phone", "手機", "text", required=True, pattern=PHONE_PATTERN, help="例：0912345678"
             ),
             Field("email", "Email", "text", pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$"),
-            Field("address_city", "縣市", "text", required=True, max_length=20),
-            Field("address_district", "鄉鎮市區", "text", required=True, max_length=20),
+            Field(
+                "address_city",
+                "縣市",
+                "select",
+                required=True,
+                max_length=20,
+                options_source="districts",
+            ),  # fmt: skip
+            Field(
+                "address_district",
+                "鄉鎮市區",
+                "select",
+                required=True,
+                max_length=20,
+                options_source="districts",
+            ),  # fmt: skip
             Field("address_street", "地址", "text", required=True, max_length=200),
             Field(
                 "emergency_contacts",
@@ -460,27 +476,15 @@ def get_step(number: int) -> Step:
     return step
 
 
-_ID_LETTER_VALUES = {
-    "A": 10, "B": 11, "C": 12, "D": 13, "E": 14, "F": 15, "G": 16, "H": 17, "I": 34,
-    "J": 18, "K": 19, "L": 20, "M": 21, "N": 22, "O": 35, "P": 23, "Q": 24, "R": 25,
-    "S": 26, "T": 27, "U": 28, "V": 29, "W": 32, "X": 30, "Y": 31, "Z": 33,
-}  # fmt: skip
-_WEIGHTS = (1, 9, 8, 7, 6, 5, 4, 3, 2, 1, 1)
+# 身分證（A123456789）/ 新式居留證（A800000014）/ 舊式居留證（AB12345678）：
+# 1 個英文字母 + 1 個英文字母或數字 + 8 個數字。只檢查格式、不算檢核碼（2026-10-03 決定），
+# 真偽由院方核對建檔時對照 HIS 判斷。
+_NATIONAL_ID_PATTERN = re.compile(r"[A-Z][A-Z0-9]\d{8}")
 
 
 def is_valid_national_id(value: str) -> bool:
-    """台灣身分證（A123456789）與新式居留證（A800000014）共用同一套檢核碼；舊式居留證（AB12345678）第二碼為字母。"""
-    value = value.strip().upper()
-    if not re.fullmatch(r"[A-Z][A-Z0-9]\d{8}", value):
-        return False
-    first = _ID_LETTER_VALUES[value[0]]
-    digits = [first // 10, first % 10]
-    if value[1].isalpha():
-        digits.append(_ID_LETTER_VALUES[value[1]] % 10)  # 舊式居留證：第二碼字母取個位數
-    else:
-        digits.append(int(value[1]))
-    digits.extend(int(ch) for ch in value[2:])
-    return sum(d * w for d, w in zip(digits, _WEIGHTS, strict=True)) % 10 == 0
+    """身分證 / 居留證字號是否符合格式（不驗證檢核碼）。"""
+    return _NATIONAL_ID_PATTERN.fullmatch(value.strip().upper()) is not None
 
 
 def _is_blank(value: Any) -> bool:
@@ -526,7 +530,8 @@ def _clean_scalar(f: Field, value: Any, errors: dict[str, str]) -> Any:
         return int(number) if number.is_integer() else number
     if f.type == "select":
         if f.options_source:
-            text = str(value).strip()
+            # 「臺」統一成「台」，與 tw_districts.csv / PharmacyService.parse_address 一致
+            text = str(value).strip().replace("臺", "台")
             if not text or len(text) > f.max_length:
                 errors[f.key] = "選項不合法"
             return text
@@ -625,9 +630,28 @@ def validate_step(
             if f.must_be_true and not partial and cleaned[f.key] is not True:
                 errors[f.key] = "必須勾選同意才能送出"
 
+    _check_address(cleaned, errors)
     if errors:
         raise ValidationError(f"步驟 {step.number} 資料有誤", details={"fields": errors})
     return cleaned
+
+
+def _check_address(cleaned: dict[str, Any], errors: dict[str, str]) -> None:
+    """縣市必須在 tw_districts.csv 裡、鄉鎮市區必須屬於該縣市。
+
+    跨欄位檢查，所以不放在 `_clean_scalar`。
+    """
+    city = cleaned.get("address_city")
+    district = cleaned.get("address_district")
+    if "address_city" not in cleaned and "address_district" not in cleaned:
+        return
+    grouped = districts_by_city()
+    if city and city not in grouped:
+        errors.setdefault("address_city", "請從清單選擇縣市")
+    if district and city in grouped and district not in grouped[city]:
+        errors.setdefault("address_district", "鄉鎮市區與縣市不符")
+    if district and not city and "address_city" in cleaned:
+        errors.setdefault("address_city", "請先選擇縣市")
 
 
 def validate_all(data: dict[str, Any], *, skip_required: frozenset[str] = frozenset()) -> None:

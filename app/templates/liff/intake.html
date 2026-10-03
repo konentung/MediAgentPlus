@@ -41,6 +41,7 @@
 </section>
 
 <script id="intake-schema" type="application/json">{{ schema_json | safe }}</script>
+<script id="districts-data" type="application/json">{{ districts_json | safe }}</script>
 <template id="consent-text">
   <details class="small text-secondary mb-3">
     <summary class="fw-bold text-body">個人資料蒐集、處理及利用告知事項（版本 {{ consent_version }}）</summary>
@@ -59,6 +60,10 @@
 <script>
 (function () {
   var STEPS = JSON.parse(document.getElementById("intake-schema").textContent);
+  // 縣市 → 鄉鎮市區（tw_districts.csv，與後台篩選同一份）：縣市 / 鄉鎮市區欄位是連動下拉，不讓病人手打
+  var DISTRICTS = JSON.parse(document.getElementById("districts-data").textContent);
+  var DISTRICTS_BY_CITY = {};
+  DISTRICTS.forEach(function (d) { DISTRICTS_BY_CITY[d.city] = d.districts; });
   var state = { index: 0, data: {}, completed: [], api: null, submitted: false, readOnly: false };
   var els = {
     form: document.getElementById("step-form"),
@@ -103,6 +108,19 @@
     }
     if (field.type === "select") {
       var sel = el("select", { class: "form-select", name: name, id: "f-" + name });
+      if (field.options_source === "districts") {
+        if (field.key === "address_city") {
+          fillOptions(sel, DISTRICTS.map(function (d) { return d.city; }), value);
+          // 換縣市 → 重填鄉鎮市區選項並清掉原本的選擇
+          sel.addEventListener("change", function () {
+            var district = els.form.querySelector('[name="address_district"]');
+            if (district) fillOptions(district, DISTRICTS_BY_CITY[sel.value] || [], "");
+          });
+        } else {
+          fillOptions(sel, DISTRICTS_BY_CITY[state.data.address_city] || [], value);
+        }
+        return sel;
+      }
       sel.appendChild(el("option", { value: "", text: "請選擇" }));
       field.options.forEach(function (o) {
         var opt = el("option", { value: o.value, text: o.label });
@@ -117,6 +135,17 @@
     if (field.key === "national_id") input.autocomplete = "off";
     input.value = value == null ? "" : value;
     return input;
+  }
+
+  // 下拉選單用純字串清單填選項（值 = 顯示文字），保留目前選到的值
+  function fillOptions(sel, values, selected) {
+    sel.innerHTML = "";
+    sel.appendChild(el("option", { value: "", text: "請選擇" }));
+    values.forEach(function (v) {
+      var opt = el("option", { value: v, text: v });
+      if (v === selected) opt.selected = true;
+      sel.appendChild(opt);
+    });
   }
 
   function renderMulti(field, value) {

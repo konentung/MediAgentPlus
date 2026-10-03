@@ -3,7 +3,7 @@
 > 狀態：**已實作（2026-09-23）**。本文件是設計依據；實際程式位置見 CLAUDE.md「病人自填表與院方後台」。
 > 與設計不同之處：
 > - `patient_media`（藥袋照片）尚未做，等 Roadmap 第 4 項 OCR 定案再補。
-> - `Hospital` 實體已建立（`hospitals` 表）。`preferred_hospital_id` 不再是表單欄位、也沒有 QR 連結（2026-09-28 起）：病人加好友填表即可；院方在後台「新增病人」用手機或姓名 + 末四碼精準找到本人並加入本院（寫入 `preferred_hospital_id`），推播 LINE 請病人按「是，我在這裡就醫」記下 `hospital_confirmed_at`。只有新增的院所看得到這位病人，其他院所看不到也不能動，SUPER_ADMIN 看全部。原設計的自由文字 `preferred_hospital_name` 已移除。
+> - `Hospital` 實體已建立（`hospitals` 表）。`preferred_hospital_id` 不再是表單欄位、也沒有 QR 連結（2026-09-28 起）：病人加好友填表即可；院方在後台「搜尋病人」用手機 / 姓名 / 末四碼（至少一個）精準找到本人並加入本院（寫入 `preferred_hospital_id`），推播 LINE 請病人按「是，我在這裡就醫」記下 `hospital_confirmed_at`。只有新增的院所看得到這位病人，其他院所看不到也不能動，SUPER_ADMIN 看全部。原設計的自由文字 `preferred_hospital_name` 已移除。
 > - 後台登入沿用 `sessionStorage` + Bearer（§5.3），沒有另做 cookie session。
 > - 身分證明碼沒有任何讀取端點與權限（2026-09-28 起），後台一律只看遮罩。
 
@@ -38,7 +38,7 @@
 | 代填者與病人關係 | `filler_relationship` | select：配偶 / 子女 / 父母 / 手足 / 看護 / 其他 | 家屬代填時 ✓ | |
 | 代填者手機 | `filler_phone` | text | 家屬代填時 ✓ | `^09\d{8}$` |
 | 病人姓名 | `full_name` | text | ✓ | 2–50 字 |
-| 身分證 / 居留證字號 | `national_id` | text | ✓ | 台灣身分證檢核碼；外籍以居留證格式檢核；**只存末四碼與指紋，不存明碼 / 密文** |
+| 身分證 / 居留證字號 | `national_id` | text | ✓ | 只檢查格式（1 字母 + 1 字母或數字 + 8 數字），不算檢核碼，真偽由院方核對時判斷；**只存末四碼與指紋，不存明碼 / 密文** |
 | 出生日期 | `birth_date` | date | ✓ | 早於今天；年齡 < 18 提示需監護人 |
 | 生理性別 | `sex` | select：男 / 女 / 其他 | ✓ | 用於用藥與懷孕相關欄位顯示 |
 | 慣用語言 | `preferred_language` | select：國語 / 台語 / 客語 / 英語 / 其他 | | 供客服與衛教內容選擇 |
@@ -49,7 +49,7 @@
 |---|---|---|---|---|
 | 手機 | `phone` | text | ✓ | `^09\d{8}$`；與 LINE 帳號無關，供院方電話聯絡 |
 | Email | `email` | text | | RFC 格式 |
-| 通訊地址 | `address` | 結構：`city` / `district` / `street` | ✓ | 縣市、鄉鎮市區用 select |
+| 通訊地址 | `address` | 結構：`city` / `district` / `street` | ✓ | 縣市、鄉鎮市區為連動下拉（`options_source="districts"`，資料 `tw_districts.csv`），伺服器端驗證縣市存在、鄉鎮市區屬於該縣市，「臺」正規化為「台」 |
 | 緊急聯絡人 | `emergency_contacts` | list（0–3 筆） | | 選填但建議填；每筆：`name`、`relationship`、`phone`、`is_primary` |
 
 ### 步驟 3 — 基本健康狀況

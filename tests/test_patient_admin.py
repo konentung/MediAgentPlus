@@ -620,6 +620,27 @@ def test_hospital_roles_assign_hospital_before_record(
     assert client.post(f"{base}/encounters", json=encounter, headers=headers).status_code == 201
 
 
+def test_unclaimed_search_accepts_any_single_field(client, make_user, auth_header):
+    """搜尋病人：手機 / 姓名 / 末四碼任一欄位都能單獨搜尋，多欄位同時成立，全空回 422。"""
+    actor = make_user(Role.HOSPITAL_STAFF, BindingStatus.UNBOUND, hospital_id=H1)
+    user = make_user(Role.GUEST, line_user_id="Upatient")
+    assert fill_all(client, auth_header(user)).status_code == 200
+    headers = auth_header(actor)
+    url = "/api/v1/admin/patients/unclaimed"
+
+    def ids(query: str) -> list[str]:
+        resp = client.get(f"{url}?{query}", headers=headers)
+        assert resp.status_code == 200, resp.get_json()
+        return [p["user_id"] for p in resp.get_json()["data"]]
+
+    assert ids("name=王小明") == [user.id]
+    assert ids("last4=6789") == [user.id]
+    assert ids("name=王小明&last4=6789&phone=0912345678") == [user.id]
+    assert ids("name=王小明&last4=0000") == []  # 多欄位要同時成立
+    assert ids("name=王小") == []  # 完全相等，不做模糊搜尋
+    assert client.get(url, headers=headers).status_code == 422
+
+
 def _answer_hospital(post_line_event, answer: str) -> None:
     post_line_event(
         _event(

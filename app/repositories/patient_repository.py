@@ -201,9 +201,9 @@ class SqlAlchemyPatientRepository:
     def find_unclaimed(
         self, *, phone: str | None, name: str | None, last4: str | None
     ) -> list[dict[str, Any]]:
-        """院所「新增病人」用：已送出、還沒被任何院所新增的病人。
+        """院所「搜尋病人」用：已送出、還沒被任何院所加入的病人。
 
-        只能用手機或「姓名 + 末四碼」精準比對，不做模糊搜尋。
+        手機 / 姓名 / 末四碼至少給一個、多個同時成立，每個都是完全相等、不做模糊搜尋。
         """
         stmt = (
             db.select(PatientProfileModel, UserModel)
@@ -216,15 +216,15 @@ class SqlAlchemyPatientRepository:
             .order_by(PatientProfileModel.submitted_at.desc())
             .limit(10)
         )
-        if phone:
-            stmt = stmt.where(PatientProfileModel.phone == phone)
-        elif name and last4:
-            stmt = stmt.where(
-                PatientProfileModel.full_name == name,
-                PatientProfileModel.national_id_last4 == last4,
-            )
-        else:
+        conditions = [
+            (phone, PatientProfileModel.phone),
+            (name, PatientProfileModel.full_name),
+            (last4, PatientProfileModel.national_id_last4),
+        ]
+        filters = [column == value for value, column in conditions if value]
+        if not filters:
             return []
+        stmt = stmt.where(*filters)
         return [
             {
                 "user_id": profile.user_id,

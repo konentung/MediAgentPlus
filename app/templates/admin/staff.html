@@ -1,6 +1,14 @@
 {% extends "admin/base.html" %}
 {% block title %}人員與角色{% endblock %}
 
+{% block head %}
+<style>
+  /* 欄寬固定：不隨內容（長院所名稱、指派表單）改變；長文字截斷、滑鼠移上去看全文 */
+  #staff-table { table-layout: fixed; min-width: 960px; }
+  #staff-table th { white-space: nowrap; }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h1 class="h4 mb-0">人員與角色</h1>
@@ -17,12 +25,15 @@
         </div>
       </div>
       <div class="col-md-2 d-flex gap-2">
-        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="submit">篩選</button>
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="submit">搜尋</button>
         <button class="btn btn-outline-secondary flex-fill text-nowrap" type="reset">清除</button>
       </div>
     </form>
     <div class="table-responsive">
-      <table class="table table-sm table-hover align-middle mb-0">
+      <table class="table table-sm table-hover align-middle mb-0" id="staff-table">
+        <colgroup>
+          <col style="width: 10%"><col style="width: 22%"><col style="width: 13%"><col style="width: 18%"><col style="width: 8%"><col style="width: 29%">
+        </colgroup>
         <thead class="table-light"><tr><th>顯示名稱</th><th>使用者 ID</th><th>角色</th><th>院所</th><th>綁定狀態</th><th>指派角色</th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
@@ -54,11 +65,14 @@ Admin.boot(async function (ctx) {
       var editable = ASSIGNABLE.indexOf(u.role) >= 0 && u.user_id !== ctx.me.user_id;
       var options = ASSIGNABLE.map(function (r) { return '<option value="' + r + '"' + (r === u.role ? " selected" : "") + ">" + Admin.esc(Admin.label("roles", r)) + "</option>"; }).join("");
       var assign = !editable ? '<span class="small text-secondary">' + (u.user_id === ctx.me.user_id ? "不能修改自己的角色" : "無法指派") + "</span>" :
-        '<form class="row g-2" data-user="' + Admin.esc(u.user_id) + '" novalidate><div class="col-md"><select class="form-select form-select-sm" name="role" aria-label="角色">' + options + "</select></div>" +
-        (isSuper ? '<div class="col-md"><input class="form-control form-control-sm" data-hospital-picker data-current="' + Admin.esc(u.hospital_id || "") + '" placeholder="院所名稱或代碼（留空 = 不指派）" aria-label="院所"><input type="hidden" name="hospital_id"></div>' : "") +
-        '<div class="col-md-auto"><button class="btn btn-sm btn-brand" type="submit">儲存</button></div></form>';
-      return "<tr><td>" + Admin.esc(u.display_name || "—") + "</td><td class='small text-secondary'>" + Admin.esc(u.user_id) + "</td>" +
-        "<td>" + Admin.esc(Admin.label("roles", u.role)) + "</td><td>" + Admin.esc(Admin.hospitalName(u.hospital_id)) + "</td>" +
+        '<form class="d-flex gap-2 align-items-center" data-user="' + Admin.esc(u.user_id) + '" novalidate><select class="form-select form-select-sm flex-fill" name="role" aria-label="角色">' + options + "</select>" +
+        (isSuper ? '<input class="form-control form-control-sm flex-fill" data-hospital-picker data-current="' + Admin.esc(u.hospital_id || "") + '" placeholder="院所名稱或代碼（留空 = 不指派）" aria-label="院所"><input type="hidden" name="hospital_id">' : "") +
+        '<button class="btn btn-sm btn-brand flex-shrink-0" type="submit">儲存</button></form>';
+      var hospital = Admin.hospitalName(u.hospital_id);
+      return "<tr><td class='text-truncate' title='" + Admin.esc(u.display_name || "") + "'>" + Admin.esc(u.display_name || "—") + "</td>" +
+        "<td class='small text-secondary text-truncate' title='" + Admin.esc(u.user_id) + "'>" + Admin.esc(u.user_id) + "</td>" +
+        "<td class='text-truncate'>" + Admin.esc(Admin.label("roles", u.role)) + "</td>" +
+        "<td class='text-truncate' title='" + Admin.esc(hospital) + "'>" + Admin.esc(hospital) + "</td>" +
         "<td>" + Admin.esc(Admin.label("binding_statuses", u.binding_status)) + "</td><td>" + assign + "</td></tr>";
     }).join("");
     tbody.querySelectorAll("form[data-user]").forEach(function (form) {

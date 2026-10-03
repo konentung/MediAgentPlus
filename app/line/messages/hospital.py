@@ -9,11 +9,10 @@ from linebot.v3.messaging import Message
 from app.domain import triage_rules as rules
 from app.domain.enums import Intent
 from app.line.intents import postback_data
+from app.line.messages import theme
 from app.line.messages.builder import MessageBuilder as M
 from app.utils.geo import format_distance
 
-BRAND = "#2F6F62"
-ALERT = "#B42318"
 MAX_ROWS = 10
 EMERGENCY_HINT = "🚨 有生命危險請直接撥打 119，救護車會依現場狀況送到最適合的醫院。"
 BOARD_HINT = "燈號依「等住院 / 等 ICU / 等看診 / 119 滿床通報」判斷，供就醫前參考。"
@@ -89,15 +88,8 @@ def board_messages(board: dict[str, Any], liff_url: str, *, emergency: bool) -> 
         ]
     updated = board.get("reported_at_label") or ""
     stale = "（資料可能延遲）" if board.get("stale") else ""
-    contents: list[dict[str, Any]] = [
-        {
-            "type": "text",
-            "text": f"更新 {updated}{stale}　健保署急診即時訊息",
-            "size": "xxs",
-            "color": "#888888",
-            "wrap": True,
-        }
-    ]
+    contents: list[dict[str, Any]] = []  # 修改：更新時間改放表頭副標
+    subtitle = f"更新 {updated}{stale}　健保署急診即時訊息"
     department = board.get("department")
     if by_distance:
         if recommended:
@@ -116,76 +108,41 @@ def board_messages(board: dict[str, Any], liff_url: str, *, emergency: bool) -> 
         else:
             headline = "⚠ 附近的急救責任醫院目前都壅塞，請撥打 119 由救護車調度，或參考下方等候人數"
         contents.append(
-            {
-                "type": "text",
-                "text": headline,
-                "size": "sm",
-                "weight": "bold",
-                "color": BRAND if recommended else ALERT,
-                "wrap": True,
-                "margin": "md",
-            }
+            theme.text(headline, bold=True, color=theme.INK if recommended else theme.RED_STRONG)
         )
-    for h in hospitals[:MAX_ROWS]:
+    for index, h in enumerate(hospitals[:MAX_ROWS]):
         detail = f"等看診 {h['wait_see']}・等住院 {h['wait_admit']}・等 ICU {h['wait_icu']}"
         if h.get("full_119"):
             detail += "・119 滿床通報"
         distance = _distance_prefix(h)
         area_tag = f"{h['area_name']} " if by_distance and h.get("area_name") != area else ""
         dept_tag = f"・有{department}" if department and h.get("department_matched") else ""
-        contents.append(
-            {
-                "type": "box",
-                "layout": "vertical",
-                "margin": "md",
-                "contents": [
-                    {
-                        "type": "text",
-                        "text": f"{rules.LEVEL_EMOJI[h['level']]} {distance}{area_tag}"
+        contents.extend(
+            theme.row(
+                [
+                    theme.text(
+                        f"{rules.LEVEL_EMOJI[h['level']]} {distance}{area_tag}"
                         f"{h['hospital_name']}（{h['tier_label']}）{h['level_label']}{dept_tag}",
-                        "size": "sm",
-                        "weight": "bold",
-                        "wrap": True,
-                    },
-                    {
-                        "type": "text",
-                        "text": detail,
-                        "size": "xs",
-                        "color": "#666666",
-                        "wrap": True,
-                    },
+                        bold=True,
+                    ),
+                    theme.secondary_text(detail),
                 ],
-            }
+                first=index == 0 and not contents,
+            )
         )
     if len(hospitals) > MAX_ROWS:
         contents.append(
-            {
-                "type": "text",
-                "text": f"…另有 {len(hospitals) - MAX_ROWS} 家，請開啟完整看板",
-                "size": "xs",
-                "color": "#888888",
-            }
+            theme.secondary_text(
+                f"…另有 {len(hospitals) - MAX_ROWS} 家，請開啟完整看板", margin="md"
+            )
         )
-    contents.append(
-        {
-            "type": "text",
-            "text": BOARD_HINT,
-            "size": "xxs",
-            "color": "#888888",
-            "wrap": True,
-            "margin": "md",
-        }
-    )
+    contents.append(theme.footnote(BOARD_HINT, margin="md"))
     buttons: list[dict[str, Any]] = []
     if emergency:
         buttons.append(
-            {
-                "type": "button",
-                "style": "primary",
-                "color": ALERT,
-                "height": "sm",
-                "action": {"type": "uri", "label": "🚨 撥打 119", "uri": "tel:119"},
-            }
+            theme.primary_button(
+                {"type": "uri", "label": "🚨 撥打 119", "uri": "tel:119"}, alert=True
+            )
         )
     clinic_params = {"action": "clinics", "city": area}
     if department:
@@ -196,48 +153,28 @@ def board_messages(board: dict[str, Any], liff_url: str, *, emergency: bool) -> 
         clinic_params["lat"] = str(board["origin"]["lat"])
         clinic_params["lng"] = str(board["origin"]["lng"])
     buttons.append(
-        {
-            "type": "button",
-            "style": "primary",
-            "color": BRAND,
-            "height": "sm",
-            "action": {
+        theme.primary_button(
+            {
                 "type": "postback",
                 "label": "🩺 非急症：找附近診所",
                 "data": postback_data(Intent.FIND_HOSPITAL, **clinic_params),
                 "displayText": "非急症，找附近診所",
-            },
-        }
+            }
+        )
     )
     buttons.append(
-        {
-            "type": "button",
-            "style": "secondary",
-            "height": "sm",
-            "action": {"type": "uri", "label": "完整看板 / 其他縣市", "uri": liff_url},
-        }
+        theme.secondary_button({"type": "uri", "label": "完整看板 / 其他縣市", "uri": liff_url})
     )
-    bubble = {
-        "type": "bubble",
-        "header": {
-            "type": "box",
-            "layout": "vertical",
-            "backgroundColor": ALERT if emergency else BRAND,
-            "contents": [
-                {
-                    "type": "text",
-                    "text": "🏥 離你最近的急救責任醫院"
-                    if by_distance
-                    else f"🏥 {area} 急診即時狀況",
-                    "weight": "bold",
-                    "color": "#FFFFFF",
-                    "size": "md",
-                }
-            ],
-        },
-        "body": {"type": "box", "layout": "vertical", "contents": contents},
-        "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": buttons},
-    }
+    bubble = theme.bubble(
+        contents,
+        header=theme.header(
+            "🏥 離你最近的急救責任醫院" if by_distance else f"🏥 {area} 急診即時狀況",
+            subtitle,
+            alert=emergency,
+        ),
+        footer=buttons,
+        size="mega",
+    )
     messages: list[Message] = [M.flex(f"{area} 急診即時狀況", bubble)]
     if emergency:
         messages.insert(0, M.text(EMERGENCY_HINT))
@@ -293,66 +230,29 @@ def clinics_messages(result: dict[str, Any], liff_url: str) -> list[Message]:
         lead = f"{area}（{scope}）沒有標示{department}的院所，先列出附近診所，可先電話確認："
     else:
         lead = f"{area}（{scope}）非急症可先就近看診，減少急診等候："
-    contents: list[dict[str, Any]] = [
-        {"type": "text", "text": lead, "size": "xs", "color": "#666666", "wrap": True}
-    ]
+    contents: list[dict[str, Any]] = [theme.secondary_text(lead)]
     tier_label = {"clinic": "診所", "district": "地區醫院", "regional": "區域醫院"}
     for h in rows[:MAX_ROWS]:
         tier = tier_label.get(h.get("capacity_tier"), "院所")
         line_items: list[dict[str, Any]] = [
-            {
-                "type": "text",
-                "text": f"{_distance_prefix(h)}{h['name']}（{tier}）",
-                "size": "sm",
-                "weight": "bold",
-                "wrap": True,
-            }
+            theme.text(f"{_distance_prefix(h)}{h['name']}（{tier}）", bold=True)
         ]
         if h.get("address"):
-            line_items.append(
-                {
-                    "type": "text",
-                    "text": h["address"],
-                    "size": "xs",
-                    "color": "#666666",
-                    "wrap": True,
-                }
-            )
+            line_items.append(theme.secondary_text(h["address"]))
         if h.get("departments"):
-            line_items.append(
-                {
-                    "type": "text",
-                    "text": f"科別：{_departments_label(h['departments'])}",
-                    "size": "xs",
-                    "color": "#666666",
-                    "wrap": True,
-                }
-            )
+            line_items.append(theme.secondary_text(f"科別：{_departments_label(h['departments'])}"))
         if h.get("contact_phone"):
             line_items.append(
-                {
-                    "type": "text",
-                    "text": f"📞 {h['contact_phone']}",
-                    "size": "xs",
-                    "color": BRAND,
-                    "action": {"type": "uri", "label": "撥打", "uri": _tel(h["contact_phone"])},
-                }
+                theme.text(
+                    f"📞 {h['contact_phone']}",
+                    size="xs",
+                    bold=True,
+                    color=theme.INK,
+                    action={"type": "uri", "label": "撥打", "uri": _tel(h["contact_phone"])},
+                )
             )
-        contents.append(
-            {"type": "box", "layout": "vertical", "margin": "md", "contents": line_items}
-        )
-    bubble = {
-        "type": "bubble",
-        "header": {
-            "type": "box",
-            "layout": "vertical",
-            "backgroundColor": BRAND,
-            "contents": [
-                {"type": "text", "text": "🩺 附近診所 / 醫院", "weight": "bold", "color": "#FFFFFF"}
-            ],
-        },
-        "body": {"type": "box", "layout": "vertical", "contents": contents},
-    }
+        contents.extend(theme.row(line_items))
+    bubble = theme.bubble(contents, header=theme.header("🩺 附近診所 / 醫院"), size="mega")
     return [M.flex("附近診所", bubble)]
 
 

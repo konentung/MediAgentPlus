@@ -90,7 +90,7 @@ class Permission(StrEnum):
 class BindingStatus(StrEnum):
     """基本資料是否已填且驗證通過（服務地圖上的「已驗證？」菱形判斷）。
 
-    UNBOUND → 送出 LIFF 表單 → PENDING → 院所新增病人、病人在 LINE 上確認在該院就醫、
+    UNBOUND → 送出 LIFF 表單 → PENDING → 院所搜尋病人並加入本院、病人在 LINE 上確認在該院就醫、
     院方核對建檔 → VERIFIED；院方退回 → UNBOUND；異常由院方鎖定 → LOCKED。
     轉換邏輯在 `IntakeService` 與 `PatientRecordService`。
     """

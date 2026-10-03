@@ -154,12 +154,12 @@ tests/                     pytest（RBAC、JWT、OAuth、LIFF、webhook、intake
 | PATCH | /api/v1/admin/feedback/{id} | feedback:manage | 標記已處理 / 重新開啟 |
 | GET | /api/v1/admin/patients | patient:read | 病人列表 `?status=pending/active/locked/all&q=`，只含本院新增 / 建檔的病人（SUPER_ADMIN 全部） |
 | GET | /api/v1/admin/patients/{user_id} | patient:read | 自填資料 + 本院紀錄 + 就診 / 風險 / 追蹤 / 備註 / 歷次送出資料 |
-| POST | /api/v1/admin/patients/{user_id}/lock、/unlock | patient:verify | 鎖定 / 解除鎖定帳號（寫入稽核） |
+| POST | /api/v1/admin/patients/{user_id}/lock、/unlock | patient:verify | 加入 / 移出黑名單（鎖定 / 解除鎖定帳號，寫入稽核） |
 | GET | /api/v1/admin/audit | audit:read | 稽核紀錄（同院所） |
-| GET | /api/v1/admin/patients/unclaimed?phone= 或 ?name=&last4= | patient:verify | 新增病人：精準找還沒被任何院所新增的病人（不做模糊搜尋） |
+| GET | /api/v1/admin/patients/unclaimed?phone=&name=&last4=（至少一個） | patient:verify | 搜尋病人：精準找還沒被任何院所加入的病人（每個欄位完全相等、不做模糊搜尋） |
 | POST | /api/v1/admin/patients/{user_id}/request-hospital-confirmation | patient:verify | 把病人加入本院並推播 LINE 請病人自己按「是，我在這裡就醫」；別家新增的病人回 409 |
 | POST | /api/v1/admin/patients/{user_id}/verify | patient:verify | 核對身份 → 建檔 → VERIFIED + 角色（病人尚未確認在本院就醫時回 409） |
-| POST | /api/v1/admin/patients/{user_id}/reject | patient:verify | 退回補正（推播原因） |
+| POST | /api/v1/admin/patients/{user_id}/reject | patient:verify | 退回修正（推播原因） |
 | PATCH | /api/v1/admin/patients/{user_id}/profile | patient:write | 院方修正自填資料（留 corrections） |
 | POST / PATCH | /api/v1/admin/patients/{user_id}/encounters[/{id}] | encounter:manage | 就診 / 住院紀錄、出院代碼 |
 | POST / PATCH | /api/v1/admin/patients/{user_id}/flags[/{id}] | patient:write | 風險警示 |

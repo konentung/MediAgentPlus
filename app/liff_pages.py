@@ -13,6 +13,7 @@ from flask import Blueprint, render_template, request
 
 from app.domain.intake_schema import CONSENT_VERSION, public_schema
 from app.domain.reminder_rules import public_rules
+from app.domain.triage_rules import district_options
 from app.domain.triage_rules import public_rules as triage_rules
 
 liff_pages_bp = Blueprint("liff_pages", __name__, url_prefix="/liff")
@@ -34,6 +35,7 @@ def intake():
     return render_template(
         "liff/intake.html",
         schema_json=json.dumps(public_schema(), ensure_ascii=False),
+        districts_json=json.dumps(district_options(), ensure_ascii=False),
         consent_version=CONSENT_VERSION,
     )
 

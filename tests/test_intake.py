@@ -54,12 +54,41 @@ def fill_all(client, headers, steps=VALID_STEPS):
     return client.post("/api/v1/liff/intake/submit", json={}, headers=headers)
 
 
+@pytest.mark.parametrize(
+    ("city", "district", "field_in_error"),
+    [
+        ("台北市", "大安區", None),
+        ("臺北市", "大安區", None),  # 「臺」正規化成「台」
+        ("火星市", "大安區", "address_city"),
+        ("台北市", "鳳山區", "address_district"),  # 鄉鎮市區不屬於該縣市
+    ],
+)
+def test_address_city_district_must_exist(city, district, field_in_error):
+    """縣市 / 鄉鎮市區是下拉選單：值必須在 tw_districts.csv 裡，鄉鎮市區要屬於選的縣市。"""
+    payload = {**VALID_STEPS[2], "address_city": city, "address_district": district}
+    if field_in_error is None:
+        cleaned = validate_step(get_step(2), payload)
+        assert cleaned["address_city"] == "台北市"
+        return
+    with pytest.raises(ValidationError) as exc:
+        validate_step(get_step(2), payload)
+    assert field_in_error in exc.value.details["fields"]
+
+
 # ---- schema ----
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [("A123456789", True), ("A123456780", False), ("A800000014", True), ("abc", False)],
+    [
+        ("A123456789", True),
+        ("A123456780", True),
+        ("A800000014", True),
+        ("ab12345678", True),
+        ("abc", False),
+        ("1234567890", False),
+        ("A12345678", False),
+    ],
 )
-def test_national_id_checksum(value, expected):
+def test_national_id_format(value, expected):
     assert is_valid_national_id(value) is expected
 
 

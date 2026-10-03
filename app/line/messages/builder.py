@@ -22,6 +22,7 @@ from linebot.v3.messaging import (
 
 from app.domain.enums import Intent
 from app.line.intents import postback_data
+from app.line.messages import theme
 
 
 class MessageBuilder:
@@ -78,37 +79,23 @@ class MessageBuilder:
 
     @staticmethod
     def button_bubble(
-        title: str, body: str, buttons: list[dict[str, Any]], color: str = "#2F6F62"
+        title: str,
+        body: str,
+        buttons: list[dict[str, Any]],
+        *,
+        alert: bool = False,
+        subtitle: str | None = None,
     ) -> dict[str, Any]:
-        """簡易 Flex bubble：標題 + 內文 + 多個按鈕（action dict）。"""
-        return {
-            "type": "bubble",
-            "header": {
-                "type": "box",
-                "layout": "vertical",
-                "backgroundColor": color,
-                "contents": [
-                    {
-                        "type": "text",
-                        "text": title,
-                        "weight": "bold",
-                        "color": "#FFFFFF",
-                        "size": "md",
-                    }
-                ],
-            },
-            "body": {
-                "type": "box",
-                "layout": "vertical",
-                "contents": [{"type": "text", "text": body, "wrap": True, "size": "sm"}],
-            },
-            "footer": {
-                "type": "box",
-                "layout": "vertical",
-                "spacing": "sm",
-                "contents": [
-                    {"type": "button", "style": "primary", "color": color, "action": action}
-                    for action in buttons
-                ],
-            },
-        }
+        """簡易 Flex bubble：品牌表頭 + 內文 + 多個按鈕（action dict）。
+
+        第一個按鈕是主要（墨藍底），其餘為次要（白金底）；`alert` 為緊急 / 警示紅表頭。
+        """  # 修改：樣式改走 theme，不再接受自訂色碼
+        footer = [
+            theme.button(action, style="primary" if index == 0 else "secondary", alert=alert)
+            for index, action in enumerate(buttons)
+        ]
+        return theme.bubble(
+            [theme.text(body)],
+            header=theme.header(title, subtitle, alert=alert),
+            footer=footer,
+        )

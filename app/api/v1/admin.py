@@ -18,8 +18,7 @@ from app.core.ratelimit import rate_limit
 from app.core.responses import ok
 from app.domain.enums import STAFF_ROLES, SYSTEM_ROLES, Permission, Role
 from app.domain.rbac import AccessPolicy
-from app.domain.triage_rules import AREA_GROUPS, AREA_NAMES
-from app.utils.geo import districts_by_city
+from app.domain.triage_rules import district_options
 
 admin_bp = Blueprint("admin", __name__, url_prefix="/admin")
 
@@ -76,10 +75,7 @@ def hospital_options():
 @require_role(*STAFF_ROLES)
 def list_districts():
     """後台篩選用的縣市 → 鄉鎮市區下拉選單（離線資料 tw_districts.csv），縣市依北中南東排序。"""
-    grouped = districts_by_city()
-    ordered = [AREA_NAMES[code] for _, codes in AREA_GROUPS for code in codes]
-    cities = [c for c in ordered if c in grouped] + sorted(set(grouped) - set(ordered))
-    return ok([{"city": city, "districts": list(grouped[city])} for city in cities])
+    return ok(district_options())
 
 
 @admin_bp.get("/hospitals")
@@ -279,7 +275,7 @@ def list_patients():
 @require_permission(Permission.PATIENT_VERIFY)
 @rate_limit("patient_unclaimed_search", limit=60, per_seconds=600, by="user")
 def find_unclaimed_patients():
-    """新增病人：用手機或姓名 + 末四碼精準找還沒被任何院所新增的病人。"""
+    """搜尋病人：用手機 / 姓名 / 末四碼（至少一個）精準找還沒被任何院所加入的病人。"""
     return ok(
         get_container().patient_records.find_unclaimed(
             current_principal(),

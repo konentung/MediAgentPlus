@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.utils.geo import districts_by_city
+
 # 健保署地區代碼 → 縣市（「臺」統一為「台」，與 PharmacyService.parse_address 一致）
 AREA_NAMES: dict[str, str] = {
     "01": "台北市",
@@ -195,3 +197,16 @@ def public_rules() -> dict[str, Any]:
         "wait_see_thresholds": list(WAIT_SEE_THRESHOLDS),
         "note": DATA_SOURCE_NOTE,
     }
+
+
+def ordered_cities() -> list[str]:
+    """縣市清單，依北 / 中 / 南 / 東（`AREA_GROUPS`）排序，不在分區表的排最後。"""
+    grouped = districts_by_city()
+    ordered = [AREA_NAMES[code] for _, codes in AREA_GROUPS for code in codes]
+    return [c for c in ordered if c in grouped] + sorted(set(grouped) - set(ordered))
+
+
+def district_options() -> list[dict[str, Any]]:
+    """縣市 → 鄉鎮市區下拉選單資料 `[{"city", "districts"}]`，後台篩選與 LIFF 病人表單共用。"""
+    grouped = districts_by_city()
+    return [{"city": city, "districts": list(grouped[city])} for city in ordered_cities()]
