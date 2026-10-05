@@ -7,14 +7,16 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
 Event = Literal[
     "emergency",  # 紅旗：立即撥 119
     "symptom",  # 身體不適 / 症狀諮詢
     "hospital",  # 找醫院 / 急診狀況 / 掛哪一科
+    "clinic",  # 新增：想找診所 / 非急症想就近看醫生
     "medication",  # 藥物、處方、藥名查詢
     "pharmacy",  # 找藥局 / 領藥
     "reminder",  # 服藥提醒
@@ -40,6 +42,26 @@ Action = Literal[
     "feedback",
 ]
 
+_MD_LINK = re.compile(r"\[([^\]]+)\]\((?:https?://)[^)\s]*\)")
+_MD_HEADING = re.compile(r"(?m)^[ \t]*#{1,6}[ \t]+")
+_MD_QUOTE = re.compile(r"(?m)^[ \t]*>[ \t]?")
+_MD_BULLET = re.compile(r"(?m)^[ \t]*[-*+•][ \t]+")
+_MD_EMPHASIS = re.compile(r"(\*\*|__|~~|`+)")
+
+
+def plain_text(text: str) -> str:
+    """LINE 不渲染 Markdown：去掉粗體 / 標題 / 引言 / 程式碼符號，清單符號改「・」，連結只留文字。
+
+    提示詞已要求模型輸出純文字，這裡是保險，確保符號不會原樣出現在使用者畫面上。
+    """
+    text = _MD_LINK.sub(r"\1", text)
+    text = _MD_HEADING.sub("", text)
+    text = _MD_QUOTE.sub("", text)
+    text = _MD_BULLET.sub("・", text)
+    text = _MD_EMPHASIS.sub("", text)
+    return re.sub(r"(?<![\w*])\*(?=\S)([^*\n]+?)(?<=\S)\*(?![\w*])", r"\1", text).strip()
+
+
 EVENTS: tuple[str, ...] = Event.__args__  # type: ignore[attr-defined]
 ACTIONS: tuple[str, ...] = Action.__args__  # type: ignore[attr-defined]
 MAX_ANSWER_CHARS = 400
@@ -51,9 +73,18 @@ class Slots(BaseModel):
     drug_name: str | None = Field(default=None, description="提到的藥名（中或英）")
     symptom: str | None = Field(default=None, description="主要症狀摘要")
     department: str | None = Field(
-        default=None, description="症狀諮詢時建議掛的科別，例如 家醫科（依知識庫片段判斷）"
+        default=None, description="症狀諮詢時建議掛的科別，例如 家庭醫學科（片段沒提時依症狀判斷）"
     )
     hospital_name: str | None = Field(default=None, description="提到的醫院名稱")
+
+
+class ClinicPicks(BaseModel):
+    """「依症狀挑診所」的模型輸出：只回候選清單的編號，院所資料由程式依編號取回（模型編不出不存在的診所）。"""
+
+    picks: list[int] = Field(
+        default_factory=list,
+        description="挑中的候選編號，依適合程度排序；一家都不適合就留空",
+    )
 
 
 class AssistantDecision(BaseModel):
@@ -61,7 +92,8 @@ class AssistantDecision(BaseModel):
     risk: Risk = Field(default="none", description="健康風險：emergency=有生命危險立即 119")
     answer: str = Field(
         default="",
-        description=f"給使用者的回覆（繁體中文、{MAX_ANSWER_CHARS} 字內、口語、不做診斷）；"
+        description=f"給使用者的回覆（繁體中文純文字、不用 Markdown、{MAX_ANSWER_CHARS} 字內、"
+        "口語、不做診斷）；"
         "可留空讓功能模組回應",
     )
     slots: Slots = Field(default_factory=Slots)
@@ -72,6 +104,11 @@ class AssistantDecision(BaseModel):
         default_factory=list, description="回答依據的知識片段編號，例如 K1、K3；沒有依據留空"
     )
     needs_clarification: bool = Field(default=False, description="問題太模糊、需要再問一句")
+
+    @field_validator("answer")
+    @classmethod
+    def _answer_plain_text(cls, value: str) -> str:
+        return plain_text(value)
 
     # 服務端依 citations 對回的片段（含出處與網址），不在模型輸出的 schema 內
     _sources: list[dict[str, Any]] = PrivateAttr(default_factory=list)

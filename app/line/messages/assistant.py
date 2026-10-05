@@ -1,6 +1,7 @@
 """AI 助理回覆的組裝：回答文字 + 參考來源（原文連結）+ 下一步 Quick Reply。
 
 有引用片段時用 Flex：正文在上、來源按鈕在下（最多 3 個、開原文網址）；沒有就純文字。
+Flex 只放要給使用者看的內容，不放說明用的小字。
 """
 
 from __future__ import annotations
@@ -16,7 +17,6 @@ from app.line.messages.builder import MessageBuilder as M
 
 AI_FAILED_TEXT = "我暫時無法判斷你的問題，可以從下方選單選擇服務，或稍後再試一次。"
 CLARIFY_TEXT = "可以再多說一點嗎？例如哪裡不舒服、持續多久，或你想找哪一種服務。"
-DISCLAIMER = "以上整理自各醫院公開衛教資料，僅供參考，實際狀況請以醫師或原院所說明為準。"
 # 新增：通用版出院衛教選了科別，但知識庫沒有該科的出院照護內容
 NO_DISCHARGE_DATA_TEXT = (
     "知識庫目前沒有這個科別的出院照護資料。出院後的注意事項請以出院衛教單與原院所說明為準，"
@@ -81,6 +81,18 @@ def answer_messages(
     return [message]
 
 
+def with_actions(
+    messages: list[Message], actions: list[str], liff_url: str, *, department: str | None = None
+) -> list[Message]:
+    """把下一步按鈕接在最後一則訊息原有的 Quick Reply 後面（LINE 只顯示最後一則的 Quick Reply）。"""
+    items = action_items(actions, liff_url, department=department)
+    if messages and items:
+        last = messages[-1]
+        current = list(last.quick_reply.items) if last.quick_reply else []
+        last.quick_reply = QuickReply(items=(current + items)[:13])
+    return messages
+
+
 def _answer_bubble(text: str, sources: list[dict[str, Any]]) -> dict[str, Any]:
     buttons = [
         theme.link_button({"type": "uri", "label": hit_label(hit)[:40], "uri": hit["source"]})
@@ -88,9 +100,9 @@ def _answer_bubble(text: str, sources: list[dict[str, Any]]) -> dict[str, Any]:
     ]
     # 修改：品牌橫條 + 白金分隔的參考來源區
     return theme.bubble(
-        [theme.text(text), theme.footnote(DISCLAIMER, margin="md")],
+        [theme.text(text)],
         header=theme.brand_strip(f"{theme.BRAND_NAME} 照護小幫手"),
-        footer=[theme.text("參考來源（點開看原文）", size="xs", color=theme.MUTED), *buttons],
+        footer=[theme.text("參考來源", size="xs", color=theme.MUTED), *buttons],
         size="mega",
     )
 

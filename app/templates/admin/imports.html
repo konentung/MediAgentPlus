@@ -28,12 +28,11 @@
           健保署「健保用藥品項」檔（欄位：藥品代號、藥品英文名稱、藥品中文名稱、成分、劑型、ATC代碼、有效迄日），同一藥品代號只保留有效迄日最新的一列。
           檔案約 96MB：伺服器端匯入只要幾秒，時間幾乎都花在上傳，<b>經 ngrok 等外部網址上傳會很慢甚至中斷，請直接用本機網址操作</b>。
         </div>
-        <div class="d-none" data-help="markdown">
-          AI 知識庫文件，可一次選多個 .md。檔案開頭可放 front matter：<code>title</code> / <code>category</code> / <code>tags</code>；沒有就用第一個 # 標題或檔名。同檔名重複上傳會更新同一份。院所管理員匯入的文件一律歸本院。
-        </div>
-        <div class="d-none" data-help="department">
-          全台醫院衛教內文（依科別分類的 <code>01_心臟內科.txt</code> … 每科一檔，可一次選多檔）匯入為通用文件並記下科別。「非衛教」檔會整檔略過；「未分類」照收但不記科別。
-          在背景執行，進度見下方「知識庫背景工作」；匯入後要再「計算向量」語意檢索才會生效。
+        <div class="d-none" data-help="pdf">
+          衛教 PDF，可一次選多個檔。一個 PDF 是一篇文件，標題取檔名；同院所同檔名重新上傳會更新同一篇。
+          <span id="pdf-owner">匯入的文件歸本院管理；所有院所的病人都檢索得到，本院病人會優先看到本院的內容。</span>
+          系統會擷取 PDF 的文字、依所選的片段大小切段並自動計算向量（背景執行，進度見下方「衛教資訊背景工作」）。
+          只能匯入有文字層的 PDF；掃描圖（單張、海報常見）讀不到字，會列在結果的錯誤清單。
         </div>
       </div>
 
@@ -43,13 +42,27 @@
           <label class="form-check-label" for="only-hospitals">只匯入醫院（略過診所）</label>
         </div>
       </div>
-      <div class="col-md-3 d-none" data-extra="department">
-        <label class="form-label small mb-1" for="min-chars">內文最少字數</label>
-        <input class="form-control form-control-sm" id="min-chars" type="number" name="min_chars" value="200" min="0">
+      <!-- 衛教 PDF：歸屬院所只有系統管理員能選（院所管理員一律歸自己院所）；科別與片段大小由上傳的人選 -->
+      <div class="col-md-3 d-none" data-extra="pdf" data-super-only>
+        <label class="form-label small mb-1" for="pdf-scope">歸屬院所</label>
+        <select class="form-select form-select-sm" id="pdf-scope" name="pdf_scope">
+          <option value="hospital">指定院所</option>
+          <option value="">通用（所有院所）</option>
+        </select>
       </div>
-      <div class="col-md-3 d-none" data-extra="department">
-        <label class="form-label small mb-1" for="import-limit">最多匯入篇數</label>
-        <input class="form-control form-control-sm" id="import-limit" type="number" name="limit" min="1" placeholder="不限">
+      <div class="col-md-3 d-none" data-extra="pdf" data-super-only id="pdf-hospital-col">
+        <label class="form-label small mb-1" for="pdf-hospital">院所</label>
+        <input class="form-control form-control-sm" id="pdf-hospital" placeholder="院所名稱或代碼">
+        <input type="hidden" name="pdf_hospital_id">
+      </div>
+      <div class="col-md-3 d-none" data-extra="pdf">
+        <label class="form-label small mb-1" for="pdf-department">科別（整批套用，可留空）</label>
+        <input class="form-control form-control-sm" id="pdf-department" name="pdf_department" list="pdf-departments" maxlength="50" autocomplete="off" placeholder="例：心臟內科">
+        <datalist id="pdf-departments"></datalist>
+      </div>
+      <div class="col-md-3 d-none" data-extra="pdf">
+        <label class="form-label small mb-1" for="pdf-chunk-size">片段大小</label>
+        <select class="form-select form-select-sm" id="pdf-chunk-size" name="pdf_chunk_size" data-chunk-sizes></select>
       </div>
 
       <div class="col-12"><button class="btn btn-brand" id="import-submit" type="submit">開始匯入</button></div>
@@ -67,21 +80,28 @@
 
 <div class="card mb-3 d-none" id="jobs-card">
   <div class="card-header bg-white d-flex justify-content-between align-items-center">
-    <span class="fw-bold">知識庫背景工作（系統管理員）</span>
+    <span class="fw-bold">衛教資訊背景工作</span>
     <span class="small text-secondary" id="system-stats">—</span>
   </div>
   <div class="card-body">
-    <p class="small text-secondary">
-      衛教內文匯入、重建片段、計算向量都在背景執行、可重跑，同一時間只會跑一個工作。切段規則改了可按「重建片段」不必重新上傳；向量只算還沒有的片段。
+    <p class="small text-secondary" id="jobs-help">
+      PDF 匯入與重建片段在背景執行、可重跑，全系統同一時間只會跑一個工作。這裡只列出本院的工作與統計。
+      想換片段大小可以直接「重建片段」，不必重新上傳；做完會自動重算本院的向量。
     </p>
-    <form class="row g-2 align-items-end" id="embed-form">
-      <div class="col-md-3">
+    <form class="row g-2 align-items-end" id="rechunk-form">
+      <div class="col-md-4">
+        <label class="form-label small mb-1" for="rechunk-size">重建片段：片段大小</label>
+        <select class="form-select form-select-sm" id="rechunk-size" name="chunk_size" data-chunk-sizes data-keep-option></select>
+      </div>
+      <div class="col-md-auto"><button class="btn btn-sm btn-outline-secondary" type="submit" data-job-start>重建片段</button></div>
+    </form>
+    <form class="row g-2 align-items-end mt-1 d-none" id="embed-form">
+      <div class="col-md-4">
         <label class="form-label small mb-1" for="embed-batch">計算向量：每批片段數</label>
         <input class="form-control form-control-sm" id="embed-batch" type="number" name="batch" value="200" min="1" max="1000">
       </div>
       <div class="col-md-auto"><button class="btn btn-sm btn-brand" type="submit" data-job-start>計算向量</button></div>
-      <div class="col-md-auto"><button class="btn btn-sm btn-outline-secondary" type="button" id="rechunk-btn" data-job-start>重建片段</button></div>
-      <div class="col-12 form-text">計算向量會呼叫 OpenAI <code>EMBEDDING_MODEL</code>，數萬個片段約需數分鐘並產生 API 費用。</div>
+      <div class="col-12 form-text">補算全庫還沒有向量的片段，會呼叫 OpenAI <code>EMBEDDING_MODEL</code> 並產生 API 費用。</div>
     </form>
     <div class="alert alert-info small mt-3 mb-0 d-none" id="job-active"></div>
     <div class="table-responsive mt-3">
@@ -103,14 +123,18 @@ Admin.boot(async function (ctx) {
     { key: "hospitals", label: "院所（CSV）", perm: "hospital:manage", url: "/api/v1/admin/hospitals/import", accept: ".csv,text/csv", multiple: false },
     { key: "pharmacies", label: "藥局（CSV）", perm: "reference_data:manage", url: "/api/v1/admin/pharmacies/import", accept: ".csv,text/csv", multiple: false },
     { key: "drugs", label: "藥品：健保用藥（CSV）", perm: "reference_data:manage", url: "/api/v1/admin/drugs/import", accept: ".csv,text/csv", multiple: false },
-    { key: "markdown", label: "AI 知識庫文件（Markdown）", perm: "education:content_manage", url: "/api/v1/admin/knowledge/import", accept: ".md,text/markdown", multiple: true },
-    { key: "department", label: "衛教內文：依科別分類（txt）", perm: "reference_data:manage", url: "/api/v1/admin/knowledge/jobs/department-import", accept: ".txt,text/plain", multiple: true }
+    { key: "pdf", label: "衛教資訊（PDF）", perm: "education:content_manage", url: "/api/v1/admin/knowledge/jobs/pdf-import", accept: ".pdf,application/pdf", multiple: true, maxFiles: {{ max_pdf_files }}, maxBytes: {{ config.get("KNOWLEDGE_UPLOAD_MAX_BYTES") or 0 }} }
   ].filter(function (t) { return ctx.can(t.perm); });
+  // 一次上傳（所有檔案加總）的大小上限：超過會被伺服器擋下回 413，先在這裡檢查。
+  // 預設是全站的 MAX_CONTENT_LENGTH；衛教 PDF 端點另有較寬的上限（type.maxBytes）
+  var MAX_UPLOAD_BYTES = {{ config.get("MAX_CONTENT_LENGTH") or 0 }};
 
   var form = document.getElementById("import-form"), typeSelect = document.getElementById("import-type"), fileInput = document.getElementById("import-file");
   var btn = document.getElementById("import-submit"), progress = document.getElementById("import-progress");
   var bar = document.getElementById("import-bar"), status = document.getElementById("import-status"), result = document.getElementById("import-result");
-  var canJobs = ctx.can("reference_data:manage");
+  // PDF 匯入、重建片段與進度查詢是 education:content_manage（院所管理員也有）；全庫計算向量只有系統管理員
+  var canJobs = ctx.can("education:content_manage"), canMaintain = ctx.can("reference_data:manage");
+  var isSuper = ctx.me.role === "super_admin";
 
   if (!TYPES.length) {
     form.classList.add("d-none");
@@ -127,9 +151,22 @@ Admin.boot(async function (ctx) {
     var t = current();
     fileInput.value = ""; fileInput.accept = t.accept; fileInput.multiple = t.multiple;
     document.querySelectorAll("[data-help],[data-extra]").forEach(function (el) {
-      el.classList.toggle("d-none", (el.getAttribute("data-help") || el.getAttribute("data-extra")) !== t.key);
+      var hidden = (el.getAttribute("data-help") || el.getAttribute("data-extra")) !== t.key;
+      el.classList.toggle("d-none", hidden || (el.hasAttribute("data-super-only") && !isSuper));
     });
+    applyPdfScope();
     result.classList.add("d-none");
+  }
+  // 衛教 PDF 的歸屬（系統管理員）：指定院所 / 通用；選「指定院所」才顯示院所欄
+  var scopeSelect = document.getElementById("pdf-scope");
+  var hospitalPicker = Admin.hospitalPicker(document.getElementById("pdf-hospital"), form.elements.pdf_hospital_id);
+  function applyPdfScope() {
+    var show = isSuper && current().key === "pdf" && scopeSelect.value === "hospital";
+    document.getElementById("pdf-hospital-col").classList.toggle("d-none", !show);
+  }
+  scopeSelect.addEventListener("change", applyPdfScope);
+  if (isSuper) {
+    document.getElementById("pdf-owner").textContent = "每篇文件歸屬一家院所（或通用）；所有病人都檢索得到，病人自己院所的內容會優先。";
   }
   typeSelect.addEventListener("change", applyType);
   // 網址可帶 ?type= 直接選好類型（各清單頁連過來用）
@@ -155,7 +192,7 @@ Admin.boot(async function (ctx) {
     }).join("") + (errors.length > 10 ? "<li>…其餘 " + (errors.length - 10) + " 筆</li>" : "") + "</ul>";
   }
   function summarize(t, r) {
-    if (t.key === "department") return "已開始背景匯入：" + Admin.esc(r.kind_label) + "，進度見下方「知識庫背景工作」。";
+    if (t.key === "pdf") return "已開始背景匯入：" + Admin.esc(r.kind_label) + "，進度見下方「衛教資訊背景工作」。";
     var parts = ["新增 <b>" + r.created + "</b>", "更新 <b>" + r.updated + "</b>"];
     if (r.skipped !== undefined) parts.push("略過 " + r.skipped);
     if (r.errors) parts.push("錯誤 " + r.errors.length);
@@ -169,11 +206,25 @@ Admin.boot(async function (ctx) {
     if (!files.length) return;
     var url = t.url, fields = {};
     if (t.key === "hospitals") url += "?only_hospitals=" + (form.elements.only_hospitals.checked ? "1" : "0");
-    if (t.key === "department") {
-      fields.min_chars = form.elements.min_chars.value || "200";
-      if (form.elements.limit.value) fields.limit = form.elements.limit.value;
+    if (t.key === "pdf") {
+      fields.department = form.elements.pdf_department.value.trim();
+      fields.chunk_size = form.elements.pdf_chunk_size.value;
+      if (isSuper && scopeSelect.value === "hospital") {  // 院所管理員不送 hospital_id，後端一律用自己院所
+        if (!hospitalPicker.validate() || !form.elements.pdf_hospital_id.value) { Admin.toast("請從選單挑選院所或輸入院所代碼", "warning"); return; }
+        fields.hospital_id = form.elements.pdf_hospital_id.value;
+      }
     }
-    var sizeMB = (files.reduce(function (n, f) { return n + f.size; }, 0) / 1048576).toFixed(1);
+    var totalBytes = files.reduce(function (n, f) { return n + f.size; }, 0);
+    var sizeMB = (totalBytes / 1048576).toFixed(1);
+    var tooMany = t.maxFiles && files.length > t.maxFiles;
+    var maxBytes = t.maxBytes || MAX_UPLOAD_BYTES;
+    if (tooMany || (maxBytes && totalBytes > maxBytes)) {
+      result.className = "alert alert-warning small mt-3 mb-0";
+      result.textContent = tooMany
+        ? "一次最多上傳 " + t.maxFiles + " 個檔，目前選了 " + files.length + " 個，請分批上傳（等前一批的背景工作完成再傳下一批）。"
+        : "一次上傳的總大小不可超過 " + Math.floor(maxBytes / 1048576) + " MB，目前選了 " + sizeMB + " MB，請分批上傳" + (t.key === "pdf" ? "（等前一批的背景工作完成再傳下一批）。" : "。");
+      return;
+    }
     btn.disabled = true; result.classList.add("d-none"); progress.classList.remove("d-none");
     setProgress(0, "上傳中 0%（" + sizeMB + " MB）");
     try {
@@ -183,46 +234,78 @@ Admin.boot(async function (ctx) {
       result.className = "alert alert-" + (r.errors && r.errors.length ? "warning" : "success") + " small mt-3 mb-0";
       result.innerHTML = summarize(t, r);
       fileInput.value = "";
-      if (t.key === "department" && canJobs) await loadJobs();
+      if (t.key === "pdf" && canJobs) await loadJobs();
     } catch (err) {
       result.className = "alert alert-danger small mt-3 mb-0"; result.textContent = err.message;
     } finally { btn.disabled = false; progress.classList.add("d-none"); }
   });
 
-  // ---- 知識庫背景工作（只有 reference_data:manage = 系統管理員）：重建片段 / 計算向量 + 輪詢進度 ----
-  var pollTimer = null;
+  // ---- 衛教資訊背景工作：PDF 匯入 / 重建片段的進度（院所管理員只看本院）；全庫計算向量只有系統管理員 ----
+  var pollTimer = null, optionsReady = false, chunkLabels = {};
   var STATUS_LABEL = { queued: "排隊中", running: "執行中", succeeded: "完成", failed: "失敗" };
   var STATUS_CLASS = { queued: "secondary", running: "primary", succeeded: "success", failed: "danger" };
 
+  function ownerName(p) { return p.hospital_id ? Admin.hospitalName(p.hospital_id) : (isSuper ? "全部 / 通用" : "本院"); }
+  function sizeLabel(key) { return key ? "片段 " + (chunkLabels[key] || key) : ""; }
   function describeParams(j) {
     var p = j.params || {};
-    if (j.kind === "department_txt") return (p.filenames || []).length + " 個檔・≥" + p.min_chars + " 字" + (p.limit ? "・最多 " + p.limit + " 篇" : "");
-    if (j.kind === "rechunk") return "文件 " + p.documents + " 篇";
+    if (j.kind === "pdf_import") {
+      var owner = p.hospital_id ? Admin.hospitalName(p.hospital_id) : "通用";
+      return [owner, (p.filenames || []).length + " 個檔", p.department ? "科別 " + p.department : "", sizeLabel(p.chunk_size)].filter(Boolean).map(Admin.esc).join("・");
+    }
+    if (j.kind === "rechunk") return [ownerName(p), "文件 " + p.documents + " 篇", p.chunk_size ? sizeLabel(p.chunk_size) : "維持原本大小"].map(Admin.esc).join("・");
     return "每批 " + p.batch + "・待算 " + p.pending;
+  }
+  function embedNote(r) {
+    if (r.embed_error) return "；向量未算完（" + Admin.esc(r.embed_error) + "），目前只有關鍵字檢索";
+    return r.embedded !== undefined ? "；向量 " + r.embedded + " 個" : "";
   }
   function describeResult(j) {
     if (j.status === "failed") return '<span class="text-danger">' + Admin.esc(j.error || "") + "</span>";
     var r = j.result || j.progress || {};
-    if (j.kind === "department_txt") {
-      if (r.read === undefined) return "—";
-      var c = r.chunks || {};
-      return "新增 " + r.created + "・更新 " + r.updated + "・略過 " + r.skipped + "・重複 " + r.duplicates + "（讀取 " + r.read + " 篇）" +
-        (c.count ? "；片段 " + c.count + " 個、中位數 " + c.median + " 字、過短 " + c.under_min + "、過長 " + c.over_hard_max : "");
+    if (j.kind === "pdf_import") {
+      if (r.created === undefined) return "—";
+      var errors = r.errors || [];
+      return "新增 " + r.created + "・更新 " + r.updated + "・片段 " + r.chunks + " 個" + embedNote(r) +
+        (errors.length ? '<div class="text-danger">無法匯入 ' + errors.length + " 個：" + errors.slice(0, 5).map(function (x) { return Admin.esc(x.file) + "（" + Admin.esc(x.message) + "）"; }).join("、") + (errors.length > 5 ? "…" : "") + "</div>" : "");
     }
-    if (j.kind === "rechunk" && r.chunks !== undefined && r.documents !== undefined && r.done === undefined) return "文件 " + r.documents + " 篇 → 片段 " + r.chunks + " 個";
+    if (j.kind === "rechunk") {
+      if (r.documents !== undefined) return "文件 " + r.documents + " 篇 → 片段 " + r.chunks + " 個" + embedNote(r);
+      return r.done === undefined ? "—" : r.done + " / " + r.total;
+    }
     if (r.embedded !== undefined) return "完成 " + r.embedded + " 個片段";
     return r.done === undefined ? "—" : r.done + " / " + r.total;
   }
+  // 片段大小下拉與科別建議：選項來自後端（第一次載入時填一次）
+  function fillOptions(data) {
+    if (optionsReady) return;
+    optionsReady = true;
+    data.chunk_options.sizes.forEach(function (o) { chunkLabels[o.key] = o.label; });
+    document.querySelectorAll("[data-chunk-sizes]").forEach(function (select) {
+      var keep = select.hasAttribute("data-keep-option");
+      select.innerHTML = (keep ? '<option value="">維持各文件原本的大小</option>' : "") + data.chunk_options.sizes.map(function (o) {
+        return '<option value="' + Admin.esc(o.key) + '"' + (!keep && o.key === data.chunk_options.default ? " selected" : "") + ">" + Admin.esc(o.label) + "</option>";
+      }).join("");
+    });
+  }
+  function fillDepartments(data) {
+    document.getElementById("pdf-departments").innerHTML = data.departments.map(function (d) { return '<option value="' + Admin.esc(d) + '">'; }).join("");
+  }
   function renderJobs(data) {
+    fillOptions(data); fillDepartments(data);
     document.getElementById("system-stats").textContent = "文件 " + data.stats.documents + " 篇・片段 " + data.stats.chunks + " 個・已有向量 " + data.stats.embedded + " 個";
     var activeBox = document.getElementById("job-active"), running = !!data.active;
-    document.querySelectorAll("[data-job-start]").forEach(function (b) { b.disabled = running; });
-    activeBox.classList.toggle("d-none", !running);
+    document.querySelectorAll("[data-job-start]").forEach(function (b) { b.disabled = !!data.busy; });
+    activeBox.classList.toggle("d-none", !data.busy);
     if (running) {
       activeBox.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>' +
         Admin.esc(data.active.kind_label) + "（" + STATUS_LABEL[data.active.status] + "）　" + describeResult(data.active);
       if (!pollTimer) pollTimer = setInterval(loadJobs, 3000);
-    } else if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    } else {
+      // busy 但不是自己院所的工作：只提示要等，不顯示內容
+      if (data.busy) activeBox.textContent = "系統目前有其他衛教資訊工作進行中，請等它完成後再操作。";
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
     document.getElementById("job-empty").classList.toggle("d-none", data.recent.length > 0);
     document.getElementById("job-recent").innerHTML = data.recent.map(function (j) {
       return "<tr><td>" + Admin.esc(j.kind_label) + '</td><td><span class="badge text-bg-' + STATUS_CLASS[j.status] + '">' + STATUS_LABEL[j.status] + "</span></td><td class='small text-secondary'>" + describeParams(j) + "</td><td class='small'>" + describeResult(j) + "</td><td class='small text-secondary text-nowrap'>" + Admin.fmtDate(j.started_at || j.created_at) + "</td><td class='small text-secondary text-nowrap'>" + Admin.fmtDate(j.finished_at) + "</td></tr>";
@@ -239,18 +322,25 @@ Admin.boot(async function (ctx) {
   }
   if (canJobs) {
     document.getElementById("jobs-card").classList.remove("d-none");
-    document.getElementById("rechunk-btn").addEventListener("click", async function () {
-      if (!confirm("用目前的切段規則重建所有片段？已算好的向量會清掉，完成後要再按「計算向量」。")) return;
-      try { await startJob("/api/v1/admin/knowledge/jobs/rechunk", {}); }
+    document.getElementById("rechunk-form").addEventListener("submit", async function (e) {
+      e.preventDefault();
+      var size = e.target.elements.chunk_size.value;
+      var target = isSuper ? "所有院所的文件" : "本院所有文件";
+      if (!confirm("重建" + target + "的片段？" + (isSuper ? "已算好的向量會清掉，完成後要再按「計算向量」。" : "完成後會自動重算向量。"))) return;
+      try { await startJob("/api/v1/admin/knowledge/jobs/rechunk", size ? { chunk_size: size } : {}); }
       catch (err) { Admin.toast(err.message, "danger"); }
     });
+  }
+  if (canMaintain) {
+    document.getElementById("embed-form").classList.remove("d-none");
+    document.getElementById("jobs-help").textContent = "PDF 匯入、重建片段、計算向量都在背景執行、可重跑，同一時間只會跑一個工作。院所的匯入 / 重切做完會自動算向量；全庫重建片段後要另外按「計算向量」。";
     document.getElementById("embed-form").addEventListener("submit", async function (e) {
       e.preventDefault();
       try { await startJob("/api/v1/admin/knowledge/jobs/embed", { batch: Number(e.target.elements.batch.value) || 200 }); }
       catch (err) { Admin.toast(err.message, "danger"); }
     });
-    await loadJobs();
   }
+  if (canJobs) await loadJobs();
 });
 </script>
 {% endblock %}

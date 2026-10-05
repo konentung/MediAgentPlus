@@ -21,8 +21,8 @@ def menu_messages(liff_url: str) -> list[Message]:
         M.text(
             "服藥小幫手：你想做什麼？",
             quick_replies=[
-                M.postback_item("查看提醒", Intent.REMINDER, action="list"),
-                M.uri_item("新增 / 編輯提醒", liff_url),
+                # 修改：直接開 LIFF 提醒頁（查看 / 新增 / 編輯都在那一頁），不再多回一張 Flex
+                M.uri_item("查看 / 編輯提醒", liff_url),
                 M.postback_item("拍處方箋建立提醒", Intent.MEDICATION, action="photo"),
             ],
         )
@@ -87,10 +87,9 @@ def due_messages(items: list[dict[str, Any]], liff_url: str) -> list[Message]:
                 first=index == 0,
             )
         )
-    contents.append(theme.footnote(DISCLAIMER))
     bubble = theme.bubble(
         contents,
-        header=theme.header(f"⏰ {time_label} 該吃藥了", "服藥小幫手"),
+        header=theme.header(f"⏰ {time_label} 該吃藥了"),
         footer=[theme.link_button({"type": "uri", "label": "查看所有提醒", "uri": liff_url})],
     )
     names = "、".join(i["drug_name"] for i in items)[:60]

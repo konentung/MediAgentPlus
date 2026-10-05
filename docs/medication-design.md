@@ -80,7 +80,7 @@ APScheduler 每 5 分鐘 `ReminderService.run_due()`（`app/scheduler.py`）：
      Flex：藥名 / 劑量清單 + [✅ 已服用] [⏰ 30 分鐘後再提醒] [⏭ 這次跳過]
   ▼
 病人按鈕 → postback 寫回 reminder_deliveries.status；未回應不再追發（v1）
-Rich Menu「服藥提醒」→ 查看提醒（今日清單 + 狀態）/ 暫停 / 恢復 / 開 LIFF 編輯
+Rich Menu「服藥提醒」→「查看 / 編輯提醒」直接開 LIFF 提醒頁（2026-10-06，不再先回一張清單 Flex）/ 暫停 / 恢復
 ```
 
 「根據症狀」的提醒：v1 只做「處方箋」與「手動輸入」兩種來源；依症狀推論該吃什麼藥屬於醫療判斷，且依賴 Roadmap 第 2 項的病況諮詢，這裡不做（見 §10）。
@@ -433,7 +433,8 @@ flask --app wsgi media purge                                               # cro
 - 送去 OpenAI API 的圖片依 OpenAI 資料保留政策處理，這一點要寫進 `patient_consents` 的告知事項（新增 `consent_type=ai_processing`，第一次拍處方前要同意）。
 - `run-due` 推播失敗只記 log；LINE 端的 postback（taken / snooze）要驗證 `delivery` 屬於該使用者。
 - 藥局 / 藥品資料是公開資料，無個資；但 `patient_profiles.address_lat/lng` 是個資，比照住址處理。
-- 免責文字：所有藥物相關回覆結尾加一行「以上依處方箋內容整理，用藥疑問請洽藥師或原院所」。
+- 免責文字：藥名查詢的文字回覆結尾加一行「以上依處方箋內容整理，用藥疑問請洽藥師或原院所」；
+  Flex 卡片（辨識結果、到期提醒）不放註腳（2026-10-06，Flex 只放給使用者看的內容）。
 
 ## 10. 待確認問題
 

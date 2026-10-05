@@ -74,6 +74,17 @@ def nearest_district(
     return best[1], best[2]
 
 
+def district_centroid(city: str | None, district: str | None) -> tuple[float, float] | None:
+    """(縣市, 鄉鎮市區) → 該區中心點座標；清單沒有回 None。院所沒有座標時用來估距離。"""
+    if not city or not district:
+        return None
+    city = city.replace("臺", "台")
+    for c, d, lat, lng in district_centroids():
+        if c == city and d == district:
+            return lat, lng
+    return None
+
+
 def format_distance(km: float | None) -> str:
     if km is None:
         return ""

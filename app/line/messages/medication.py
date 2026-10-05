@@ -115,7 +115,6 @@ def prescription_result_messages(prescription: dict[str, Any], edit_url: str) ->
         )
     for warning in (prescription.get("warnings") or [])[:3]:
         contents.append(theme.text(f"⚠ {warning}", size="xs", color=theme.RED_STRONG, margin="sm"))
-    contents.append(theme.footnote(DISCLAIMER))
     pid = prescription["id"]
     bubble = theme.bubble(
         contents,

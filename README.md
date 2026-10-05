@@ -68,20 +68,20 @@ app/services/              UserService / FeedbackService / HospitalService / Int
 app/integrations/vision.py 處方箋照片辨識：提示詞與輸出模型，辨識交給 llm.py 的後端
 app/integrations/nhi_er.py 健保署急診即時訊息 API 客戶端（找醫院依使用者位置推薦用）
 app/integrations/llm.py    OpenAI 結構化輸出客戶端，對話助理與處方辨識共用
-data/knowledge/            AI 知識庫種子 Markdown（通用衛教、服務說明），後台「匯入 Markdown」上傳
+data/knowledge/            通用知識種子 Markdown（服務說明等），在後台「衛教資訊 → 新增文件」貼上
 data/                      開放資料與知識庫原始檔（不進版控，本機自行放置）：pharmacy/ 藥局藥品 CSV、knowledge/ 種子 Markdown、
-                           衛教內文_依科別分類/ 全台醫院衛教 txt（每科一檔）；都在後台上傳
+                           衛教資料以 PDF 為主，由各院所管理員在後台「資料匯入」上傳
 app/utils/crypto.py        FieldCipher：身分證指紋雜湊（HMAC）、處方箋照片加密（Fernet）
 app/line/                  Messaging client、webhook、EventDispatcher、IntentRouter、handlers、messages、Rich Menu、
                            state_store（對話狀態：等處方箋照片 / 等位置 / 等藥名）
-app/api/v1/                REST API：health / auth / liff / admin / triage（急診看板、分流建議、接收者）/ knowledge（AI 知識庫）
+app/api/v1/                REST API：health / auth / liff / admin / triage（急診看板、分流建議、接收者）/ knowledge（衛教資訊）
 app/pages.py               一般網頁（首頁 `/`）
 app/liff_pages.py          LIFF 頁面：/liff/intake（病人自填表）、/liff/settings、/liff/prescriptions/<id>、/liff/reminders、
                            /liff/er（急診即時看板，不需登入）
-app/admin_pages.py         院方後台頁面：/admin/*（儀表板、病人、工單、人員、AI 知識庫、設定）
+app/admin_pages.py         院方後台頁面：/admin/*（儀表板、病人、工單、人員、衛教資訊、設定）
 app/models/                SQLAlchemy 模型：Hospital / User / Feedback / Patient*（自填資料 7 張）/
                            PatientRecord*（院方紀錄 6 張）/ medication（處方、藥局、藥品、提醒排程、推播紀錄）/
-                           triage（急診即時快照）/ knowledge（AI 知識庫文件與片段、背景工作），
+                           triage（急診即時快照）/ knowledge（衛教資訊文件與片段、背景工作），
                            migrations/ 由 Flask-Migrate 管理
 app/templates/             Jinja 頁面（無獨立前端專案）：base.html、liff/、admin/、auth/、errors/
 tests/                     pytest（RBAC、JWT、OAuth、LIFF、webhook、intake、後台、藥局、處方、提醒、急診分流、AI 助理）
@@ -127,12 +127,12 @@ tests/                     pytest（RBAC、JWT、OAuth、LIFF、webhook、intake
 | GET | /api/v1/liff/reminders/history?days=7 | reminder:manage_own | 推播與回報紀錄 |
 | GET | /api/v1/triage/board?lat=&lng=（或 ?area=01） | 公開（rate limit） | 依使用者位置列最近 8 家急救責任醫院 + 燈號，`recommended` = 最近且未壅塞者；`?area=` 為 LIFF 縣市切換用 |
 | GET | /api/v1/triage/areas | 公開 | 地區代碼與燈號門檻說明 |
-| GET | /api/v1/admin/knowledge[/{id}]、/search?q= | education:content_manage | AI 知識庫文件（通用 + 本院）、搜尋 |
-| POST / PATCH / DELETE | /api/v1/admin/knowledge[/{id}] | education:content_manage | 新增 / 修改 / 刪除文件（院所綁自己；通用只有 SUPER_ADMIN） |
-| POST | /api/v1/admin/knowledge/import | education:content_manage | 上傳多個 Markdown（multipart `files`），同檔名更新 |
-| GET | /api/v1/admin/knowledge/jobs[/{id}] | reference_data:manage | 知識庫統計 + 進行中 / 最近的維護工作（頁面輪詢） |
-| POST | /api/v1/admin/knowledge/jobs/department-import | reference_data:manage | 上傳依科別分類的衛教 txt（multipart `files` 多檔，`min_chars` / `limit`），背景匯入為通用文件並記科別，回 202 |
-| POST | /api/v1/admin/knowledge/jobs/rechunk | reference_data:manage | 用目前切段規則重建所有片段（背景；向量清空），回 202 |
+| GET | /api/v1/admin/knowledge[/{id}]、/search?q= | education:content_manage | 衛教資訊文件（以院所為單位：院所管理員只看得到本院的，SUPER_ADMIN 看全部）、搜尋（所有院所共用、本院優先） |
+| POST / PATCH / DELETE | /api/v1/admin/knowledge[/{id}] | education:content_manage | 新增 / 修改 / 刪除文件（院所綁自己；通用與別家只有 SUPER_ADMIN） |
+| GET | /api/v1/admin/knowledge/hospitals | education:content_manage | 各院所的文件 / 片段 / 已有向量數（SUPER_ADMIN 看全部，院方帳號只有本院） |
+| GET | /api/v1/admin/knowledge/jobs[/{id}] | education:content_manage | 統計 + 進行中 / 最近的背景工作 + 片段大小選項與用過的科別（頁面輪詢）；院所管理員只看得到本院的 |
+| POST | /api/v1/admin/knowledge/jobs/pdf-import | education:content_manage | 上傳衛教 PDF（multipart `files` 多檔，`department`、`chunk_size` = small / medium / large），背景擷取文字、切段、自動算向量，回 202；一次上傳上限 `KNOWLEDGE_UPLOAD_MAX_MB`（預設 1 GB、最多 500 個檔）。院所管理員一律歸本院；SUPER_ADMIN 用 `hospital_id` 指定院所或留空（通用） |
+| POST | /api/v1/admin/knowledge/jobs/rechunk | education:content_manage | 重建片段（body 可帶 `chunk_size` 換大小）：院所管理員重建本院文件並自動重算向量；SUPER_ADMIN 重建全部（向量清空），回 202 |
 | POST | /api/v1/admin/knowledge/jobs/embed | reference_data:manage | 替還沒有向量的片段計算 embedding（背景、可重跑），同一時間只跑一個工作 |
 | GET | /api/v1/admin/permissions | staff:manage | 權限表 |
 | GET | /api/v1/admin/dashboard | patient:read | 待核對數、到期追蹤、開放工單 |
@@ -175,14 +175,14 @@ tests/                     pytest（RBAC、JWT、OAuth、LIFF、webhook、intake
 | /liff/settings | 病人設定頁（Rich Menu「設定」→ LIFF）：綁定狀態、資料摘要、進入表單 |
 | /liff/prescriptions/{id} | 處方辨識結果：看原始照片、修改藥品清單、確認、進入建立提醒 |
 | /liff/er?area=01 或 ?lat=&lng= | 急診即時看板（公開資料，不需登入，LINE 內外都能開）：「用我的位置」依距離推薦，或看各縣市燈號與等候人數 |
-| /admin/knowledge | 院方後台：AI 知識庫文件維護、Markdown 匯入、搜尋；系統管理員可在頁上匯入衛教內文 txt、重建片段與計算向量（背景工作、進度輪詢） |
+| /admin/knowledge | 院方後台：衛教資訊文件維護、搜尋（以院所為單位，院所管理員只看得到本院的文件，列表顯示每篇切成幾個片段）；系統管理員另有「各院所的衛教資訊」統計，可點進去看該院所的文件；匯入在「資料匯入」頁 |
 | /liff/reminders?prescription={id} | 服藥提醒總覽 / 新增 / 編輯；帶 `prescription` 會先載入該處方的建議排程 |
 | /admin | 院方後台儀表板；未登入 / 過期 / 非院方帳號一律導向 `/admin/login` |
 | /admin/login | 後台登入頁（「使用 LINE 登入」按鈕），`?next=` 登入後回原頁、`?error=` 顯示原因。LIFF 端不走這頁 |
 | /admin/patients、/admin/patients/{user_id} | 病人列表 / 詳情（核對、修正、就診、風險、追蹤、備註） |
 | /admin/feedback、/admin/staff | 意見回饋、人員角色 |
 | /admin/pharmacies、/admin/drugs | 藥局 / 藥品參考資料查詢 |
-| /admin/imports | 資料匯入：院所 / 藥局 / 藥品 CSV、知識庫 Markdown、衛教 txt（上傳顯示進度），以及知識庫背景工作（重建片段 / 計算向量） |
+| /admin/imports | 資料匯入：院所 / 藥局 / 藥品 CSV、衛教 PDF（選科別與片段大小，院所管理員匯入的歸本院；上傳顯示進度），以及衛教資訊背景工作（匯入進度、換片段大小重建片段；全庫計算向量只有系統管理員） |
 | /admin/settings、/admin/permissions、/admin/audit | 院所設定（本院資料、所有院所管理與匯入）、權限表查閱、稽核紀錄 |
 
 後台頁面骨架不需登入即可開啟，頁內 JS 用 `sessionStorage` 的 JWT 打 API，真正的授權在 API 端。
@@ -208,7 +208,7 @@ tests/                     pytest（RBAC、JWT、OAuth、LIFF、webhook、intake
 | patient / family | 驗證通過（本人 / 家屬） | guest 全部 + 個人化衛教、服藥提醒、個資讀寫 |
 | hospital_staff | 院內人員（管病人） | 意見回饋處理、對話讀取、病患讀取 / 修正 / 核對建檔、就診紀錄 |
 | medical_staff | 醫護（管藥） | 病患讀取（遮罩）、對話讀取、處方 / 服藥紀錄管理（`medication:manage`，後台頁面待做）、藥局查詢 |
-| hospital_admin | 院所管理員 | hospital_staff + medical_staff + 衛教內容 / AI 知識庫管理、權限表、人員管理、院所設定、Rich Menu、稽核 |
+| hospital_admin | 院所管理員 | hospital_staff + medical_staff + 衛教資訊管理、權限表、人員管理、院所設定、Rich Menu、稽核 |
 | super_admin | 系統管理員（開發 / 維運方，不屬於任何院所） | 全部 + 院所管理、參考資料匯入、系統管理 |
 
 角色分三方：用戶端（guest / patient / family）、院方（hospital_staff / medical_staff / hospital_admin，必須有所屬院所）、
@@ -233,8 +233,8 @@ tests/                     pytest（RBAC、JWT、OAuth、LIFF、webhook、intake
   `A21030000I-E41001-001.csv`（健保用藥）。
 - 找藥局不用地圖服務：LINE 位置訊息自帶地址，解析縣市 / 鄉鎮市區後比對 `pharmacies.city / district`。
 - 處方箋辨識與 AI 對話都走 **OpenAI API**（`OPENAI_API_KEY`；對話 `gpt-4.1-mini`、看圖 `gpt-4.1`，可用 `AI_MODEL` / `OCR_MODEL` 覆寫），透過 `app/integrations/llm.py` 的結構化輸出直接對到 pydantic 模型。
-- 知識庫資料由系統管理員在後台 `/admin/knowledge`「系統資料匯入」上傳依科別分類的衛教 txt、按「計算向量」（切段規則改了按「重建片段」）（背景執行、頁面輪詢進度，狀態存 `knowledge_jobs`）；通用種子 Markdown 用同頁的「匯入 Markdown」。
-- AI 知識庫檢索 = PostgreSQL 全文檢索（jieba 斷詞 tsvector）+ pgvector 語意檢索（`EMBEDDING_MODEL` 預設 `text-embedding-3-small`）以 RRF 合併；migration 會 `CREATE EXTENSION vector`，本機 PostgreSQL 需已安裝 pgvector。
+- 衛教資訊由各院所各自管理、檢索時不分院所：每份文件歸屬一家院所（或通用），所有病人都檢索得到，病人自己院所的內容優先、本院沒有相關內容時由其他院所補上。資料來源只有 PDF 與後台手動新增：院所管理員在後台 `/admin/imports` 上傳衛教 PDF（`pypdf` 擷取文字，選科別與片段大小，歸本院），匯入後自動切段並計算向量；想換片段大小可直接「重建片段」（背景執行、頁面輪詢進度，狀態存 `knowledge_jobs`）。掃描影像型 PDF 沒有文字層，無法匯入。大量 PDF 不想經瀏覽器上傳時可用 `python scripts/import_pdfs.py data`（同一套匯入邏輯，可重跑）。
+- 衛教資訊檢索 = PostgreSQL 全文檢索（jieba 斷詞 tsvector）+ pgvector 語意檢索（`EMBEDDING_MODEL` 預設 `text-embedding-3-small`）以 RRF 合併；migration 會 `CREATE EXTENSION vector`，本機 PostgreSQL 需已安裝 pgvector。
 - 服藥提醒由 `app/scheduler.py`（APScheduler）每 5 分鐘執行 `ReminderService.run_due()`；同一排程同一時段只推播一次，
   同一人同一批多顆藥合併成一則，封鎖官方帳號（`users.push_enabled=false`）的人自動略過。
 

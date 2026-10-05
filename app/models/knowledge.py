@@ -1,7 +1,8 @@
 """知識庫（RAG 檢索來源）：文件與斷詞後的片段。
 
-`hospital_id` 為 NULL 代表全系統通用，否則只對該院所的病人檢索得到。
-`department` 是衛教文章所屬科別（來自依科別分類的 txt 檔名），檢索時同科別的片段加權。
+`hospital_id` 是文件的歸屬（誰上傳、誰管理），NULL = 通用；檢索不分院所，病人自己院所的片段優先。
+`department` 是衛教文章所屬科別（上傳 PDF 時選，自由文字），檢索時同科別的片段加權。
+`meta.chunk_size` 是這份文件的片段目標字數（院所管理員上傳 / 重切時選）。
 片段由 `KnowledgeService` 依 `app/domain/retrieval.py` 切段與斷詞後寫入：
 - `heading` / `kind`：片段所在的標題路徑（章 › 節）與型態（text / list / table / qa），顯示與除錯用
 - `tokens`：jieba 斷詞結果（SQLite 測試環境的記憶體 BM25 用）
@@ -42,12 +43,12 @@ class KnowledgeDocumentModel(db.Model, TimestampMixin):
     hospital_id: Mapped[str | None] = mapped_column(
         String(32), ForeignKey("hospitals.id", ondelete="SET NULL"), index=True
     )
-    department: Mapped[str | None] = mapped_column(String(50), index=True)  # 科別（衛教 txt 檔名）
+    department: Mapped[str | None] = mapped_column(String(50), index=True)  # 科別（自由文字）
     content: Mapped[str] = mapped_column(Text, nullable=False)
     tags: Mapped[list | None] = mapped_column(JsonColumn)
     source: Mapped[str | None] = mapped_column(String(500), index=True)  # 檔名 / 網址，匯入時去重
     content_hash: Mapped[str | None] = mapped_column(String(40), index=True)  # 內文 SHA-1，去重
-    meta: Mapped[dict | None] = mapped_column(JsonColumn)  # 出處：醫院、層級、主題、格式
+    meta: Mapped[dict | None] = mapped_column(JsonColumn)  # 出處醫院、檔名、頁數、chunk_size
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_by: Mapped[str | None] = mapped_column(String(32))
 
@@ -82,14 +83,12 @@ class KnowledgeChunkModel(db.Model, TimestampMixin):
 
 
 class KnowledgeJobModel(db.Model, TimestampMixin):
-    """後台觸發的長時間維護工作（衛教 txt 匯入 / 重建片段 / 向量計算），在背景執行緒跑。"""
+    """後台觸發的長時間維護工作（衛教 PDF 匯入 / 重建片段 / 向量計算），在背景執行緒跑。"""
 
     __tablename__ = "knowledge_jobs"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
-    kind: Mapped[str] = mapped_column(
-        String(32), nullable=False
-    )  # department_txt / rechunk / embed
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)  # pdf_import / rechunk / embed
     status: Mapped[str] = mapped_column(
         String(16), default="queued", nullable=False
     )  # queued / running / succeeded / failed

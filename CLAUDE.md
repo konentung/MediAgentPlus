@@ -19,7 +19,9 @@ pytest tests/test_rbac.py::test_hospital_scope   # 單一測試
 pytest tests/test_intake.py tests/test_patient_admin.py   # 病人表單 + 院方後台
 pytest tests/test_triage.py              # 急診動態分流
 pytest tests/test_assistant.py           # AI 對話助理（RAG + 事件判斷）
+pytest tests/test_knowledge_pdf.py       # 衛教資訊：PDF 匯入、重切、各院所統計
 pytest -p no:warnings                    # 隱藏 PyJWT 短金鑰警告（測試用金鑰刻意很短）
+FREEZE_AT="2030-01-01 08:00:00" pytest   # 把「現在」凍結在未來（UTC），檢查測試會不會因日期過期而失敗
 
 ruff check . && ruff format .            # lint + 格式化，行長 100，tests/ 不檢查 E501
 
@@ -29,7 +31,11 @@ flask --app wsgi db migrate -m "..."     # 依模型變更產生 migration（需
 flask --app wsgi db upgrade              # 套用 migration
 ```
 
-**不要測試 AI 功能**：不要為了驗證而執行任何會真的呼叫 OpenAI 的流程（後台「計算向量」、
+**測試不要寫死會過期的日期**（2026-10-05）：測試裡的固定日期只要會跟真實時鐘比較（「最近 7 天」的查詢、保留 30 天的清除…），
+過一陣子就會開始失敗；這類時間一律用 `now_tw()` / `datetime.now()` 相對計算，或把 `now` 當參數傳進被測函式。
+新增跟時間有關的測試後，用 `FREEZE_AT=...`（`tests/conftest.py`，freezegun）挑幾個未來日期跑一次確認。
+
+**不要測試 AI 功能**：不要為了驗證而執行任何會真的呼叫 OpenAI 的流程（後台「計算向量」、衛教 PDF 匯入（會自動算向量）、
 處方箋辨識、LINE 自由文字對話等），也不要花時間驗證 AI 回答品質；
 這些會產生費用且結果不穩定。`pytest` 裡的 AI 相關測試（`tests/test_assistant.py`、`tests/test_llm_backends.py`、
 `tests/test_prescription.py`）全用 `FakeLlmClient` / `FakeVisionClient`，照常跑即可，但除非使用者明確要求，
@@ -38,8 +44,10 @@ flask --app wsgi db upgrade              # 套用 migration
 環境設定來自 `.env`（複製 `.env.example`），`config/settings.py` 在 import 時以 `load_dotenv(override=True)` 讀取；
 改 `.env` 需重啟，**環境變數會被 `.env` 蓋掉**，一次性腳本要用 `create_app("testing")` 而不是 `FLASK_ENV=testing`。
 
-**沒有 CLI、沒有 cron**（2026-09-28 移除 `app/cli.py`）：所有資料維護都在後台 `/admin/*` 做（院所 / 人員角色 / 藥局藥品 CSV /
-知識庫 Markdown、衛教 txt、重建片段、算向量）。定時工作由 `app/scheduler.py`（APScheduler，`create_app()` 內啟動）執行：
+**沒有 CLI、沒有 cron**（2026-09-28 移除 `app/cli.py`；唯一的例外是 2026-10-05 使用者要求的 `scripts/import_pdfs.py`：
+`python scripts/import_pdfs.py [資料夾=data] [--hospital 代碼] [--department 科別] [--chunk-size small|medium|large] [--no-embed]`
+把資料夾裡的衛教 PDF 直接匯入並算向量，不經瀏覽器上傳，走同一個 `KnowledgeService.import_pdfs()`、可重跑；會連 `.env` 的資料庫並呼叫 OpenAI 算向量）：所有資料維護都在後台 `/admin/*` 做（院所 / 人員角色 / 藥局藥品 CSV /
+衛教 PDF、重建片段、算向量）。定時工作由 `app/scheduler.py`（APScheduler，`create_app()` 內啟動）執行：
 每 5 分鐘 `ReminderService.run_due()`、每 15 分鐘 `TriageService.poll()`；多 worker 用 Redis `SET NX` 鎖去重，
 `SCHEDULER_ENABLED=false` 關閉（測試環境預設關）。第一位 SUPER_ADMIN 由 `.env` 的 `SUPER_ADMIN_LINE_USER_IDS`
 （LINE userId，逗號分隔）指定，這些人登入 / 加好友時 `UserService.get_or_create_by_line()` 自動升級；其餘角色在後台指派。
@@ -58,7 +66,7 @@ Rich Menu 在 LINE Official Account Manager 建立，六格動作設「文字」
 
 ### 授權集中在 `app/domain/rbac.py`
 
-角色分三方（`app/domain/enums.py`）：用戶端 `END_USER_ROLES`（GUEST / PATIENT / FAMILY）、院方 `HOSPITAL_ROLES`（HOSPITAL_STAFF 管病人：客服工單 + 病人核對建檔 + 就診紀錄；MEDICAL_STAFF 管藥：`MEDICATION_MANAGE`，病人唯讀；HOSPITAL_ADMIN = 兩者 + `EDUCATION_CONTENT_MANAGE`（AI 知識庫）+ 管理。後台選單（2026-10-02）：AI 知識庫 = `EDUCATION_CONTENT_MANAGE`（讀寫都要，院所管理員 / 系統管理員）、藥局 = `MEDICATION_MANAGE`（院內人員看不到）、權限表 = `STAFF_MANAGE`；選單 `data-perm` 與 API decorator 用同一個權限，都必須有 `hospital_id`）、系統方 `SYSTEM_ROLES`（SUPER_ADMIN，開發 / 維運，不屬於院所、不受隔離）。`is_staff` = 院方 + 系統方（可登入後台），「必須有院所」的判斷用 `is_hospital_staff`。前端不硬編碼角色清單，用 `/api/v1/auth/me` 的 `is_staff` / `assignable_roles`。2026-09-28 `CS_AGENT` 改名 `HOSPITAL_STAFF`（併入 `0001_initial`，沒有另開 migration）。
+角色分三方（`app/domain/enums.py`）：用戶端 `END_USER_ROLES`（GUEST / PATIENT / FAMILY）、院方 `HOSPITAL_ROLES`（HOSPITAL_STAFF 管病人：客服工單 + 病人核對建檔 + 就診紀錄；MEDICAL_STAFF 管藥：`MEDICATION_MANAGE`，病人唯讀；HOSPITAL_ADMIN = 兩者 + `EDUCATION_CONTENT_MANAGE`（衛教資訊）+ 管理。後台選單（2026-10-02）：衛教資訊 = `EDUCATION_CONTENT_MANAGE`（讀寫都要，院所管理員 / 系統管理員）、藥局 = `MEDICATION_MANAGE`（院內人員看不到）、權限表 = `STAFF_MANAGE`；選單 `data-perm` 與 API decorator 用同一個權限，都必須有 `hospital_id`）、系統方 `SYSTEM_ROLES`（SUPER_ADMIN，開發 / 維運，不屬於院所、不受隔離）。`is_staff` = 院方 + 系統方（可登入後台），「必須有院所」的判斷用 `is_hospital_staff`。前端不硬編碼角色清單，用 `/api/v1/auth/me` 的 `is_staff` / `assignable_roles`。2026-09-28 `CS_AGENT` 改名 `HOSPITAL_STAFF`（併入 `0001_initial`，沒有另開 migration）。
 
 `ROLE_PERMISSIONS` 是明確列舉（非階層繼承），`AccessPolicy` 是唯一的判斷入口，包含院所隔離 `can_access_hospital()`（SUPER_ADMIN 不受限）與角色指派範圍 `can_assign_role()`。新增權限時同時改 `Permission` 列舉與此對照表，`tests/test_rbac.py` 有對角色集合關係的斷言。
 
@@ -84,7 +92,7 @@ Enum 欄位（`Role`/`BindingStatus`）一律用 `sa.Enum(..., native_enum=False
   **就診 / 住院紀錄不需要先建檔**（2026-10-01）：`add_encounter()` 在病人還沒建檔時先把病人指定到本院（還沒人新增的病人會推播確認，需 `PATIENT_VERIFY`；SUPER_ADMIN 要帶 `hospital_id`）並開一筆 `patient_records.status="draft"` 的暫存紀錄；`verify()` 把 draft 轉成 `active`（就診紀錄保留），病人按「不是」時 `IntakeService.confirm_hospital()` 把 draft 連同底下紀錄刪除。「是否已建檔」一律看 `status != "draft"`，不要只看紀錄存不存在。
 - **身分證**：**不存明碼也不存密文**（2026-09-28 移除 `national_id_encrypted` 欄位與 `PATIENT_IDENTITY_READ`）。`IntakeService._digest_national_id()` 用 `FieldCipher.fingerprint()`（HMAC，金鑰 `PATIENT_DATA_KEY`）算 `national_id_fingerprint` 並留 `national_id_last4`，所有 API、所有後台角色一律只回遮罩 `******1234`；院方核對用末四碼 + 姓名 + 生日對照 HIS。前端回傳遮罩字串代表沒改。同一指紋出現在第二個帳號 → 送出時回 409。
 - **狀態轉換**：送出 → `PENDING`；院方 verify → `VERIFIED` + 角色；reject → `UNBOUND`。送出後（`PENDING` / `VERIFIED`）病人端**唯讀**：`IntakeService._ensure_can_edit()` 對存步驟 / 送出回 403（`details.read_only=true`），`GET /liff/intake` 回 `read_only` 讓前端把表單鎖成檢視模式；資料修正只能由院方在後台做。每次送出都在 `patient_form_submissions` 存一份原始 JSON，院方修正只改結構化表並寫 `patient_record_reviews.corrections`。
-- **後台**：`/admin/*`（`app/admin_pages.py`）是 Jinja + Bootstrap 骨架，頁內 JS 讀 `sessionStorage` 的 JWT 打 `/api/v1/admin/*`，沿用 LINE Login callback 存 token 的機制，沒有 cookie session。未登入 / 過期 / 非院方帳號都導到 `/admin/login`（獨立登入頁，`?next=` 只接受 `/admin` 開頭的路徑）；LIFF 端不經過這頁，維持 `liff.init()` 自動登入。選單依 `/api/v1/auth/me` 回傳的權限隱藏，真正授權在 API decorator。後台每頁只載入 `GET /api/v1/admin/hospitals/options`（醫院層級、不含診所，約幾百家）供下拉選單與名稱顯示；院所 / 藥局 / 藥品等上萬筆的清單一律走分頁 API（`app/core/pagination.py` 的 `PAGE_SIZE=15` + `page_payload()`、`repositories/base.py` 的 `paginate()`），前端用 `Admin.pagination()` 畫頁碼（超過 5 頁時多一個「跳到第 N 頁」輸入框），不要一次抓全部。**後台清單頁版面統一**（2026-10-02，以藥局頁為準）：一張 card 內依序是篩選 panel（`form.row.g-2#filter-form`：關鍵字 + 下拉 + 「搜尋 / 清除」）、`table table-sm table-hover align-middle`、空資料提示 `<p>`、分頁，標題右側顯示「共 N 筆」；縣市 / 鄉鎮市區篩選一律用 `Admin.districtSelects(citySelect, districtSelect)` 連動下拉（資料來自 `GET /api/v1/admin/districts` = `tw_districts.csv`），院所清單的鄉鎮市區以「地址包含」比對、列上的 `city` / `district` 由地址解析，表格不顯示座標（在編輯視窗看）。**匯入集中在 `/admin/imports`「資料匯入」頁**（2026-10-02）：選資料類型（院所 / 藥局 / 藥品 CSV、知識庫 Markdown、衛教 txt，依權限過濾）→ 選檔 → `Admin.upload()`；知識庫背景工作（重建片段 / 計算向量 / 進度輪詢）也在這頁，各清單頁不再放匯入表單、只留連結（`?type=` 預選類型）。API 端點不變。指派院所用 `Admin.hospitalPicker(input, hidden)`（文字框 + datalist，可打名稱關鍵字或院所代碼；不在選單內的診所可直接輸入代碼）。系統方角色一律不掛院所（`assign_role` 升為 SUPER_ADMIN 時清掉 `hospital_id`），院所管理員的人員清單不列系統方帳號。後台把 `BindingStatus.LOCKED` 顯示為「黑名單」（病人端文案仍是「帳號已鎖定」）。SUPER_ADMIN 在「院所設定」可新增（代碼 / 名稱 / 區域 / 電話 / 層級 / 地址 / 科別 / 座標）與編輯任一院所（列上的「編輯」modal，走同一支 PATCH）。Service 透過 `lambda: container.line_client` 取 LINE client，測試替換 `container.line_client` 才會生效。
+- **後台**：`/admin/*`（`app/admin_pages.py`）是 Jinja + Bootstrap 骨架，頁內 JS 讀 `sessionStorage` 的 JWT 打 `/api/v1/admin/*`，沿用 LINE Login callback 存 token 的機制，沒有 cookie session。未登入 / 過期 / 非院方帳號都導到 `/admin/login`（獨立登入頁，`?next=` 只接受 `/admin` 開頭的路徑）；LIFF 端不經過這頁，維持 `liff.init()` 自動登入。選單依 `/api/v1/auth/me` 回傳的權限隱藏，真正授權在 API decorator。後台每頁只載入 `GET /api/v1/admin/hospitals/options`（醫院層級、不含診所，約幾百家）供下拉選單與名稱顯示；院所 / 藥局 / 藥品等上萬筆的清單一律走分頁 API（`app/core/pagination.py` 的 `PAGE_SIZE=15` + `page_payload()`、`repositories/base.py` 的 `paginate()`），前端用 `Admin.pagination()` 畫頁碼（超過 5 頁時多一個「跳到第 N 頁」輸入框），不要一次抓全部。**後台清單頁版面統一**（2026-10-02，以藥局頁為準）：一張 card 內依序是篩選 panel（`form.row.g-2#filter-form`：關鍵字 + 下拉 + 「搜尋 / 清除」）、`table table-sm table-hover align-middle`、空資料提示 `<p>`、分頁，標題右側顯示「共 N 筆」；縣市 / 鄉鎮市區篩選一律用 `Admin.districtSelects(citySelect, districtSelect)` 連動下拉（資料來自 `GET /api/v1/admin/districts` = `tw_districts.csv`），院所清單的鄉鎮市區以「地址包含」比對、列上的 `city` / `district` 由地址解析，表格不顯示座標（在編輯視窗看）。**匯入集中在 `/admin/imports`「資料匯入」頁**（2026-10-02）：選資料類型（院所 / 藥局 / 藥品 CSV、衛教 PDF，依權限過濾）→ 選檔 → `Admin.upload()`；衛教資訊背景工作（PDF 匯入進度 / 重建片段 / 計算向量）也在這頁，各清單頁不再放匯入表單、只留連結（`?type=` 預選類型）。API 端點不變。指派院所用 `Admin.hospitalPicker(input, hidden)`（文字框 + datalist，可打名稱關鍵字或院所代碼；不在選單內的診所可直接輸入代碼）。系統方角色一律不掛院所（`assign_role` 升為 SUPER_ADMIN 時清掉 `hospital_id`），院所管理員的人員清單不列系統方帳號。後台把 `BindingStatus.LOCKED` 顯示為「黑名單」（病人端文案仍是「帳號已鎖定」）。SUPER_ADMIN 在「院所設定」可新增（代碼 / 名稱 / 區域 / 電話 / 層級 / 地址 / 科別 / 座標）與編輯任一院所（列上的「編輯」modal，走同一支 PATCH）。Service 透過 `lambda: container.line_client` 取 LINE client，測試替換 `container.line_client` 才會生效。
 - **安全相關慣例**：院方查詢範圍一律用 `AccessPolicy.hospital_scope(actor)`（無 `hospital_id` 的院方帳號直接 403，不可退化成不過濾）；高敏感操作（鎖定 / 解鎖帳號）寫 `audit_logs`（`container.audit_repo.record()`）；容易被暴力嘗試的端點掛 `@rate_limit()`（`app/core/ratelimit.py`，測試環境 `RATELIMIT_ENABLED=False`）；「今天」一律用 `app/utils/clock.today_tw()`；LINE 推播失敗只記 log 不讓交易失敗（`_notify`）。同一身分證出現在第二個帳號只回 409 不自動鎖定（家屬與本人可能各自填），冒用由院方核對時判斷、必要時後台鎖定。
 - `get_config()` 在 `FLASK_ENV` 未設定時視為 production 並拒絕範例金鑰；本機開發務必在 `.env` 設 `FLASK_ENV=development`。
 - **登入效期**：只有 access token，**沒有 refresh token、沒有 `auth_sessions` 表、沒有伺服器端登出**（2026-09-28 移除）。`JwtService.issue(principal)` 依角色決定效期：一般使用者 `JWT_ACCESS_TOKEN_EXPIRES`（預設 1 小時）、院方角色 `JWT_STAFF_ACCESS_TOKEN_EXPIRES`（預設 8 小時）。到期後 LIFF 端 `liff/base.html` 的 `api()` 收到 401 會重跑 `login()`（`liff.init()` 自動換新 id_token）再重送；後台 `admin/base.html` 收到 401 導回 `/admin/login`。登出只是前端清 sessionStorage。帳號鎖定 / 降權靠每個請求重載使用者立即生效，不需撤銷 token。
@@ -140,41 +148,72 @@ Rich Menu / Quick Reply / Flex 按鈕的 postback、圖片、位置訊息，以�
   `container.llm_client`。
 - **檢索（RAG 的 R）= 混合檢索**：關鍵字（`app/domain/retrieval.py` 的 jieba 搜尋模式 + 字元 bigram + `CUSTOM_WORDS`
   → PostgreSQL tsvector 全文檢索，GIN 索引）+ 語意（`OpenAiClient.embed()`，`EMBEDDING_MODEL` 預設 `text-embedding-3-small`，
-  pgvector `vector(1536)` + HNSW 索引），各取 20 個候選後 `rrf_fuse()` 合併、同一份文件最多 2 個片段
+  pgvector `vector(1536)` + HNSW 索引），各取 10 個候選（`CANDIDATES_PER_SOURCE`，2026-10-04 由 20 調降）後 `rrf_fuse()` 合併、同一份文件最多 2 個片段
   （`KnowledgeService.retrieve()`、`SqlAlchemyKnowledgeRepository.search_keyword / search_vector`）。
   SQLite（測試）用記憶體 `BM25Index` 與 Python 餘弦；沒有向量或查詢向量失敗時只用關鍵字。
   `retrieve(department=)` 有科別時再多兩個「只在該科別內」的排序清單一起 RRF → **同科別加權、不硬過濾**
   （科別分類正確率約 9 成）；科別來源是已驗證病人最近就診的科別（`ConversationService._patient_block()`）。
+  **檢索不分院所、本院優先（2026-10-04 定案）**：衛教資訊是所有院所 + 通用的共用池，`ConversationService.build_context()`
+  不限範圍檢索，並把病人自己的院所（所屬院所 / `preferred_hospital_id`）傳給 `retrieve(prefer_hospital_ids=)`：
+  多兩個「只在本院內」的排序清單進 RRF，但只收**夠相關**的本院片段（分數 ≥ 全庫第一名 × `PREFER_MIN_VECTOR_RATIO` 0.85 /
+  `PREFER_MIN_KEYWORD_RATIO` 0.5，經驗值、未用真實語料調過），所以本院沒有相關內容時結果就是其他院所 / 通用的，
+  不會把本院不相干的文件硬排到前面。`hospital_ids` 參數仍可明確限定範圍：`None` = 不限；list = 只含列出的範圍
+  （`None` 元素 = 通用文件），`[None, "H1"]` = 通用 + H1、`["H1"]` = 只有 H1。
+  PostgreSQL 的向量查詢在有院所 / 科別條件時用 `ORDER BY (embedding <=> v) + 0` 讓 HNSW 不適用、
+  改在過濾後的片段內精確計算（HNSW 是先取全庫近鄰再套 WHERE，限定單一院所會湊不滿）；不限範圍才走 HNSW。
+  不限院所時各院轉載的相同片段只留一份（`retrieve()` 以片段內文去重）。
   `tokens` / `search_vector` / `embedding` 都存 DB；向量輸入 = `科別 › 標題 + 片段`，由後台「計算向量」補算（只算 NULL 的，可重跑）。
   SQLite 的 `embedding` 用 `JSON(none_as_null=True)`，否則 None 會存成 `'null'` 字串、`IS NULL` 濾不掉。
 - **切段（2026-09-29 重寫為結構感知 recursive chunking）** `app/domain/retrieval.py` 的 `chunk_document()`：
-  `clean_lines()` 先去樣板行（Qrcode / 麵包屑 / 日期 / 目錄頁 / 與標題重複的行 / 語料級統計出的導覽列
-  `collect_boilerplate()`：只算每篇頭尾 15 行內、在一串短行中出現 ≥ 30 篇且占比 ≥ 0.8 的短行）→ 空行切 block →
+  `clean_lines()` 先去樣板行（Qrcode / 麵包屑 / 日期 / 目錄頁 / 與標題重複的行）→ 空行切 block →
   `_classify()` 認 標題（`#`、壹、一、（一）、1.、≤20 字無句尾標點的短行；編號行後面接同家族編號行就是條列不是標題）/
   條列（連續同家族 + 以「：」結尾的引言）/ 表格（連續 6 個 ≤ 25 字短 block，多數以句號結尾則是一句一行的條列）/ 問答（Q + 下一段）
   → 超過硬上限（目標 400 × 1.5）的 block 依 換行 → 句號 → 逗號 遞迴下探、不在句中切 → 同一小節內貪婪合併到 400、
   相鄰片段重疊最後一句 → 不到 80 字的尾巴併回前一段。每個片段前綴標題路徑「章 › 節：內文」，另存 `knowledge_chunks.heading` / `kind`
-  （text / list / table / qa）。改規則後在後台按「重建片段」（`KnowledgeJobService` kind `rechunk`，向量會清掉要重算）。
-  實測（25,642 篇）：112,590 個片段、中位數 331 字、不到 80 字 0.1%、超過 600 字 0.03%。
+  （text / list / table / qa）。**片段大小由院所管理員選**（2026-10-04）：`KnowledgeService.CHUNK_SIZES`
+  small 300 / medium 400 / large 600 字（目標字數，硬上限與下限依比例），存在文件的 `meta.chunk_size`、
+  `_chunks_for()` 依它切；上傳 PDF 時選，之後可在「資料匯入」頁對本院文件換大小「重建片段」（`KnowledgeJobService` kind `rechunk`）。
 - **知識庫** `knowledge_documents` / `knowledge_chunks`（`app/models/knowledge.py`，migration `0003_knowledge_department`
-  加了 `department` / `heading` / `kind`）：`hospital_id` 空 = 通用；院所文件只有
-  常去院所 / 所屬院所是它的使用者檢索得到。`source`（檔名或網址）與 `content_hash` 去重，`meta` 存出處
-  （`hospital_name` / `level` / `department` / `source_category` / `imported_from`）。後台 `/admin/knowledge`（列表、編輯、Markdown 多檔匯入、搜尋），
-  API `/api/v1/admin/knowledge*`：讀取與寫入都要 `EDUCATION_CONTENT_MANAGE`（綁自己院所），通用文件只有 SUPER_ADMIN。
-  種子 `data/knowledge/*.md`（front matter：title / category / tags / hospital_id），用後台「匯入 Markdown」上傳。分類在 `KnowledgeService.CATEGORIES`。`data/` 整個目錄不進版控。
-- **後台系統資料匯入**（`/admin/knowledge` 只有 SUPER_ADMIN 看得到的卡片，權限 `REFERENCE_DATA_MANAGE`）：
-  衛教 txt 匯入、重建片段、計算向量都要跑幾分鐘，由 `KnowledgeJobService`（`app/services/knowledge_job_service.py`）
+  加了 `department` / `heading` / `kind`）：**管理以院所為單位、檢索不分院所（2026-10-04）**，每份文件用 `hospital_id` 記錄歸屬
+  （誰上傳、誰管理），空 = 通用（只有 SUPER_ADMIN 看得到、能改）。**院所管理員在後台只看得到、只能改自己院所的文件**
+  （`KnowledgeService.list()` / `_get_owned()`，通用與別家的單篇回 403），但**所有院所上傳的內容病人都檢索得到**（本院優先，見上），
+  後台搜尋 = 本院病人會檢索到的片段。
+  `source`（檔名或網址）與 `content_hash` 去重**以院所為單位**（不同院所可各有一份相同內文），`meta` 存出處
+  （`hospital_name` / `department` / `imported_from` / `pages` / `chunk_size`）。後台 `/admin/knowledge`（選單名稱「衛教資訊」：列表含每篇片段數、編輯、搜尋；
+  **SUPER_ADMIN 多一張「各院所的衛教資訊」**：`GET /api/v1/admin/knowledge/hospitals` 每家院所的文件 / 片段 / 已有向量數，點一列篩出該院所的文件），
+  API `/api/v1/admin/knowledge*`：讀取與寫入都要 `EDUCATION_CONTENT_MANAGE`（綁自己院所）。
+  後台手動新增 / 修改文件後 `_embed_quietly()` 順手算該範圍還沒有的向量（算不了只記 log）。
+  科別是自由文字（上傳 PDF 時選、或在後台編輯），**各院所可以有自己的科別分類**：`KnowledgeService.detect_department()`
+  先比對檢索範圍內實際用到的科別名稱，再退回通用科別表 / 口語別名（`retrieval.department_in_text()`），就診紀錄的科別也走同一套。
+  **資料來源只有 PDF 上傳與後台手動新增**（2026-10-04：txt / Markdown 匯入都移除，`data/knowledge/*.md` 種子要用「新增文件」貼上）。分類在 `KnowledgeService.CATEGORIES`。`data/` 整個目錄不進版控。
+- **知識庫背景工作**（`/admin/imports`，`KnowledgeJobService`）：kind `pdf_import` / `rechunk` / `embed`。
+  PDF 匯入、重建片段與進度查詢是 `EDUCATION_CONTENT_MANAGE`（院所管理員只動、只看得到自己院所的工作與統計；
+  別人的工作進行中只回 `busy`），全庫「計算向量」只有 SUPER_ADMIN（`REFERENCE_DATA_MANAGE`）。
+  **院所範圍的匯入 / 重切做完自動接著算該院所的向量**（`_embed_scope()`；算不了不讓工作失敗，原因記在結果的 `embed_error`，
+  片段照存、關鍵字檢索可用）；SUPER_ADMIN 重建全部時向量清掉、要另外按「計算向量」。
   建 `knowledge_jobs` 列後交給 `spawn`（容器預設開 daemon 執行緒 + app context）執行，進度寫回 `progress`，
-  頁面每 3 秒輪詢 `GET /api/v1/admin/knowledge/jobs`；同一時間只允許一個工作，超過 30 分鐘沒更新的視為中斷。
-  上傳檔暫存 `MEDIA_ROOT/knowledge-imports/<job_id>/`，跑完即刪。測試以 `container.knowledge_jobs.spawn = lambda fn: fn()` 同步執行。
-- **衛教內文資料（2026-09-29 改以「依科別分類」的 txt 為準，原 JSONL 匯入器移除）**：
-  `衛教內文_依科別分類/01_心臟內科.txt … 57_未分類.txt`（每科一檔、篇與篇用 60 個 `=` 分隔、四行檔頭
-  標題 / 醫院（層級）/ 來源分類 / 網址，由 `分類腳本.py` 從原 JSONL 產生，正確率約 9 成）。
-  `KnowledgeService.import_department_files()`：檔名決定 `knowledge_documents.department`（「非衛教」整檔略過、
-  「未分類」照收但科別留空）；只收內文 ≥ 200 字、中文比例 ≥ 0.4、內文 SHA-1 不重複；**同網址的文件更新**（補科別、重切）
-  而不是略過，所以可重跑；`tags` = [科別]、出處在 `meta`（hospital_name / level / source_category / imported_from）。
-  兩遍掃描（先統計樣板行再匯入），批次 500 篇一次 commit，結果回報片段長度分佈（`chunk_stats()`）。
-  後台一次選多個 txt 上傳（`POST /api/v1/admin/knowledge/jobs/department-import`，`Admin.upload()` 多檔 + 進度）。
+  頁面每 3 秒輪詢 `GET /api/v1/admin/knowledge/jobs`（同時回片段大小選項與範圍內用過的科別）；同一時間只允許一個工作，
+  超過 30 分鐘沒更新的視為中斷。上傳檔暫存 `MEDIA_ROOT/knowledge-imports/<job_id>/<序號>.pdf`，跑完即刪（**原始 PDF 不保留**，只存擷取出的文字）。
+  測試以 `container.knowledge_jobs.spawn = lambda fn: fn()` 同步執行。
+- **衛教 PDF 匯入（2026-10-04，取代依科別分類的 txt）**：`POST /api/v1/admin/knowledge/jobs/pdf-import`
+  （multipart `files` 多檔 + `department` + `chunk_size` + SUPER_ADMIN 才有用的 `hospital_id`）→ `KnowledgeService.import_pdfs()`：
+  **一個 PDF 一篇文件**，標題 = 檔名、`source` = 檔名（**同院所同檔名重傳 = 更新**）、category = education，
+  科別整批套用（上傳時選，自由文字，下拉建議本院用過的）；院所管理員一律歸自己院所，SUPER_ADMIN 指定院所或留空（通用）。
+  讀不了的檔（損毀 / 加密 / 掃描影像沒有文字層）列在結果的 `errors`，不影響其他檔；內文上限 `MAX_CONTENT_CHARS` 20 萬字。
+  **上傳上限只對這個端點放寬**（2026-10-05）：view 內在讀 `request.files` 前設 `request.max_content_length` =
+  `KNOWLEDGE_UPLOAD_MAX_MB`（預設 1024 MB，其餘端點仍是 `MAX_CONTENT_LENGTH` 128 MB），一次最多 `MAX_UPLOAD_FILES` 500 個檔；
+  超過上限回 413（訊息帶實際套用的上限），資料匯入頁送出前也會先檢查總大小與檔數。
+  文字擷取在 `app/utils/pdf.py`（`pypdf`）：`normalize_pdf_pages()` 先把康熙部首區的字元換回一般漢字
+  （PDF 常把「高血壓」抽成字碼不同的「⾼⾎壓」，不換關鍵字檢索對不到；只對部首 / 連字區做 NFKC，全形標點不動）、
+  （CJK 相容表意文字 U+F900–FAFF 也換回：「不 來 老 行」這類同形異碼字，實測一份 PDF 就有 8 千多個）、
+  去掉 NUL 等控制字元（PostgreSQL 文字欄位不接受 NUL，`retrieval.clean_text()`）、
+  濾掉字型沒有文字對應表造成的亂碼行（`is_garbled_text()`：一行的字母有 15% 以上不是漢字 / 拉丁 / 希臘 / 假名，且混了兩種以上文字系統；
+  同一頁亂碼行 ≥ 3 行時連全是非預期文字的短行也拿掉；`_chunks_for()` 切段後再對片段的每一行檢查一次）、
+  去頁碼行與每頁重複的頁首頁尾、把排版折行接回同一段（一行寫滿版面寬度且不是句尾標點結束 → 下一行同段），
+  其餘每行各自成段（標題、條列因此是獨立 block）再交給 `chunk_document()`。
+  **不做 OCR**（2026-10-05 試做過「掃描頁轉圖交給視覺模型抄寫」，使用者決定只匯入有文字層的 PDF，已移除）：
+  掃描影像（單張、海報常見）沒有文字層，該檔列入 `errors`。
+  PDF 沒有網址，LINE 回答的「參考來源」按鈕只有 `source` 是 http 開頭的文件才有。
 - **決策格式單一來源** `app/domain/assistant_schema.py`（`AssistantDecision`：event / risk / answer / slots / actions /
   citations / needs_clarification）。模型只回這個結構，**不決定訊息長相**。
 - **脈絡** `ConversationService.build_context()`：使用者狀態（綁定 / 住址）、最近對話（存 `conversation_state` store，
@@ -183,17 +222,27 @@ Rich Menu / Quick Reply / Flex 按鈕的 postback、圖片、位置訊息，以�
   知識片段（K1…；文字裡出現知識庫科別名 `retrieval.department_in_text()` 時做同科別加權）、即時資料
   （提到縣市 → 急診看板摘要，用已存的資料不即時抓；藥名 → `PharmacyService.mentioned_drugs`（資料庫比對句中的中文商品名）
   + jieba 詞 `search_drugs`，只收名稱開頭相符的）。`SYSTEM_PROMPT` 規定：只能依片段
-  逐條對照寫答案、有依據必標 citations、沒有依據要明說並建議詢問原院所、先結論再 2–4 個重點、不診斷不開藥。
+  逐條對照寫答案、有依據必標 citations、沒有依據要明說並建議詢問原院所、先結論再 2–4 個重點、不診斷不開藥、
+  **answer 是純文字不用 Markdown**（規則 4；另有保險：`assistant_schema.plain_text()` 在 `AssistantDecision.answer`
+  的 validator 去掉粗體 / 標題 / 引言 / 程式碼符號、清單符號改「・」、連結只留文字，2026-10-06）。
 - **事件 → 模組** `AssistantHandler`（`intents/assistant.py`，`Intent.ASSISTANT`）：emergency → 緊急畫面；hospital →
   `FindHospitalHandler`（slots.city 有值直接 `action=area`）；medication → 藥名查詢 / 選單；pharmacy → 找藥局；
+  clinic（2026-10-05 新增：「先看診所」「附近有診所嗎」，原本會被判成 hospital 而走急診醫院）→ 找診所
+  （`action=clinics`，`slots.symptom` / `slots.department` 由模型從最近對話帶上）；
   reminder / discharge / human / intake → 對應模組；symptom / faq / smalltalk / unknown → answer + `actions` 變 Quick Reply
   （對應表在 `app/line/messages/assistant.py`）。answer 有引用（`decision.citations` → `decision.attach_sources(hits)` →
-  `decision.sources`）時用 Flex：正文 + 免責 + 最多 3 個「參考來源」URI 按鈕（`hit_label()`：醫院《標題》，開原文網址）。模組回覆用 `BotContext.capture()` 收集後與 answer 合併成一次 reply。
+  `decision.sources`）時用 Flex：正文 + 最多 3 個「參考來源」URI 按鈕（`hit_label()`：醫院《標題》，開原文網址）。模組回覆用 `BotContext.capture()` 收集後與 answer 合併成一次 reply。
   先顯示 loading animation（60 秒），reply token 過期改 push。AI 失敗（未啟用 / 逾時 / 格式錯）→ `TEXT_KEYWORDS` 關鍵字退路
   → 再不行回失敗訊息 + 主選單。
 - **病況諮詢 / 衛教諮詢（Roadmap 第 2、3 項，2026-09-28 以最簡方式實作）**：都只是 `SYSTEM_PROMPT` 規則 + 脈絡，
-  沒有新 Service。symptom：模型填 `slots.department` 與 `risk`（none / watch / urgent），watch 時 handler 補
-  `find_clinic`（→ 找醫院模組 `action=clinics`）、urgent 補 119 + 找醫院。
+  沒有新 Service。symptom：模型填 `slots.department`（片段沒提時依症狀判斷，判斷不出來填家庭醫學科）與
+  `risk`（none / watch / urgent）。**非急症（none / watch）回答後直接接著推薦診所，不用按按鈕**（2026-10-05，
+  `AssistantHandler._symptom_with_clinics()` → 找醫院模組 `action=clinics` + 科別）：使用者在對話裡說了所在縣市
+  （`slots.city` / `slots.district`，不拿基本資料的居住地代填）→ 同一次回覆列出院所；沒說 → 多一則「請分享位置」
+  並記下 `AWAIT_LOCATION` `for=clinics` + 科別 + 症狀摘要，位置訊息回來由模型挑診所（見「急診分流 / 找醫院」的
+  `recommend_clinics()`）。模型要再問清楚
+  （`needs_clarification`）且沒給科別時不推薦（給了科別就照樣推薦，模型有時兩者並存）。urgent 補 119 + 找醫院 + 附近診所按鈕。
+  `AssistantHandler` 每次決策記一行 INFO log（event / risk / department / clarify / actions，不含使用者文字）。
 
 **沒有真人客服，只有意見回饋（2026-09-28）**：`handoff_tickets` / `HandoffService` / `Intent.HUMAN` 都移除。`Intent.FEEDBACK`（Rich Menu 第六格「意見回饋」、AI `event=feedback`）只回 LIFF `/liff/feedback` 的按鈕；**「意見回饋」按鈕只放在 Rich Menu**，主選單訊息（`MENU_CELLS`）、預設回覆與各功能流程的 Quick Reply 都不放；`FeedbackService.submit()` 任何登入的 LINE 使用者都能用（`FEEDBACK_SUBMIT` 在 `_PUBLIC`，不需填過病人表單），歸屬院所 = 病人已確認的就醫院所或院方帳號的院所，沒有就只有 SUPER_ADMIN 看得到。後台 `/admin/feedback`（`FEEDBACK_MANAGE`：HOSPITAL_STAFF / HOSPITAL_ADMIN）列表與標記處理。Bot 不會因為使用者送回饋而閉嘴。discharge：已驗證病人的 prompt 多一段
   【病人資料】（`patient_record_repo.latest_encounter()` 的科別 / 診斷 / 出院代碼 + 自填慢性病），問到照護時檢索補上診斷；
@@ -221,15 +270,26 @@ Rich Menu / Quick Reply / Flex 按鈕的 postback、圖片、位置訊息，以�
   （`distance_km`）、`recommended` = 最近且未壅塞的一家，回 Flex + 該醫院的 `LocationMessage`（可導航）；
   AI 症狀諮詢給了科別時（`slots.department` → 「找醫院」按鈕與 `AWAIT_LOCATION` payload 都帶 `department`）
   `board_for_location(department=)` 每家標 `department_matched`、推薦優先「最近、未壅塞、有該科」，
-  都沒有再退回最近的並在標題說明（2026-10-01）；院所主檔沒座標時回
-  「座標尚未建置」+ 119；急診快照是空的（健保署 API 抓不到）時回 `unavailable=True` → 「資料暫時無法取得」+ 119 +
+  都沒有再退回最近的並在標題說明（2026-10-01）；**院所主檔沒座標時用地址所在鄉鎮市區的中心點估距離**
+  （2026-10-05，`geo.district_centroid()`，列上 `distance_approx=True`、顯示「約 X km」、不附導航用的 `LocationMessage`；
+  估的座標不寫回 `lat` / `lng`），地址也認不出鄉鎮市區才回「座標尚未建置」+ 119；急診快照是空的（健保署 API 抓不到）時回 `unavailable=True` → 「資料暫時無法取得」+ 119 +
   找附近診所（縣市 / 鄉鎮市區由地址或 `nearest_district()` 反推）。AI 的 `hospital` 事件不論有沒有提到縣市都走這條。
   「非急症：找附近診所」`nearby_clinics(city, district, lat, lng, department)`：`hospitals` 主檔（`capacity_tier`
   clinic / district / regional）先依地址比對同鄉鎮市區（沒有退到同縣市），有座標的算距離並補 10 km 內有座標的院所；
   排序診所 → 地區 → 區域醫院、再依距離、名稱。**院所主檔的診所大多沒座標**（衛福部資料沒提供），所以不能只看有座標的。
   `department` = AI 症狀諮詢建議的科別（`slots.department` → 「附近診所」postback 帶 `department=`），
   用 `triage_rules.department_terms()` 對應衛福部科別用詞（家醫科 → 家庭醫學科 + 西醫一般科、神經內科 → 神經科…）
-  比對 `hospitals.departments`（逗號分隔），一家都沒有再放寬不限科別（`department_matched=False`）。
+  比對 `hospitals.departments`（逗號分隔），一家都沒有就回空清單（`department_matched=False`）、訊息明說
+  「找不到標示該科的診所」，**不放寬成不限科別**（2026-10-05：院所主檔沒匯入科別時，放寬後只會照名稱列出
+  不相干的診所，肚子痛卻推薦醫美診所）。
+  **依症狀推薦診所由模型挑（2026-10-05）** `TriageService.recommend_clinics(city, district, lat, lng, symptom, department)`：
+  AI 症狀諮詢帶了症狀 / 科別時（`FindHospitalHandler._reply_clinics()` 的 `symptom` / `department`），把同鄉鎮市區的院所
+  （不先用科別過濾，上限 `CLINIC_CANDIDATE_LIMIT` 600 家，大安區約 510 家）以「編號｜名稱｜層級｜登記科別｜距離」交給模型，
+  `CLINIC_PICK_PROMPT` 規定只依名稱與登記科別判斷、排除醫美 / 牙科等不相干的、看不出科別的不挑；模型只回編號
+  （`assistant_schema.ClinicPicks`），院所資料由程式依編號取回（超出範圍 / 重複的丟掉），結果多 `selected_by="ai"`、
+  訊息標明「依名稱與登記科別判斷，請先電話確認」。原因：院所主檔的科別常是空的，醫美診所也會登記家醫科，
+  光比對科別欄位不準。沒有症狀也沒有科別（單純「附近診所」）時模型挑一般看診的院所；模型不可用退回上面的科別比對；
+  一家都沒挑中回「找不到適合的診所」。測試用 `FakeLlmClient.clinic_picks`（沒設定 = 模型不可用）。
   按鈕沒帶縣市 / 座標時 `FindHospitalHandler` 先請分享位置（狀態 `AWAIT_LOCATION` `for=clinics` + `department`）。
   距離用 `app/utils/geo.py` 的 Haversine，不用地圖服務。
 - **院所科別** `hospitals.departments`：來自衛福部「醫療機構與人員基本資料」CSV（`data/醫療機構與人員基本資料_*.csv`，
@@ -246,7 +306,8 @@ Rich Menu / Quick Reply / Flex 按鈕的 postback、圖片、位置訊息，以�
 - Postback data 統一用 querystring `intent=<Intent>&key=value`，以 `postback_data()` 產生、`IntentRequest.from_postback()` 解析。文字關鍵字對照在 `app/line/intents.py` 的 `TEXT_KEYWORDS`（完全相等才命中，`keyword_intent()`），是不依賴 AI 的確定進入點；「主選單」→ `MenuHandler` 列出功能按鈕（不含意見回饋）；紅旗關鍵字 `EMERGENCY_KEYWORDS`（`is_emergency_text()`，包含比對）命中直接導向緊急畫面，但有 10 分鐘冷卻（`app/line/emergency.py`，`conversation_state` 的 `<line_user_id>:emergency` key）：送過緊急畫面後同一人再打含紅旗的字不再短路、交給 AI 依脈絡判斷，AI 仍判 emergency 只回一句話 + 119 / 找醫院按鈕，避免反覆重傳同一則。
 - 加好友（`FollowHandler`）當下用 `line_client.get_profile()` 取顯示名稱 / 頭像存進 `users`（失敗只記 log），後台才認得出是誰。
 - 新增意圖：加 `Intent` 列舉值 → 繼承 `IntentHandler`（設 `intent`、`required_permission`、`requires_verified`）→ 在 `IntentRouter.default()` 註冊。新增事件類型：繼承 `EventHandler` 設 `event_type` → 在 `EventDispatcher.default()` 註冊。
-- 訊息文案集中在 `app/line/messages/`，透過 `MessageBuilder` 組 Flex / QuickReply；`BotContext.reply()` 自動截到 LINE 上限 5 則。**Flex 樣式單一來源 `app/line/messages/theme.py`**（2026-10-03）：色票取自 `svg/` 的 logo，與後台 `admin/_theme.html` 的 `--ma-*` 同一組（墨藍 `INK` 表頭 / 主要按鈕、灰藍 `GRAY` / `MUTED` 次要文字、白金 `PLATINUM` 次要按鈕與分隔線、紅 `RED` / `RED_STRONG` 緊急與警示）；有標題的卡片用 `theme.header()`（墨藍底、右上角用兩個絕對定位 box 拼出 logo 的紅色「+」，`contents[0]` 固定是標題文字），沒標題的用 `theme.brand_strip()`，整張卡用 `theme.bubble(body, header=, footer=)`，按鈕用 `primary_button / secondary_button / link_button`，清單列用 `theme.row()`（列間白金細線）。各訊息模組與 handler **不要再硬寫色碼**；`M.button_bubble()` 第一個按鈕為主要、其餘次要，`alert=True` 為紅表頭。
+- 訊息文案集中在 `app/line/messages/`，透過 `MessageBuilder` 組 Flex / QuickReply；`BotContext.reply()` 自動截到 LINE 上限 5 則。**Flex 樣式單一來源 `app/line/messages/theme.py`**（2026-10-03）：色票取自 `svg/` 的 logo，與後台 `admin/_theme.html` 的 `--ma-*` 同一組（墨藍 `INK` 表頭 / 主要按鈕、灰藍 `GRAY` / `MUTED` 次要文字、白金 `PLATINUM` 次要按鈕與分隔線、紅 `RED` / `RED_STRONG` 緊急與警示）；有標題的卡片用 `theme.header()`（墨藍底、右上角用兩個絕對定位 box 拼出 logo 的紅色「+」，`contents[0]` 固定是標題文字），沒標題的用 `theme.brand_strip()`，整張卡用 `theme.bubble(body, header=, footer=)`，按鈕用 `primary_button / secondary_button / link_button`，清單列用 `theme.row()`（列間白金細線）。各訊息模組與 handler **不要再硬寫色碼**；**Flex 只放要給使用者看的內容，不放說明用的小字**（2026-10-06：資料來源、燈號判斷方式、推薦依據、
+免責註腳都拿掉；需要的脈絡用表頭副標一小段，例如診所清單的「地區・科別」）；`M.button_bubble()` 第一個按鈕為主要、其餘次要，`alert=True` 為紅表頭。
 - SDK 事件模型是 pydantic v1：`FollowEvent` 需要 `follow.isUnblocked`，測試 payload 缺欄位會被解析成 `UnknownEvent` 而靜默略過。
 
 ### 錯誤與回應

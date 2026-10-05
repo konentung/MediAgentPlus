@@ -90,6 +90,9 @@ class BaseConfig:
     AI_HISTORY_TURNS = int(_env("AI_HISTORY_TURNS", "6"))  # 帶進 prompt 的最近對話輪數
     AI_HISTORY_TTL_SECONDS = int(_env("AI_HISTORY_TTL_SECONDS", "1800"))
     KNOWLEDGE_TOP_K = int(_env("KNOWLEDGE_TOP_K", "4"))  # 每次檢索帶幾個知識片段
+    # 衛教 PDF 一次上傳（所有檔案加總）的上限，只套用在 PDF 匯入端點；
+    # 其餘端點維持 MAX_CONTENT_LENGTH
+    KNOWLEDGE_UPLOAD_MAX_BYTES = int(_env("KNOWLEDGE_UPLOAD_MAX_MB", "1024")) * 1024 * 1024
 
     # ---- 服藥提醒 ----
     REMINDER_WINDOW_MINUTES = int(_env("REMINDER_WINDOW_MINUTES", "15"))  # cron 允許的延遲
