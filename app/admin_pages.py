@@ -31,6 +31,7 @@ from app.domain.enums import Permission
 from app.domain.intake_schema import public_schema
 from app.services import feedback_service
 from app.services import patient_record_service as prs
+from app.services.knowledge_job_service import MAX_UPLOAD_FILES
 
 admin_pages_bp = Blueprint("admin_pages", __name__, url_prefix="/admin")
 
@@ -50,7 +51,7 @@ PERMISSION_DESCRIPTIONS: dict[Permission, str] = {
     Permission.FEEDBACK_MANAGE: "查看與處理意見回饋",
     Permission.CONVERSATION_READ: "查看使用者對話紀錄",
     Permission.PATIENT_READ: "查看病人自填資料與本院紀錄（身分證遮罩）、新增備註",
-    Permission.EDUCATION_CONTENT_MANAGE: "管理衛教內容與 AI 知識庫（本院文件）",
+    Permission.EDUCATION_CONTENT_MANAGE: "管理衛教資訊（本院文件）",
     Permission.MEDICATION_MANAGE: "檢視 / 管理病人處方與服藥紀錄（後台頁面尚未實作）",
     Permission.PATIENT_WRITE: "修正病人自填資料、風險警示、追蹤事項",
     Permission.PATIENT_VERIFY: "核對病人身份、建檔或退回",
@@ -188,7 +189,8 @@ def knowledge():
 
 @admin_pages_bp.get("/imports")
 def imports():
-    return render_template("admin/imports.html", active="imports")
+    # 衛教 PDF 一次最多幾個檔：前端送出前先檢查，跟後端用同一個數字
+    return render_template("admin/imports.html", active="imports", max_pdf_files=MAX_UPLOAD_FILES)
 
 
 @admin_pages_bp.get("/permissions")

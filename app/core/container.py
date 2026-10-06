@@ -245,6 +245,7 @@ class ServiceContainer:
             snapshot_repo,
             hospital_repo,
             lambda: container.er_client,
+            llm=lambda: container.llm_client,  # 新增：依症狀挑診所
             liff_id=cfg.get("LIFF_ID", ""),
             stale_minutes=int(cfg.get("TRIAGE_STALE_MINUTES", 30)),
             retention_days=int(cfg.get("TRIAGE_RETENTION_DAYS", 30)),

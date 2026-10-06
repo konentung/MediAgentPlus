@@ -4,17 +4,41 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
 
 from app import create_app
+from app.core.exceptions import ExternalServiceError
 from app.domain.enums import BindingStatus, Role
 from app.domain.principal import Principal
 from app.extensions import db
 from app.integrations.nhi_er import ErFeed, parse_feed
 from app.integrations.vision import ExtractedItem, PrescriptionExtraction
 from app.repositories.user_repository import UserRecord
+
+_freezer = None
+
+
+def pytest_configure(config):
+    """`FREEZE_AT="2030-01-01 08:00:00" pytest`：把整輪測試的「現在」凍結在指定時間（UTC）。
+
+    用來檢查測試會不會因為日期過期而失敗 —— 寫死的日期配上真實時鐘
+    （「最近 7 天」「保留 30 天」這類條件）過一陣子就會壞。平常不設這個變數，行為不變。
+    """
+    global _freezer
+    if os.environ.get("FREEZE_AT"):
+        from freezegun import freeze_time
+
+        _freezer = freeze_time(os.environ["FREEZE_AT"], tick=True)
+        _freezer.start()
+
+
+def pytest_unconfigure(config):
+    if _freezer is not None:
+        _freezer.stop()
+
 
 # 1x1 PNG，供圖片下載 / 處方辨識流程使用
 TINY_PNG = base64.b64decode(
@@ -194,6 +218,8 @@ class FakeLlmClient:
 
     模型只回結構化決策（event / answer / slots / actions），訊息長相由 AssistantHandler 套用模組決定。
     回傳值會經 `response_model.model_validate()`，不合法的決策會像真實後端一樣丟 ExternalServiceError。
+    「依症狀挑診所」（`ClinicPicks`）回 `clinic_picks`（候選編號，從 1 起算）；沒設定時當作模型不可用，
+    走科別比對的退路。
     """
 
     model = "fake"
@@ -203,6 +229,7 @@ class FakeLlmClient:
         self.calls: list[dict] = []
         self.embed_calls: list[list[str]] = []
         self.error: Exception | None = None
+        self.clinic_picks: list[int] | None = None
         self.decisions: list[tuple[str, dict]] = [
             ("119", {"event": "emergency", "risk": "emergency", "answer": "請立即撥打 119。"}),
             (
@@ -263,7 +290,12 @@ class FakeLlmClient:
         self.default = {"event": "unknown", "answer": "", "needs_clarification": True}
 
     def embed(self, texts):
-        """決定性的假向量：以斷詞結果做 bag-of-words，同主題的片段會比較相近。"""
+        """決定性的假向量：以斷詞結果做 bag-of-words，同主題的片段會比較相近。
+
+        桶號用 crc32 而不是內建 `hash()`：後者每次啟動的亂數種子不同，檢索排序會跟著飄。
+        """
+        import zlib
+
         from app.domain.retrieval import tokenize
 
         self.embed_calls.append(list(texts))
@@ -271,7 +303,7 @@ class FakeLlmClient:
         for text in texts:
             vector = [0.0] * 32
             for token in tokenize(text):
-                vector[hash(token) % 32] += 1.0
+                vector[zlib.crc32(token.encode()) % 32] += 1.0
             vectors.append(vector)
         return vectors
 
@@ -281,6 +313,10 @@ class FakeLlmClient:
         self.calls.append({"prompt": prompt, "model": response_model, "system": system})
         if self.error:
             raise self.error
+        if response_model.__name__ == "ClinicPicks":
+            if self.clinic_picks is None:
+                raise ExternalServiceError("假模型沒有設定 clinic_picks")
+            return _validate(response_model, {"picks": list(self.clinic_picks)})
         message = prompt.rsplit("【使用者這則訊息】", 1)[-1].lower()
         for keyword, decision in self.decisions:
             if keyword.lower() in message:

@@ -10,10 +10,10 @@
 | 議題 | 決策 | 落地 |
 |---|---|---|
 | 模型 | OpenAI API（`OPENAI_API_KEY`），對話 `gpt-4.1-mini`、處方辨識 `gpt-4.1`、向量 `text-embedding-3-small`；`AI_MODEL` / `OCR_MODEL` / `EMBEDDING_MODEL` 可覆寫 | `app/integrations/llm.py`：`OpenAiClient.complete_structured()`、`embed()` |
-| 知識來源 | 全台 129 家醫院官網衛教內文，依科別分類成 57 個 txt（35,784 篇）經篩選匯入約 25,600 篇並記科別；加上通用種子 Markdown 與院所自行上傳 | `KnowledgeService.import_department_files()`，後台「系統資料匯入」 |
-| 檢索 | **混合檢索**：關鍵字（jieba 斷詞 + 字元 bigram → PostgreSQL tsvector 全文檢索）+ 語意（OpenAI embedding + pgvector），各取 20 個候選，RRF 合併，同一份文件最多 2 個片段 | `app/repositories/knowledge_repository.py`、`app/domain/retrieval.py` |
+| 知識來源 | 各院所管理員上傳的衛教 PDF（一個 PDF 一篇，上傳時選科別與片段大小）；加上後台手動新增的文件（2026-10-04：txt / Markdown 匯入移除） | `KnowledgeService.import_pdfs()`、`app/utils/pdf.py`，後台「資料匯入」 |
+| 檢索 | **混合檢索**：關鍵字（jieba 斷詞 + 字元 bigram → PostgreSQL tsvector 全文檢索）+ 語意（OpenAI embedding + pgvector），各取 10 個候選，RRF 合併，同一份文件最多 2 個片段 | `app/repositories/knowledge_repository.py`、`app/domain/retrieval.py` |
 | 回答生成 | 模型只能依檢索片段寫答案：先結論、再 2–4 個重點、必要時提醒就醫；一定標 citations；片段不足要明說「知識庫沒有資料」並建議詢問原院所 | `ConversationService.SYSTEM_PROMPT` |
-| LINE 呈現 | 有引用時用 Flex：回答正文 + 免責 + 最多 3 個「參考來源」按鈕（醫院《標題》，開原文網址）；下一步 Quick Reply 照舊 | `app/line/messages/assistant.py` |
+| LINE 呈現 | 有引用時用 Flex：回答正文 + 最多 3 個「參考來源」按鈕（醫院《標題》，開原文網址）；下一步 Quick Reply 照舊 | `app/line/messages/assistant.py` |
 | 涵蓋範圍 | 所有文字先過 AI 再派給模組；Rich Menu / 按鈕 postback、圖片、位置訊息直接走模組 | `MessageHandler._text_request()` → `Intent.ASSISTANT` |
 | 安全例外 | 紅旗關鍵字直接進緊急畫面、不等模型（10 分鐘冷卻：送過就不再短路、AI 判 emergency 只回一句話 + 按鈕，避免反覆重傳）；「等藥名」狀態的文字當藥名查詢 | `EMERGENCY_KEYWORDS`、`app/line/emergency.py`、`AWAIT_DRUG_NAME` |
 | AI 失敗 | 退回關鍵字比對，再不行回失敗訊息 + 主選單；`AI_ENABLED=false` 也走這條；查詢向量失敗只退成關鍵字檢索 | `AssistantHandler._fallback()`、`KnowledgeService._semantic_candidates()` |
@@ -42,29 +42,30 @@ AssistantHandler（Intent.ASSISTANT）
   4. reply；token 過期改 push
 ```
 
-## 3. 衛教內文資料（`data/衛教內文資料/`）
+## 3. 衛教資料：PDF 匯入（2026-10-04 取代依科別分類的 txt）
 
-| 檔案 | 用途 |
-|---|---|
-| `health_education_content.jsonl` | 一行一篇（35,784 篇、3,673 萬字、129 家醫院），原始檔；`分類腳本.py` 依標題 / 來源分類 / 內文關鍵字歸到單一科別 |
-| `衛教內文_依科別分類/NN_科別.txt` | 每科一檔（57 檔、91MB），篇與篇用 60 個 `=` 分隔、四行檔頭（標題 / 醫院（層級）/ 來源分類 / 網址），**匯入用這個** |
-| `content/<host>.json` | 每個站台的完整抓取紀錄（含失敗），不匯入 |
-| `content_index.json` | 統計與索引，不匯入 |
+衛教資料以 PDF 為主，由院所管理員在後台「資料匯入」上傳；上傳的文件歸上傳者的院所管理
+（SUPER_ADMIN 可指定院所或匯成通用），檢索時所有院所的內容共用、病人自己院所的優先。`data/衛教內文資料/` 下的 JSONL / txt 是舊語料，不再匯入。
 
-匯入規則（`import_department_files`）：
+匯入規則（`KnowledgeService.import_pdfs()`，背景工作 `pdf_import`）：
 
-- 資料是「依科別分類」的 txt（`01_心臟內科.txt` … `57_未分類.txt`，每科一檔、`====` 分隔、四行檔頭），
-  檔名決定 `department`；「非衛教」整檔略過、「未分類」照收但科別留空。
-- 內文 ≥ 200 字、中文比例 ≥ 0.4（濾掉英文頁、公告）；內文 SHA-1 去重（各院互相轉載的衛教單只留第一份）；
-  `source` = 原始網址，**同網址更新**（補科別、依新規則重切），所以可重跑。
-- 兩遍掃描：第一遍 `collect_boilerplate()` 統計全語料的網站導覽行，第二遍清理、切段、寫入（批次 500 篇一次 commit）。
-- 一律存成通用文件（`hospital_id` 空），出處放 `meta`：`hospital_name`、`level`、`department`、`source_category`、
-  `imported_from`；`tags` = [科別]。
-- 結果回報片段長度分佈（數量 / 中位數 / 過短 / 過長），實測 25,642 篇 → 112,590 個片段、中位數 331 字。
+- **一個 PDF 一篇文件**：標題 = 檔名（去副檔名）、`source` = 檔名，**同院所同檔名重傳就是更新**；category = education。
+- **科別**：上傳時整批套用同一個（可留空），自由文字，各院所可以用自己的科別分類；下拉建議本院用過的科別。
+- **片段大小**：上傳時選 small 300 / medium 400 / large 600 字，存在 `meta.chunk_size`；之後可對本院文件換大小「重建片段」。
+- **文字擷取**（`app/utils/pdf.py`，`pypdf`）：
+  1. 康熙部首區的字元換回一般漢字（PDF 常把「高血壓」抽成字碼不同的「⾼⾎壓」，不換關鍵字檢索對不到）；
+  2. 去掉頁碼行、每頁重複的頁首 / 頁尾；
+  3. 排版折行接回同一段（一行寫滿版面寬度且不是句尾標點結束 → 下一行同段），其餘每行各自成段；
+  4. 交給 `chunk_document()` 做結構感知切段。
+- 讀不了的檔（損毀 / 加密 / **掃描影像沒有文字層**，不做 OCR）列在結果的 `errors`，不影響同一批的其他檔。
+- **匯入後自動計算該院所新片段的向量**；算不了（未設金鑰 / OpenAI 失敗）工作仍算成功，原因記在 `embed_error`，
+  片段已存好、關鍵字檢索可用，之後由系統管理員按「計算向量」補上。
+- 原始 PDF 不保留，只存擷取出的文字；PDF 沒有網址，所以 LINE 回答不會有「參考來源」按鈕（只有 `source` 是網址的文件才有）。
 
 ```bash
-後台 /admin/knowledge →「系統資料匯入」一次選多個科別 txt 上傳 →「計算向量」（背景工作，可中斷重跑）
-切段規則改了 →「重建片段」（不必重新上傳；向量會清掉）→ 再「計算向量」
+院所管理員：後台 /admin/imports →「衛教資訊（PDF）」選科別、片段大小 → 上傳（背景擷取、切段、算向量）
+想換片段大小 →「重建片段」選大小（不必重新上傳；做完自動重算本院向量）
+系統管理員：/admin/knowledge「各院所的衛教資訊」看每家院所有幾篇文件、幾個片段，點進去看每篇切成幾則
 後台「搜尋」確認檢索結果（關鍵字 + 語意，顯示科別與小節）
 ```
 
@@ -95,10 +96,16 @@ Markdown `#` 只有 68 行；36% 的文章有連續 8 行以上短行（表格�
 實測：112,590 個片段、中位數 331 字、< 80 字 0.1%、> 600 字 0.03%、33% 有標題路徑；kind = text 77% / list 17% / table 5.5% / qa 0.6%。
 - 檢索：PostgreSQL 上關鍵字走 `to_tsquery('simple', ...)` + `ts_rank_cd`，語意走 `<=>` 餘弦距離；
   SQLite（測試）用記憶體 BM25 與 Python 餘弦，行為一致。
-- 範圍：通用文件所有人檢索得到；院所文件只有 `preferred_hospital_id` 或所屬院所是它的使用者檢索得到。
-- 權限：讀取 = 所有院方角色；新增 / 修改 / 刪除 / Markdown 匯入 = `EDUCATION_CONTENT_MANAGE`（院所綁自己）；
-  通用文件與衛教 txt 匯入 / 重建片段只有 SUPER_ADMIN。
-- 後台 `/admin/knowledge`：列表、編輯、停用、多檔 Markdown 匯入、搜尋。
+- 範圍（2026-10-04 定案）：**衛教資訊是不分院所的共用池**，所有院所上傳的 + 通用文件每個人都檢索得到
+  （各院轉載的相同片段只留一份）。有院所的使用者（所屬院所 / `preferred_hospital_id`）**本院優先**：
+  `retrieve(prefer_hospital_ids=)` 多兩個「只在本院內」的排序清單進 RRF，但只收夠相關的本院片段
+  （分數 ≥ 全庫第一名 × 0.85（語意）/ 0.5（關鍵字），經驗值），本院沒有相關內容時就用其他院所 / 通用的。
+  `hospital_ids` 仍可明確限定範圍（只含列出的，`None` 元素 = 通用），不給 = 不限院所。
+  限定院所 / 科別時向量查詢改成在過濾後的片段內精確計算（`ORDER BY distance + 0`，不走 HNSW：
+  HNSW 先取全庫近鄰再過濾，單一院所會湊不滿候選）。
+- 權限：讀取 / 新增 / 修改 / 刪除 / PDF 匯入 / 重建片段 = `EDUCATION_CONTENT_MANAGE`，
+  院所管理員只看得到、只能改自己院所的文件（通用與別家的回 403）；通用文件、全庫計算向量只有 SUPER_ADMIN。
+- 後台 `/admin/knowledge`：列表、編輯、停用、搜尋（= 本院病人會檢索到的片段）；匯入在 `/admin/imports`。
 
 ## 5. 決策格式（`app/domain/assistant_schema.py`）
 
@@ -120,9 +127,14 @@ Markdown `#` 只有 68 行；36% 的文章有連續 8 行以上短行（表格�
 
 兩個「諮詢」功能（Roadmap 第 2、3 項）也只靠 prompt 規則 + 脈絡，沒有另外的服務：
 
-- **病況諮詢（event=symptom）**：依片段判斷「可能需要掛哪一科」填 `slots.department`，`risk` 分級
-  none（自我照護）/ watch（就近診所）/ urgent（急診）。`AssistantHandler` 在 watch 時補 `find_clinic`
-  （→ `FindHospitalHandler action=clinics`，依住址 / 位置找診所、地區醫院），urgent 時補 119 + 找醫院。
+- **病況諮詢（event=symptom）**：判斷「可能需要掛哪一科」填 `slots.department`（片段有提到以片段為準，
+  沒提就依症狀判斷，判斷不出來填家庭醫學科），`risk` 分級 none（自我照護）/ watch（就近診所）/ urgent（急診）。
+  **非急症回答後直接接著推薦診所**（2026-10-05，`AssistantHandler._symptom_with_clinics()` →
+  `FindHospitalHandler action=clinics` + 科別）：使用者說了所在縣市（`slots.city` / `slots.district`）→
+  同一次回覆列出有該科的診所 / 地區醫院；沒說 → 多一則「請分享位置」，狀態 `AWAIT_LOCATION` `for=clinics`
+  帶科別與症狀摘要，位置訊息回來再找。挑哪幾家由第二次模型呼叫決定（`TriageService.recommend_clinics()`，
+  輸出 `ClinicPicks` 只有候選編號，見 `docs/triage-design.md`）。`needs_clarification` 且沒有科別時不推薦。
+  使用者直接說要找診所（「先看診所」）是 `clinic` 事件，一樣走找診所，症狀 / 科別由模型從最近對話填進 slots。urgent 時補 119 + 找醫院 + 附近診所按鈕。
 - **衛教諮詢（event=discharge）**：已驗證病人的脈絡多一段【病人資料】（`PatientRecordRepository.latest_encounter()`：
   最近就診科別 / 診斷 / 出院代碼 / 院方說明 + 自填慢性病）；問題像在問照護（出院 / 衛教 / 回家 / 傷口 …）時
   檢索查詢補上診斷名稱，才找得到對應衛教。模型要寫「現在該做的具體動作」（今日照護、何時回診、何時 119）；
@@ -148,5 +160,5 @@ Markdown `#` 只有 68 行；36% 的文章有連續 8 行以上短行（表格�
 ## 8. 可延伸
 
 - 對話紀錄目前只存 TTL store（30 分鐘）給模型當上下文；客服接手要看脈絡再落 DB。
-- 院所自己的衛教 / FAQ 在後台上傳 Markdown 即可；衛教 txt 有新版時系統管理員在後台 `/admin/knowledge`「系統資料匯入」重新上傳（同網址更新）並按「計算向量」；切段規則改了按「重建片段」再「計算向量」（都是背景工作、頁面輪詢進度）。
+- 院所自己的衛教在後台「資料匯入」上傳 PDF 即可（同檔名重傳 = 更新）；FAQ 這類短文用「衛教資訊 → 新增文件」直接輸入。切段規則改了或想換片段大小按「重建片段」（背景工作、頁面輪詢進度）。
 - 回答品質直接在 LINE 上抽樣檢查；要更準可調 `KNOWLEDGE_TOP_K`（預設 4）或把 `AI_MODEL` 換成較大的模型。

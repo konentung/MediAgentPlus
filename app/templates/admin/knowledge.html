@@ -1,27 +1,44 @@
 {% extends "admin/base.html" %}
-{% block title %}AI 知識庫{% endblock %}
+{% block title %}衛教資訊{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-  <h1 class="h4 mb-0">AI 知識庫</h1>
+  <h1 class="h4 mb-0">衛教資訊</h1>
   <div class="d-flex gap-2" data-perm="education:content_manage">
-    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('admin_pages.imports') }}?type=markdown">匯入 Markdown</a>
+    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('admin_pages.imports') }}?type=pdf">匯入 PDF</a>
     <button class="btn btn-sm btn-brand" id="btn-new" type="button">新增文件</button>
   </div>
 </div>
 <div class="card mb-3">
   <div class="card-body">
     <form class="d-flex gap-2" id="search-form" role="search">
-      <input class="form-control" id="search-q" placeholder="搜尋：輸入病人可能會問的話，看會檢索到哪些片段" required>
+      <input class="form-control" id="search-q" placeholder="搜尋：輸入病人可能會問的話，看病人會檢索到哪些片段（所有院所共用，本院的優先）" required>
       <button class="btn btn-outline-secondary text-nowrap" type="submit">搜尋</button>
     </form>
     <div id="search-result" class="mt-3 d-none"></div>
   </div>
 </div>
 
+<!-- 系統管理員：各院所有幾篇文件、切成幾個片段；點一列看該院所的文件 -->
+<div class="card mb-3 d-none" id="overview-card">
+  <div class="card-header bg-white d-flex justify-content-between align-items-center">
+    <span class="fw-bold">各院所的衛教資訊</span>
+    <span class="small text-secondary" id="overview-stats">—</span>
+  </div>
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-sm table-hover align-middle mb-0">
+        <thead class="table-light"><tr><th>院所</th><th class="text-end">文件</th><th class="text-end">片段</th><th class="text-end">已有向量</th><th></th></tr></thead>
+        <tbody id="overview-rows"></tbody>
+      </table>
+    </div>
+    <p class="small text-secondary mt-3 mb-0 d-none" id="overview-empty">還沒有任何院所上傳衛教資訊。</p>
+  </div>
+</div>
+
 <div class="card mb-3">
   <div class="card-header bg-white d-flex justify-content-between align-items-center">
-    <span class="fw-bold">文件</span>
+    <span class="fw-bold" id="table-title">文件</span>
     <span class="small text-secondary" id="table-stats">—</span>
   </div>
   <div class="card-body">
@@ -35,11 +52,11 @@
     </form>
     <div class="table-responsive">
       <table class="table table-sm table-hover align-middle mb-0">
-        <thead class="table-light"><tr><th>標題</th><th>分類</th><th>範圍</th><th>標籤</th><th>來源</th><th>狀態</th><th>更新</th><th></th></tr></thead>
+        <thead class="table-light"><tr><th>標題</th><th>分類</th><th>範圍</th><th>科別</th><th>片段</th><th>來源</th><th>狀態</th><th>更新</th><th></th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
     </div>
-    <p class="small text-secondary mt-3 mb-0 d-none" id="table-empty">沒有符合的文件。可用「匯入 Markdown」上傳通用種子，系統管理員可在「資料匯入」頁匯入全台醫院衛教內文。</p>
+    <p class="small text-secondary mt-3 mb-0 d-none" id="table-empty">沒有符合的文件。這裡只列出本院上傳、由本院管理的文件（病人檢索時所有院所的內容共用，本院的優先）；可用「匯入 PDF」上傳衛教 PDF，或按「新增文件」直接輸入內容。</p>
   </div>
 </div>
 
@@ -51,8 +68,9 @@
       <div class="row g-2">
         <div class="col-md-8"><label class="form-label small">標題</label><input class="form-control form-control-sm" name="title" maxlength="200" required></div>
         <div class="col-md-4"><label class="form-label small">分類</label><select class="form-select form-select-sm" name="category" id="doc-category"></select></div>
-        <div class="col-md-6"><label class="form-label small">範圍</label><select class="form-select form-select-sm" name="hospital_id" id="doc-hospital"></select></div>
-        <div class="col-md-6"><label class="form-label small">標籤（逗號分隔）</label><input class="form-control form-control-sm" name="tags"></div>
+        <div class="col-md-4"><label class="form-label small">範圍</label><select class="form-select form-select-sm" name="hospital_id" id="doc-hospital"></select></div>
+        <div class="col-md-4"><label class="form-label small">科別（可留空）</label><input class="form-control form-control-sm" name="department" maxlength="50"></div>
+        <div class="col-md-4"><label class="form-label small">標籤（逗號分隔）</label><input class="form-control form-control-sm" name="tags"></div>
         <div class="col-12"><label class="form-label small">內容（Markdown，會依段落切成檢索片段）</label><textarea class="form-control form-control-sm" name="content" rows="14" required></textarea></div>
       </div>
     </div>
@@ -70,6 +88,7 @@ Admin.boot(async function (ctx) {
   var canEdit = ctx.can("education:content_manage");
   var isSuper = ctx.me.role === "super_admin";
   var docs = [];
+  var hospitalFilter;  // undefined = 全部；null = 通用；其餘 = 院所代碼（系統管理員點「各院所」的列）
   var modal = new bootstrap.Modal(document.getElementById("doc-modal"));
 
   var filterForm = document.getElementById("filter-form");
@@ -89,22 +108,46 @@ Admin.boot(async function (ctx) {
 
   async function load() {
     docs = await ctx.api("/api/v1/admin/knowledge");
+    if (isSuper) await loadOverview();
     render();
+  }
+  function scopeName(id) { return id ? Admin.hospitalName(id) : "通用"; }
+  async function loadOverview() {
+    var rows = await ctx.api("/api/v1/admin/knowledge/hospitals");
+    var total = rows.reduce(function (t, r) { t.documents += r.documents; t.chunks += r.chunks; return t; }, { documents: 0, chunks: 0 });
+    document.getElementById("overview-card").classList.remove("d-none");
+    document.getElementById("overview-stats").textContent = rows.length + " 個範圍・文件 " + total.documents + " 篇・片段 " + total.chunks + " 個";
+    document.getElementById("overview-empty").classList.toggle("d-none", rows.length > 0);
+    var tbody = document.getElementById("overview-rows");
+    tbody.innerHTML = rows.map(function (r, i) {
+      var name = r.hospital_id ? Admin.esc(r.hospital_name || r.hospital_id) + ' <span class="small text-secondary">' + Admin.esc(r.hospital_id) + "</span>" : '<span class="badge text-bg-secondary">通用</span>';
+      return "<tr><td>" + name + '</td><td class="text-end">' + r.documents + '</td><td class="text-end">' + r.chunks + '</td><td class="text-end">' + r.embedded +
+        '</td><td class="text-end"><button class="btn btn-sm btn-outline-secondary" data-overview="' + i + '">查看文件</button></td></tr>';
+    }).join("");
+    tbody.querySelectorAll("[data-overview]").forEach(function (b) { b.addEventListener("click", function () {
+      hospitalFilter = rows[Number(b.getAttribute("data-overview"))].hospital_id;
+      render();
+      document.getElementById("table-title").scrollIntoView({ behavior: "smooth" });
+    }); });
   }
   function render() {
     var tbody = document.getElementById("rows");
     var q = filterForm.elements.q.value.trim().toLowerCase();
     var rows = docs.filter(function (d) {
+      if (hospitalFilter !== undefined && (d.hospital_id || null) !== hospitalFilter) return false;
       if (filter.value && d.category !== filter.value) return false;
-      return !q || [d.title, d.tags.join(" "), d.source].join(" ").toLowerCase().indexOf(q) >= 0;
+      return !q || [d.title, d.department || "", d.tags.join(" "), d.source].join(" ").toLowerCase().indexOf(q) >= 0;
     });
-    document.getElementById("table-stats").textContent = "共 " + rows.length + " 筆";
+    var chunkTotal = rows.reduce(function (n, d) { return n + d.chunk_count; }, 0);
+    document.getElementById("table-title").textContent = hospitalFilter === undefined ? "文件" : "文件：" + scopeName(hospitalFilter);
+    document.getElementById("table-stats").textContent = "共 " + rows.length + " 筆・片段 " + chunkTotal + " 個";
     document.getElementById("table-empty").classList.toggle("d-none", rows.length > 0);
     tbody.innerHTML = rows.map(function (d) {
       var editable = canEdit && (d.hospital_id ? true : isSuper);
       return "<tr class='" + (d.active ? "" : "text-secondary") + "'><td>" + Admin.esc(d.title) + "</td><td>" + Admin.esc(d.category_label) + "</td>" +
         "<td>" + (d.hospital_id ? Admin.esc(Admin.hospitalName(d.hospital_id)) : '<span class="badge text-bg-secondary">通用</span>') + "</td>" +
-        "<td>" + d.tags.map(function (t) { return '<span class="badge text-bg-light text-dark border me-1">' + Admin.esc(t) + "</span>"; }).join("") + "</td>" +
+        "<td>" + Admin.esc(d.department || "—") + "</td>" +
+        "<td class='text-nowrap'>" + d.chunk_count + " 則<span class='small text-secondary'>・約 " + d.chunk_size + " 字</span></td>" +
         "<td class='small text-secondary text-break'>" + Admin.esc(d.source || "—") + "</td>" +
         "<td>" + (d.active ? '<span class="badge text-bg-success">啟用</span>' : '<span class="badge text-bg-secondary">停用</span>') + "</td>" +
         "<td class='small text-secondary text-nowrap'>" + Admin.fmtDate(d.updated_at) + "</td>" +
@@ -129,7 +172,7 @@ Admin.boot(async function (ctx) {
   }
   filterForm.addEventListener("submit", function (e) { e.preventDefault(); render(); });
   // reset 事件在欄位清空前觸發，等清空後再重畫
-  filterForm.addEventListener("reset", function () { setTimeout(render, 0); });
+  filterForm.addEventListener("reset", function () { hospitalFilter = undefined; setTimeout(render, 0); });
 
   var form = document.getElementById("doc-form");
   async function openDoc(id, readOnly) {
@@ -144,7 +187,7 @@ Admin.boot(async function (ctx) {
     document.getElementById("doc-modal-title").textContent = d ? (readOnly ? "檢視文件" : "編輯文件") : "新增文件";
     if (d) {
       form.elements.title.value = d.title; form.elements.category.value = d.category;
-      form.elements.hospital_id.value = d.hospital_id || ""; form.elements.tags.value = d.tags.join(", "); form.elements.content.value = d.content;
+      form.elements.hospital_id.value = d.hospital_id || ""; form.elements.department.value = d.department || ""; form.elements.tags.value = d.tags.join(", "); form.elements.content.value = d.content;
     }
     Array.prototype.forEach.call(form.elements, function (i) { if (i.name) i.disabled = !!readOnly; });
     form.elements.hospital_id.disabled = !!readOnly || !!d;  // 範圍建立後不改
@@ -170,7 +213,7 @@ Admin.boot(async function (ctx) {
       var hits = await ctx.api("/api/v1/admin/knowledge/search?q=" + encodeURIComponent(q));
       box.classList.remove("d-none");
       box.innerHTML = hits.length ? hits.map(function (h, i) {
-        var meta = [h.department, h.category, h.kind !== "text" ? h.kind : "", "分數 " + h.score].filter(Boolean).map(Admin.esc).join("・");
+        var meta = [h.hospital_id ? ((h.meta || {}).hospital_name || Admin.hospitalName(h.hospital_id)) : "通用", h.department, h.category, h.kind !== "text" ? h.kind : "", "分數 " + h.score].filter(Boolean).map(Admin.esc).join("・");
         return '<div class="border rounded p-2 mb-2 small"><div class="fw-bold">K' + (i + 1) + "　" + Admin.esc(h.title) + (h.heading ? ' <span class="text-secondary fw-normal">› ' + Admin.esc(h.heading) + "</span>" : "") + ' <span class="text-secondary fw-normal">' + meta + "</span></div><div style='white-space: pre-wrap;'>" + Admin.esc(h.content) + "</div></div>";
       }).join("") : '<div class="text-secondary small">沒有檢索到相關片段，AI 會回答「知識庫沒有資料」並建議詢問原院所。</div>';
     } catch (err) { Admin.toast(err.message, "danger"); }

@@ -73,7 +73,7 @@ def test_admin_endpoint_allows_staff(client, make_user, auth_header):
 
 
 def test_backoffice_page_visibility_by_role(client, make_user, auth_header):
-    """院內人員：AI 知識庫 / 藥局 / 權限表都看不到；醫護只看得到藥局；院所管理員全部可看。"""
+    """院內人員：衛教資訊 / 藥局 / 權限表都看不到；醫護只看得到藥局；院所管理員全部可看。"""
     agent = make_user(Role.HOSPITAL_STAFF, hospital_id="H1")
     nurse = make_user(Role.MEDICAL_STAFF, hospital_id="H1")
     admin = make_user(Role.HOSPITAL_ADMIN, hospital_id="H1")

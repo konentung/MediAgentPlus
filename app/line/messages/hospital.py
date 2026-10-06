@@ -15,7 +15,6 @@ from app.utils.geo import format_distance
 
 MAX_ROWS = 10
 EMERGENCY_HINT = "🚨 有生命危險請直接撥打 119，救護車會依現場狀況送到最適合的醫院。"
-BOARD_HINT = "燈號依「等住院 / 等 ICU / 等看診 / 119 滿床通報」判斷，供就醫前參考。"
 
 
 def menu_messages(*, emergency: bool, department: str | None = None) -> list[Message]:
@@ -35,7 +34,7 @@ def menu_messages(*, emergency: bool, department: str | None = None) -> list[Mes
 
 
 def no_coordinates_messages() -> list[Message]:
-    """院所主檔還沒有座標（尚未匯入 data/er_hospitals.csv）時的提示。"""
+    """院所主檔沒有座標、地址也認不出鄉鎮市區（無法估距離）時的提示。"""
     return [
         M.text(
             "目前還無法依距離推薦醫院（院所座標尚未建置）。有生命危險請直接撥打 119。",
@@ -89,22 +88,14 @@ def board_messages(board: dict[str, Any], liff_url: str, *, emergency: bool) -> 
     updated = board.get("reported_at_label") or ""
     stale = "（資料可能延遲）" if board.get("stale") else ""
     contents: list[dict[str, Any]] = []  # 修改：更新時間改放表頭副標
-    subtitle = f"更新 {updated}{stale}　健保署急診即時訊息"
+    subtitle = f"更新 {updated}{stale}"
     department = board.get("department")
     if by_distance:
         if recommended:
             headline = (
                 f"✅ 建議前往：{recommended['hospital_name']}"
-                f"（{format_distance(recommended.get('distance_km'))}，{recommended['level_label']}）"
+                f"（{_distance_label(recommended)}，{recommended['level_label']}）"
             )
-            # 修改：依症狀科別推薦時說明是否對到該科
-            if department and board.get("department_matched"):
-                headline += f"\n依你的症狀建議看{department}，這家有{department}。"
-            elif department:
-                headline += (
-                    f"\n附近未壅塞的急救責任醫院都沒有{department}，"
-                    "先以最近的為準，到院後由急診評估。"
-                )
         else:
             headline = "⚠ 附近的急救責任醫院目前都壅塞，請撥打 119 由救護車調度，或參考下方等候人數"
         contents.append(
@@ -136,7 +127,6 @@ def board_messages(board: dict[str, Any], liff_url: str, *, emergency: bool) -> 
                 f"…另有 {len(hospitals) - MAX_ROWS} 家，請開啟完整看板", margin="md"
             )
         )
-    contents.append(theme.footnote(BOARD_HINT, margin="md"))
     buttons: list[dict[str, Any]] = []
     if emergency:
         buttons.append(
@@ -213,6 +203,23 @@ def clinics_messages(result: dict[str, Any], liff_url: str) -> list[Message]:
     rows = result.get("hospitals") or []
     area = f"{result['city']}{result.get('district') or ''}"
     department = result.get("department")
+    by_ai = result.get("selected_by") == "ai"
+    if not rows and (department or by_ai):
+        # 修改：找不到適合的院所時不列不相干的診所，直接說明
+        target = f"適合看{department}的診所" if department else "適合的診所"
+        return [
+            M.text(
+                f"{area}的院所資料裡找不到{target}，沒辦法依你的症狀推薦。"
+                "可以先打電話問住家附近的診所有沒有看這一科；症狀加重或很不舒服請到急診。",
+                quick_replies=[
+                    M.postback_item(
+                        "🏥 找醫院",
+                        Intent.FIND_HOSPITAL,
+                        **({"department": department} if department else {}),
+                    )
+                ],
+            )
+        ]
     if not rows:
         return [
             M.text(
@@ -221,16 +228,11 @@ def clinics_messages(result: dict[str, Any], liff_url: str) -> list[Message]:
                 quick_replies=[M.uri_item("急診看板", liff_url)],
             )
         ]
-    scope = {"district": "同區", "nearby": "附近", "distance": "離你最近"}.get(
-        result.get("scope"), "同縣市"
-    )
-    if department and result.get("department_matched"):
-        lead = f"{area}（{scope}）有{department}的院所，非急症可先就近看診："
-    elif department:
-        lead = f"{area}（{scope}）沒有標示{department}的院所，先列出附近診所，可先電話確認："
-    else:
-        lead = f"{area}（{scope}）非急症可先就近看診，減少急診等候："
-    contents: list[dict[str, Any]] = [theme.secondary_text(lead)]
+    # 修改：不放說明用的引言，表頭副標只留「地區・科別」；同區沒有、退到同縣市時只寫縣市
+    if result.get("scope") == "city":
+        area = result["city"]
+    subtitle = f"{area}・{department}" if department else area
+    contents: list[dict[str, Any]] = []
     tier_label = {"clinic": "診所", "district": "地區醫院", "regional": "區域醫院"}
     for h in rows[:MAX_ROWS]:
         tier = tier_label.get(h.get("capacity_tier"), "院所")
@@ -251,13 +253,20 @@ def clinics_messages(result: dict[str, Any], liff_url: str) -> list[Message]:
                     action={"type": "uri", "label": "撥打", "uri": _tel(h["contact_phone"])},
                 )
             )
-        contents.extend(theme.row(line_items))
-    bubble = theme.bubble(contents, header=theme.header("🩺 附近診所 / 醫院"), size="mega")
+        contents.extend(theme.row(line_items, first=not contents))
+    bubble = theme.bubble(
+        contents, header=theme.header("🩺 附近診所 / 醫院", subtitle), size="mega"
+    )
     return [M.flex("附近診所", bubble)]
 
 
+def _distance_label(h: dict[str, Any]) -> str:
+    """距離文字；院所沒有座標、用鄉鎮市區中心點估的加「約」。"""
+    return ("約 " if h.get("distance_approx") else "") + format_distance(h.get("distance_km"))
+
+
 def _distance_prefix(h: dict[str, Any]) -> str:
-    return f"{format_distance(h['distance_km'])}　" if h.get("distance_km") is not None else ""
+    return f"{_distance_label(h)}　" if h.get("distance_km") is not None else ""
 
 
 def _tel(phone: str) -> str:

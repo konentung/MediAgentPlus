@@ -75,7 +75,11 @@ def test_poll_stores_snapshots_once_per_report_time(container):
     assert first["fetched"] == 4 and first["added"] == 4
     again = triage.poll()
     assert again["added"] == 0  # 同一回報時間不重複
-    container.er_client.payload = sample_er_payload("2026-09-26T15:00:03")
+    # 另一個回報時間用「現在往前 15 分鐘」：寫死日期的話，過了保留天數就會在同一次 poll 被清掉
+    from app.utils.clock import now_tw
+
+    earlier = (now_tw() - timedelta(minutes=15)).strftime("%Y-%m-%dT%H:%M:%S")
+    container.er_client.payload = sample_er_payload(earlier)
     assert triage.poll()["added"] == 4
     assert container.snapshot_repo.count() == 8
 
@@ -218,7 +222,9 @@ def test_find_clinics_postback(post_line_event, container):
         )
     )
     _, messages = container.line_client.replies[-1]
-    assert "同縣市" in str(messages[0].contents.to_dict())
+    # 同區沒有 → 退到同縣市：表頭副標只寫縣市，不放說明用的引言
+    bubble = messages[0].contents.to_dict()
+    assert bubble["header"]["contents"][1]["text"] == "台北市" and "大安診所" in str(bubble)
 
 
 def test_find_clinics_without_location_asks_then_uses_shared_position(post_line_event, container):
@@ -270,7 +276,8 @@ def test_find_clinics_without_location_asks_then_uses_shared_position(post_line_
     )
     _, messages = container.line_client.replies[-1]
     text = str(messages[0].contents.to_dict())
-    assert "大安家醫診所" in text and "大安牙醫診所" not in text and "有家醫科" in text
+    assert "大安家醫診所" in text and "大安牙醫診所" not in text
+    assert "台北市大安區・家醫科" in text  # 表頭副標：地區・科別
     assert container.conversation_state.peek("U1") is None
 
 
@@ -466,10 +473,74 @@ def test_nearby_clinics_filters_by_department(container):
     assert result["department_matched"] is True
     assert [h["name"] for h in result["hospitals"]] == ["家醫診所", "一般科診所"]
     assert result["department_terms"] == ["家庭醫學科", "西醫一般科"]
-    # 沒有該科 → 放寬成不限科別、標示沒對到
+    # 沒有該科 → 不放寬成不限科別（不相干的診所不算推薦），回空清單並標示沒對到
     result = container.triage.nearby_clinics("台北市", "大安區", department="皮膚科")
-    assert result["department_matched"] is False and len(result["hospitals"]) == 3
-    assert container.triage.nearby_clinics("台北市", "大安區")["department_matched"] is False
+    assert result["department_matched"] is False and result["hospitals"] == []
+    unfiltered = container.triage.nearby_clinics("台北市", "大安區")
+    assert unfiltered["department_matched"] is False and len(unfiltered["hospitals"]) == 3
+
+
+def test_plain_nearby_clinics_also_picked_by_model(container):
+    """單純「附近診所」（沒有症狀也沒有科別）也交給模型挑一般看診的院所，不照名稱亂列。"""
+    for hospital_id, name in (("C1", "A 美型診所"), ("C2", "大安家醫科診所")):
+        container.hospital_repo.create(
+            id=hospital_id,
+            name=name,
+            region="台北市",
+            address="台北市大安區a",
+            capacity_tier="clinic",
+        )
+    container.llm_client.clinic_picks = [2]
+    result = container.triage.recommend_clinics("台北市", "大安區")
+    assert [h["name"] for h in result["hospitals"]] == ["大安家醫科診所"]
+    assert result["selected_by"] == "ai"
+    assert "【症狀】未說明" in container.llm_client.calls[-1]["prompt"]
+
+
+def test_board_for_location_estimates_distance_without_coordinates(post_line_event, container):
+    """院所主檔沒有座標但有地址：用地址所在鄉鎮市區的中心點估距離，照樣推薦（不附導航位置）。"""
+    _seed_er_hospitals(container)
+    for hospital_id in ("0401180014", "0101020017", "1131010011"):
+        container.hospital_repo.update(hospital_id, lat=None, lng=None)
+    board = container.triage.board_for_location(25.0330, 121.5430, address="台北市大安區")
+    assert [h["hospital_name"] for h in board["hospitals"]][-1] == "亞東"  # 板橋最遠
+    assert all(h["distance_approx"] for h in board["hospitals"])
+    assert board["recommended"]["hospital_name"] == "聯醫仁愛"
+    post_line_event(_event("postback", postback={"data": postback_data(Intent.FIND_HOSPITAL)}))
+    post_line_event(
+        _event(
+            "message",
+            message={
+                "type": "location",
+                "id": "m2",
+                "title": "家",
+                "address": "台灣台北市大安區信義路三段",
+                "latitude": 25.0330,
+                "longitude": 121.5430,
+            },
+        )
+    )
+    _, messages = container.line_client.replies[-1]
+    assert len(messages) == 1  # 估的座標不能拿來導航，不附位置訊息
+    assert "建議前往：聯醫仁愛（約 " in str(messages[0].contents.to_dict())
+
+
+def test_clinics_without_department_data_says_so(post_line_event, container):
+    """院所主檔沒有科別資料：依症狀找診所時明說找不到，不列不相干的診所。"""
+    container.hospital_repo.create(
+        id="C1",
+        name="A 美型診所",
+        region="台北市",
+        address="台北市大安區a",
+        capacity_tier="clinic",
+    )
+    data = postback_data(
+        Intent.FIND_HOSPITAL, action="clinics", city="台北市", district="大安區", department="內科"
+    )
+    post_line_event(_event("postback", postback={"data": data}))
+    _, messages = container.line_client.replies[-1]
+    assert len(messages) == 1 and "找不到適合看內科的診所" in messages[0].text
+    assert "department=" in messages[0].quick_reply.items[0].action.data
 
 
 def test_public_board_by_location_and_hospital_import_with_coords(

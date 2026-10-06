@@ -2,26 +2,18 @@
 
 from __future__ import annotations
 
-import io
-from pathlib import Path
-
-import pytest
 from linebot.v3.messaging import FlexMessage, TextMessage
 
 from app.core.exceptions import ExternalServiceError
 from app.domain.enums import BindingStatus, Intent, Role
+from app.domain.intake_schema import INTAKE_STEPS
 from app.domain.retrieval import (
     BM25Index,
     chunk_document,
     chunk_text,
-    clean_lines,
-    collect_boilerplate,
     tokenize,
 )
-from app.services.knowledge_service import parse_markdown
 from tests.test_webhook import _event
-
-SEED_DIR = Path(__file__).resolve().parents[1] / "data" / "knowledge"
 
 
 def _text(post_line_event, text, user_id="U1"):
@@ -36,6 +28,37 @@ def _text(post_line_event, text, user_id="U1"):
 
 def _system_actor(container, make_user, role=Role.SUPER_ADMIN, hospital_id=None):
     return container.users.to_principal(make_user(role, hospital_id=hospital_id))
+
+
+# 通用知識文件（測試自帶，不依賴本機未進版控的 data/ 目錄）
+SEED_DOCUMENTS = (
+    (
+        "慢性病連續處方箋怎麼領",
+        "medication",
+        "慢性病連續處方箋（慢箋）一張可以領三次藥，每次領 28 到 30 天的份量。\n\n"
+        "第二、三次領藥可以到健保特約藥局，不用回醫院掛號；上一次的藥吃完前十天內就可以領下一次。",
+    ),
+    (
+        "服藥安全與漏吃藥",
+        "medication",
+        "漏吃一次藥時，想起來就盡快補吃；如果已經接近下一次吃藥的時間，就跳過這一次。\n\n"
+        "不要一次吃兩倍的劑量，也不要自行停藥，有疑問請問藥師或原開立處方的醫師。",
+    ),
+    (
+        "服務說明",
+        "service",
+        "MediAgent+ 可以幫你找附近的急救責任醫院與藥局、設定服藥提醒，並回答衛教問題。\n\n"
+        "緊急狀況請直接撥打 119，不要等待機器人回覆。",
+    ),
+)
+
+
+def _seed_knowledge(container, actor):
+    """建立幾份通用知識文件。"""
+    for title, category, content in SEED_DOCUMENTS:
+        container.knowledge.create(
+            actor, {"title": title, "category": category, "content": content}
+        )
 
 
 # ---- 檢索 ----
@@ -116,44 +139,11 @@ def test_chunk_document_recursive_split_overlap_and_min_merge():
     assert all(c.heading == "服藥注意" for c in chunks[1:])
 
 
-def test_collect_boilerplate_keeps_section_headings():
-    paragraph = "血壓要每天早晚各量一次，量之前先靜坐五分鐘，記錄在血壓手冊帶回診時給醫師看。"
-    docs = [
-        ["衛教資訊", "聯絡我們", "", "注意事項", paragraph, "", "參考來源", "聯絡我們"]
-        for _ in range(40)
-    ]
-    boilerplate = collect_boilerplate(docs)
-    assert {
-        "衛教資訊",
-        "聯絡我們",
-        "參考來源",
-    } <= boilerplate  # 頁尾「參考來源」後面接導覽，也是樣板
-    assert "注意事項" not in boilerplate and paragraph not in boilerplate
-    lines = clean_lines("\n".join(docs[0]), boilerplate=boilerplate)
-    assert lines == ["注意事項", paragraph]
-
-
-def test_parse_markdown_front_matter():
-    fields = parse_markdown(
-        "---\ntitle: 慢箋\ncategory: medication\ntags: 慢箋, 領藥\n---\n# 忽略\n內文",
-        default_title="x",
-    )
-    assert (
-        fields["title"] == "慢箋"
-        and fields["category"] == "medication"
-        and fields["content"].startswith("# 忽略")
-    )
-    fields = parse_markdown("# 用標題\n\n內文", default_title="x")
-    assert fields["title"] == "用標題" and fields["category"] == "faq"
-
-
 # ---- 知識庫 ----
-def test_seed_import_and_retrieve(container, make_user):
+def test_seed_documents_retrieve(container, make_user):
     actor = _system_actor(container, make_user)
-    result = container.knowledge.import_path(actor, SEED_DIR)
-    assert result["errors"] == [] and result["created"] >= 7
-    again = container.knowledge.import_path(actor, SEED_DIR)
-    assert again["created"] == 0 and again["updated"] == result["created"]  # 重匯更新、不重複
+    _seed_knowledge(container, actor)
+    assert container.knowledge.stats()["documents"] == len(SEED_DOCUMENTS)
     hits = container.knowledge.retrieve("慢性病連續處方箋可以領幾次", hospital_ids=[None])
     assert hits and "慢" in hits[0]["title"]
     hits = container.knowledge.retrieve("漏吃一次藥怎麼辦", hospital_ids=[None])
@@ -171,13 +161,78 @@ def test_hospital_documents_are_scoped(container, make_user):
         {"title": "第一醫院停車", "content": "第一醫院 停車場 在地下二樓", "category": "hospital"},
     )
     h2_staff = _system_actor(container, make_user, Role.MEDICAL_STAFF, "H2")
-    assert [d["title"] for d in container.knowledge.list(h2_staff)] == ["通用"]
-    assert {d["title"] for d in container.knowledge.list(h1_staff)} == {"第一醫院停車", "通用"}
-    # 檢索：沒有院所 → 只看到通用；H1 → 也看到院所文件
-    titles = {h["title"] for h in container.knowledge.retrieve("停車場", hospital_ids=[None])}
-    assert titles == {"通用"}
-    titles = {h["title"] for h in container.knowledge.retrieve("停車場", hospital_ids=[None, "H1"])}
-    assert titles == {"通用", "第一醫院停車"}
+    # 知識庫以院所為單位：院方帳號只列自己院所的文件，通用與別家的看不到
+    assert container.knowledge.list(h2_staff) == []
+    assert {d["title"] for d in container.knowledge.list(h1_staff)} == {"第一醫院停車"}
+    assert {d["title"] for d in container.knowledge.list(superadmin)} == {"第一醫院停車", "通用"}
+
+    def titles(hospital_ids):
+        hits = container.knowledge.retrieve("停車場", hospital_ids=hospital_ids)
+        return {h["title"] for h in hits}
+
+    # 明確指定範圍時只含列出的：None 元素 = 通用；不給範圍 = 不限院所（共用池）
+    assert titles([None]) == {"通用"}
+    assert titles([None, "H1"]) == {"通用", "第一醫院停車"}
+    assert titles(["H1"]) == {"第一醫院停車"}
+    assert titles([None, "H2"]) == {"通用"}
+    assert titles(None) == {"通用", "第一醫院停車"}
+    # 後台只管得到本院的文件，但檢索是共用池：別家院所的人也查得到
+    preview = container.knowledge.search_preview(h2_staff, "停車場")
+    assert {h["title"] for h in preview} == {"通用", "第一醫院停車"}
+
+
+def test_retrieve_prefers_own_hospital_only_when_relevant(container, make_user):
+    wound = "傷口換藥前先洗手，用生理食鹽水清潔，再蓋上無菌紗布，每天換一次。"
+    for hospital_id, title in (("H1", "第一醫院傷口照護"), ("H2", "第二診所傷口照護")):
+        actor = _system_actor(container, make_user, Role.HOSPITAL_ADMIN, hospital_id)
+        container.knowledge.create(
+            actor, {"title": title, "content": wound + title, "category": "education"}
+        )
+
+    def first(query, prefer):
+        return container.knowledge.retrieve(query, prefer_hospital_ids=prefer)[0]["hospital_id"]
+
+    # 兩家都有相關內容 → 病人自己院所的排第一；另一家的仍在結果內（不是過濾）
+    assert first("傷口怎麼換藥", ["H1"]) == "H1" and first("傷口怎麼換藥", ["H2"]) == "H2"
+    hits = container.knowledge.retrieve("傷口怎麼換藥", prefer_hospital_ids=["H1"])
+    assert {h["hospital_id"] for h in hits} == {"H1", "H2"}
+    # 本院沒有相關內容 → 用其他院所的，不會硬把本院不相干的文件排到前面
+    h1_admin = _system_actor(container, make_user, Role.HOSPITAL_ADMIN, "H1")
+    container.knowledge.create(
+        h1_admin,
+        {"title": "糖尿病足部照護", "content": _DIABETIC_FOOT, "category": "education"},
+    )
+    assert first("糖尿病足部要怎麼檢查", ["H2"]) == "H1"
+
+
+def test_conversation_retrieval_prefers_patient_hospital(container, make_user):
+    calls: list[dict] = []
+    original = container.knowledge.retrieve
+    container.knowledge.retrieve = lambda *a, **kw: calls.append(kw) or original(*a, **kw)
+    # 衛教資訊是共用池：不論有沒有院所都查全部；沒有院所就沒有優先對象
+    guest = make_user(Role.GUEST, line_user_id="Ug")
+    container.conversation.build_context(container.users.to_principal(guest), "停車場在哪")
+    assert "hospital_ids" not in calls[-1] and calls[-1]["prefer_hospital_ids"] == []
+    # 有就醫院所的病人 → 一樣查全部，本院的優先
+    container.patient_repo.save_step(guest.id, INTAKE_STEPS[0], {})
+    container.patient_repo.set_hospital(guest.id, "H1", confirmed=True)
+    container.conversation.build_context(container.users.to_principal(guest), "停車場在哪")
+    assert "hospital_ids" not in calls[-1] and calls[-1]["prefer_hospital_ids"] == ["H1"]
+
+
+def test_detect_department_prefers_hospital_own_names(container, make_user):
+    h1_staff = _system_actor(container, make_user, Role.HOSPITAL_ADMIN, "H1")
+    doc = container.knowledge.create(
+        h1_staff,
+        {"title": "心臟復健", "content": "術後 復健 運動 注意事項", "category": "education"},
+    )
+    container.knowledge_repo.update(doc["id"], department="心血管中心")
+    detect = container.knowledge.detect_department
+    # 各院所可以有自己的科別分類：範圍內用到的名稱優先，別家的不算；沒有就退回通用科別表 / 別名
+    assert detect(["我剛從心血管中心出院"], [None, "H1"]) == "心血管中心"
+    assert detect(["我剛從心血管中心出院"], [None, "H2"]) is None
+    assert detect(["我剛從腸胃科出院"], [None, "H1"]) == "肝膽腸胃內科"
+    assert detect(["回家要注意什麼", "心臟科"], [None, "H1"]) == "心臟內科"
 
 
 def test_knowledge_admin_api_permissions(client, make_user, auth_header):
@@ -233,29 +288,21 @@ def test_knowledge_admin_api_permissions(client, make_user, auth_header):
         ).status_code
         == 422
     )
-    # 讀取：院所管理員看得到，搜尋可用
+    # 讀取：院所管理員只看得到自己院所的文件（通用的列表沒有、單篇 403），搜尋可用
     rows = client.get("/api/v1/admin/knowledge", headers=auth_header(h1_admin)).get_json()["data"]
-    assert {r["title"] for r in rows} == {"通用 FAQ", "本院"}
+    assert {r["title"] for r in rows} == {"本院"}
+    assert (
+        client.get(
+            f"/api/v1/admin/knowledge/{generic_id}", headers=auth_header(h1_admin)
+        ).status_code
+        == 403
+    )
     assert (
         client.get(
             "/api/v1/admin/knowledge/search?q=FAQ", headers=auth_header(h1_admin)
         ).status_code
         == 200
     )
-    # 匯入
-    md = "---\ntitle: 匯入的\ncategory: education\n---\n內文 傷口 照護"
-    resp = client.post(
-        "/api/v1/admin/knowledge/import",
-        data={"files": (io.BytesIO(md.encode()), "care.md")},
-        headers=auth_header(h1_admin),
-    )
-    assert resp.status_code == 200 and resp.get_json()["data"]["created"] == 1
-    resp = client.post(
-        "/api/v1/admin/knowledge/import",
-        data={"files": (io.BytesIO(md.encode()), "care.md")},
-        headers=auth_header(h1_admin),
-    )
-    assert resp.get_json()["data"]["updated"] == 1
     assert (
         client.delete(
             f"/api/v1/admin/knowledge/{own_id}", headers=auth_header(h1_admin)
@@ -268,7 +315,7 @@ def test_knowledge_admin_api_permissions(client, make_user, auth_header):
 # ---- 脈絡與決策 ----
 def test_context_includes_knowledge_live_data_and_history(container, make_user, post_line_event):
     actor = _system_actor(container, make_user)
-    container.knowledge.import_path(actor, SEED_DIR)
+    _seed_knowledge(container, actor)
     container.pharmacies.import_drugs(
         [
             {
@@ -431,15 +478,64 @@ def test_pharmacy_reminder_discharge_intake_events(post_line_event, container):
     assert isinstance(messages[0], FlexMessage) and "intake" in str(messages[0].contents.to_dict())
 
 
+def test_answer_markdown_is_stripped(post_line_event, container):
+    """LINE 不渲染 Markdown：模型仍輸出時，符號不會原樣出現在使用者畫面上。"""
+    from app.domain.assistant_schema import plain_text
+
+    raw = (
+        "## 結論\n**多喝水**並休息。\n- 觀察體溫\n* 少量多餐\n"
+        "> 持續不適請就醫\n詳見 [衛教單](https://example.org/a) 與 `退燒藥`。\n2 * 3 = 6"
+    )
+    assert plain_text(raw) == (
+        "結論\n多喝水並休息。\n・觀察體溫\n・少量多餐\n持續不適請就醫\n詳見 衛教單 與 退燒藥。\n2 * 3 = 6"
+    )
+    container.llm_client.decisions.insert(0, ("喝水", {"event": "faq", "answer": "**多喝水**"}))
+    _text(post_line_event, "要喝水嗎")
+    _, messages = container.line_client.replies[-1]
+    assert messages[0].text == "多喝水"
+
+
+def _clinic(container, hospital_id, name, departments):
+    container.hospital_repo.create(
+        id=hospital_id,
+        name=name,
+        region="台北市",
+        address=f"台北市大安區信義路三段{hospital_id[-1]}號",
+        capacity_tier="clinic",
+        departments=departments,
+    )
+
+
 def test_symptom_answer_with_actions_and_urgent_adds_119(post_line_event, container):
-    # 病況諮詢：watch（建議就醫、非急症）→ 補「附近診所」讓病人就近看診
+    # 病況諮詢：非急症 → 回答後直接請分享位置找診所（記下症狀的科別），不用再按「附近診所」
+    _clinic(container, "C1", "大安家醫診所", "家庭醫學科")
+    _clinic(container, "C2", "大安牙醫診所", "牙醫一般科")
     _text(post_line_event, "我頭痛兩天")
     _, messages = container.line_client.replies[-1]
-    assert "家醫科" in messages[0].text
-    items = messages[0].quick_reply.items
-    assert [i.action.label for i in items] == ["🏠 附近診所", "🏥 找醫院"]
-    assert "action=clinics" in items[0].action.data
-    assert "department=" in items[0].action.data  # 建議的科別帶進找診所
+    assert "家醫科" in messages[0].text and messages[0].quick_reply is None
+    assert "有家醫科的診所" in messages[1].text
+    items = messages[1].quick_reply.items
+    assert items[0].action.type == "location"
+    assert [i.action.label for i in items[1:]] == ["🏥 找醫院"]  # 模型給的其餘下一步接在後面
+    state = container.conversation_state.peek("U1")
+    assert state.action == "await_location"
+    assert state.payload == {"for": "clinics", "department": "家醫科", "symptom": "頭痛兩天"}
+    post_line_event(
+        _event(
+            "message",
+            message={
+                "type": "location",
+                "id": "m2",
+                "title": "我的位置",
+                "address": "台北市大安區信義路三段10號",
+                "latitude": 25.033,
+                "longitude": 121.543,
+            },
+        )
+    )
+    _, messages = container.line_client.replies[-1]
+    body = str(messages[0].contents.to_dict())
+    assert "大安家醫診所" in body and "大安牙醫診所" not in body  # 依症狀的科別篩選
     _text(post_line_event, "我很喘")
     _, messages = container.line_client.replies[-1]
     labels = [i.action.label for i in messages[0].quick_reply.items]
@@ -558,9 +654,8 @@ def test_text_clears_pending_photo_state_but_keeps_location(post_line_event, con
     assert container.conversation_state.peek("U1").action == PENDING_LOCATION
 
 
-# ---- 衛教 txt 匯入（依科別）與混合檢索 ----
+# ---- 衛教文件與混合檢索 ----
 
-_SEP = "=" * 60
 _HYPERTENSION = (
     "高血壓居家照護\n\n首頁 > 衛教資訊 > 衛教單張\n\nQrcode\n\n"
     "高血壓病人要規律服藥並每天量血壓，血壓控制好可以減少中風與心肌梗塞的風險。\n\n"
@@ -581,132 +676,65 @@ _DIABETIC_FOOT = (
 )
 
 
-def _record(title, hospital, level, url, text, category="衛教資訊 > 衛教單張"):
-    return f"{_SEP}\n標題：{title}\n醫院：{hospital}（{level}）\n來源分類：{category}\n網址：{url}\n\n{text}\n\n"
-
-
-DEPARTMENT_FILES = {
-    "01_心臟內科.txt": "【心臟內科】共 5 篇衛教\n來源：台灣醫院官網衛教專區\n\n"
-    + _record(
-        "高血壓居家照護", "台大醫院", "醫學中心", "https://www.ntuh.gov.tw/edu/1", _HYPERTENSION
+def _seed_education(container, actor):
+    """三篇衛教（兩篇心臟內科、一篇沒有科別），出處醫院與原文網址跟著文件走。"""
+    docs = (
+        ("高血壓居家照護", "心臟內科", "台大醫院", "https://www.ntuh.gov.tw/edu/1", _HYPERTENSION),
+        (
+            "心導管檢查須知",
+            "心臟內科",
+            "中國醫藥大學附設醫院",
+            "https://www.cmuh.cmu.edu.tw/HealthEdus/Detail?no=2",
+            _CATHETER,
+        ),
+        ("糖尿病足部照護", None, "台大醫院", "https://www.ntuh.gov.tw/edu/2", _DIABETIC_FOOT),
     )
-    + _record(
-        "心導管檢查須知",
-        "中國醫藥大學附設醫院",
-        "醫學中心",
-        "https://www.cmuh.cmu.edu.tw/HealthEdus/Detail?no=2",
-        _CATHETER,
-    )
-    # 與第一篇內文相同（他院轉載）→ 重複略過
-    + _record(
-        "高血壓居家照護（轉載）", "某某醫院", "地區醫院", "https://example.org/dup", _HYPERTENSION
-    )
-    # 太短 → 略過
-    + _record("醫師停診公告", "博仁醫院", "地區醫院", "https://example.org/short", "本週三停診。")
-    # 英文頁面 → 略過
-    + _record(
-        "Contact Information",
-        "國軍醫院",
-        "區域醫院",
-        "https://example.org/en",
-        "Extra! Extra! September is Military Personnel Month. " * 5,
-    ),
-    "57_未分類.txt": "【未分類】共 1 篇衛教\n\n"
-    + _record(
-        "糖尿病足部照護", "台大醫院", "醫學中心", "https://www.ntuh.gov.tw/edu/2", _DIABETIC_FOOT
-    ),
-    # 非衛教整檔略過
-    "56_非衛教（院務消息、活動、醫師介紹）.txt": "【非衛教】共 1 篇\n\n"
-    + _record(
-        "本院榮獲醫療品質獎", "台大醫院", "醫學中心", "https://example.org/news", "本院榮獲…" * 40
-    ),
-}
+    for title, department, hospital, url, text in docs:
+        doc = container.knowledge.create(
+            actor,
+            {
+                "title": title,
+                "content": text,
+                "category": "education",
+                "department": department,
+                "source": url,
+            },
+        )
+        container.knowledge_repo.update(doc["id"], meta={"hospital_name": hospital})
 
 
-def _write_department_files(tmp_path, files=DEPARTMENT_FILES):
-    paths = []
-    for name, content in files.items():
-        path = tmp_path / name
-        path.write_text(content, encoding="utf-8")
-        paths.append(path)
-    return paths
-
-
-def _import_departments(container, actor, tmp_path, **kwargs):
-    return container.knowledge.import_department_files(
-        actor, _write_department_files(tmp_path), min_chars=60, **kwargs
-    )
-
-
-def test_department_import_filters_dedupes_and_updates(container, make_user, tmp_path):
+def test_education_documents_are_chunked_with_structure(container, make_user):
     actor = _system_actor(container, make_user)
-    result = _import_departments(container, actor, tmp_path)
-    assert {
-        k: result[k] for k in ("files", "read", "created", "updated", "skipped", "duplicates")
-    } == {
-        "files": 2,
-        "read": 6,
-        "created": 3,
-        "updated": 0,
-        "skipped": 2,
-        "duplicates": 1,
-    }
-    assert result["chunks"]["count"] >= 3 and result["chunks"]["over_hard_max"] == 0
+    _seed_education(container, actor)
     docs = {d["title"]: d for d in container.knowledge.list(actor)}
-    doc = docs["高血壓居家照護"]
-    assert doc["category"] == "education" and doc["hospital_id"] is None
-    assert doc["department"] == "心臟內科" and doc["tags"] == ["心臟內科"]
-    assert doc["meta"]["hospital_name"] == "台大醫院" and doc["meta"]["level"] == "醫學中心"
-    assert doc["meta"]["imported_from"] == "01_心臟內科.txt"
-    assert doc["source"] == "https://www.ntuh.gov.tw/edu/1"
-    foot = docs["糖尿病足部照護"]
-    assert foot["department"] is None and foot["tags"] == []
-    assert container.knowledge.stats()["documents"] == 3
+    assert docs["高血壓居家照護"]["department"] == "心臟內科"
+    assert docs["糖尿病足部照護"]["department"] is None
+    assert all(d["chunk_count"] >= 1 for d in docs.values())  # 列表帶每篇的片段數
 
-    # 片段：麵包屑 / Qrcode 清掉、標題路徑前綴、條列成組
-    chunks = container.knowledge_repo.pending_embeddings(100)
-    contents = [c["content"] for c in chunks]
-    assert not any("Qrcode" in c or "首頁" in c for c in contents)
     hits = container.knowledge.retrieve("血壓要怎麼量")
     assert hits[0]["title"] == "高血壓居家照護" and hits[0]["department"] == "心臟內科"
-    # 短小節併成一段時，小節名變成行內前綴；條列跟著引言
+    # 片段：麵包屑 / Qrcode 清掉；短小節併成一段時小節名變成行內前綴；條列跟著引言
+    assert "Qrcode" not in hits[0]["content"] and "首頁" not in hits[0]["content"]
     assert "每天量血壓：早晚各量一次" in hits[0]["content"]
     assert "有下列情況請儘快就醫：\n1. 血壓超過 180/110" in hits[0]["content"]
 
-    # 重跑：同網址更新、不重複建檔
-    again = _import_departments(container, actor, tmp_path)
-    assert again["created"] == 0 and again["updated"] == 3 and again["duplicates"] == 1
-    assert container.knowledge.stats()["documents"] == 3
-    # 非系統管理員不能匯入；檔名格式錯誤擋下
-    from app.core.exceptions import AuthorizationError, ValidationError
 
-    staff = _system_actor(container, make_user, role=Role.MEDICAL_STAFF, hospital_id="H1")
-    with pytest.raises(AuthorizationError):
-        _import_departments(container, staff, tmp_path)
-    bad = tmp_path / "notes.txt"
-    bad.write_text("x", encoding="utf-8")
-    with pytest.raises(ValidationError):
-        container.knowledge.import_department_files(actor, [bad])
-
-
-def test_retrieve_weights_department_without_filtering(container, make_user, tmp_path):
+def test_retrieve_weights_department_without_filtering(container, make_user):
     actor = _system_actor(container, make_user)
     wound = "傷口換藥前先洗手，用生理食鹽水清潔，再蓋上無菌紗布，每天換一次。"
-    files = {
-        "23_骨科.txt": _record(
-            "骨折術後傷口照護",
-            "A 醫院",
-            "區域醫院",
-            "https://a.example/1",
-            wound + "石膏不要弄濕。" * 3,
-        ),
-        "36_皮膚科.txt": _record(
-            "皮膚傷口照護", "B 醫院", "區域醫院", "https://b.example/1", wound + "避免抓癢。" * 3
-        ),
-    }
-    container.knowledge.import_department_files(
-        actor, _write_department_files(tmp_path, files), min_chars=30
-    )
+    for title, department, extra in (
+        ("骨折術後傷口照護", "骨科", "石膏不要弄濕。"),
+        ("皮膚傷口照護", "皮膚科", "避免抓癢。"),
+    ):
+        container.knowledge.create(
+            actor,
+            {
+                "title": title,
+                "content": wound + extra * 3,
+                "category": "education",
+                "department": department,
+            },
+        )
     assert (
         container.knowledge.retrieve("傷口怎麼換藥", department="骨科")[0]["department"] == "骨科"
     )
@@ -719,61 +747,13 @@ def test_retrieve_weights_department_without_filtering(container, make_user, tmp
     assert {h["department"] for h in hits} == {"骨科", "皮膚科"}
 
 
-def test_department_import_and_rechunk_jobs(client, container, make_user, auth_header, tmp_path):
-    superadmin = make_user(Role.SUPER_ADMIN)
-    h1_admin = make_user(Role.HOSPITAL_ADMIN, hospital_id="H1")
-    container.knowledge_jobs.spawn = lambda fn: fn()  # 同步執行
-
-    def upload(user):
-        return client.post(
-            "/api/v1/admin/knowledge/jobs/department-import",
-            data={
-                "files": [
-                    (io.BytesIO(DEPARTMENT_FILES["01_心臟內科.txt"].encode()), "01_心臟內科.txt"),
-                    (io.BytesIO(DEPARTMENT_FILES["57_未分類.txt"].encode()), "57_未分類.txt"),
-                ],
-                "min_chars": "60",
-            },
-            headers=auth_header(user),
-        )
-
-    assert upload(h1_admin).status_code == 403
-    resp = upload(superadmin)
-    assert resp.status_code == 202
-    job = resp.get_json()["data"]
-    assert job["kind"] == "department_txt" and "path" not in job["params"]
-    done = container.knowledge_jobs.get(container.users.to_principal(superadmin), job["id"])
-    assert done["status"] == "succeeded" and done["result"]["created"] == 3
-    assert not (container.knowledge_jobs._upload_dir / job["id"]).exists()  # 暫存目錄已刪
-
-    # 先算向量，重建片段後向量清空、片段數不變
-    container.knowledge.embed_pending()
-    before = container.knowledge.stats()
-    assert before["embedded"] == before["chunks"] > 0
-    resp = client.post("/api/v1/admin/knowledge/jobs/rechunk", headers=auth_header(superadmin))
-    assert resp.status_code == 202
-    result = container.knowledge_jobs.get(
-        container.users.to_principal(superadmin), resp.get_json()["data"]["id"]
-    )["result"]
-    after = container.knowledge.stats()
-    assert result == {"documents": 3, "chunks": before["chunks"]}
-    assert after["chunks"] == before["chunks"] and after["embedded"] == 0
-    assert (
-        client.post(
-            "/api/v1/admin/knowledge/jobs/rechunk", headers=auth_header(h1_admin)
-        ).status_code
-        == 403
-    )
-
-
-def test_hybrid_retrieval_uses_embeddings_and_keywords(container, make_user, tmp_path):
+def test_hybrid_retrieval_uses_embeddings_and_keywords(container, make_user):
     actor = _system_actor(container, make_user)
-    _import_departments(container, actor, tmp_path)
-    assert container.knowledge.stats()["embedded"] == 0
-    done = container.knowledge.embed_pending(batch=1)
-    assert done == container.knowledge.stats()["chunks"] > 0
-    assert container.knowledge.stats()["embedded"] == done
-    assert container.knowledge.embed_pending() == 0  # 已經算過的不會重算
+    _seed_education(container, actor)
+    # 後台新增文件後就順手算好向量；已經算過的不會重算
+    stats = container.knowledge.stats()
+    assert stats["embedded"] == stats["chunks"] > 0
+    assert container.knowledge.embed_pending() == 0
 
     hits = container.knowledge.retrieve("糖尿病腳有傷口怎麼照顧")
     assert hits and hits[0]["title"] == "糖尿病足部照護"
@@ -794,9 +774,9 @@ def test_hybrid_retrieval_uses_embeddings_and_keywords(container, make_user, tmp
     container.llm_client.embedding_model = "fake-embedding"
 
 
-def test_answer_with_citations_renders_sources(post_line_event, container, make_user, tmp_path):
+def test_answer_with_citations_renders_sources(post_line_event, container, make_user):
     actor = _system_actor(container, make_user)
-    _import_departments(container, actor, tmp_path)
+    _seed_education(container, actor)
     container.llm_client.decisions.insert(
         0,
         (
@@ -824,11 +804,152 @@ def test_answer_with_citations_renders_sources(post_line_event, container, make_
     assert isinstance(messages[0], TextMessage)
 
 
+def test_symptom_with_city_recommends_clinics_in_same_reply(post_line_event, container):
+    """使用者說了所在縣市：回答之後同一次回覆就列出有該科的診所，不必分享位置。"""
+    _clinic(container, "C1", "大安內科診所", "內科")
+    _clinic(container, "C2", "大安牙醫診所", "牙醫一般科")
+    container.llm_client.decisions.insert(
+        0,
+        (
+            "肚子痛",
+            {
+                "event": "symptom",
+                "risk": "none",
+                "slots": {"department": "內科", "city": "台北市", "district": "大安區"},
+                "answer": "肚子痛可先觀察，持續不適建議看內科。",
+            },
+        ),
+    )
+    _text(post_line_event, "我在台北市大安區，肚子痛")
+    _, messages = container.line_client.replies[-1]
+    assert "內科" in messages[0].text
+    assert isinstance(messages[1], FlexMessage)
+    body = str(messages[1].contents.to_dict())
+    assert "大安內科診所" in body and "大安牙醫診所" not in body
+    assert container.conversation_state.peek("U1") is None  # 已經推薦完，不再等位置
+
+
+def test_symptom_clinics_are_picked_by_model(post_line_event, container):
+    """院所主檔沒有科別：同區院所的名稱交給模型挑，只列模型挑中的（醫美診所不會出現）。"""
+    for hospital_id, name in (("C1", "A 美型診所"), ("C2", "大安內科診所"), ("C3", "大安診所")):
+        _clinic(container, hospital_id, name, None)
+    llm = container.llm_client
+    llm.decisions.insert(
+        0,
+        (
+            "肚子痛",
+            {
+                "event": "symptom",
+                "slots": {"symptom": "肚子痛", "department": "內科"},
+                "answer": "肚子痛可先觀察，持續不適建議看內科。",
+            },
+        ),
+    )
+    llm.clinic_picks = [
+        2,
+        99,
+        2,
+    ]  # 候選依名稱排序：1=A 美型、2=大安內科、3=大安；超出範圍 / 重複的丟掉
+    _text(post_line_event, "我肚子痛")
+    post_line_event(
+        _event(
+            "message",
+            message={
+                "type": "location",
+                "id": "m2",
+                "title": "我的位置",
+                "address": "台北市大安區信義路三段10號",
+                "latitude": 25.033,
+                "longitude": 121.543,
+            },
+        )
+    )
+    pick_call = llm.calls[-1]
+    assert pick_call["model"].__name__ == "ClinicPicks"
+    assert "【症狀】肚子痛" in pick_call["prompt"] and "1｜A 美型診所｜診所" in pick_call["prompt"]
+    _, messages = container.line_client.replies[-1]
+    body = str(messages[0].contents.to_dict())
+    assert "大安內科診所" in body and "美型" not in body
+    # 模型一家都沒挑 → 明說找不到，不列不相干的診所
+    llm.clinic_picks = []
+    _text(post_line_event, "我肚子痛")
+    post_line_event(
+        _event(
+            "message",
+            message={
+                "type": "location",
+                "id": "m3",
+                "title": "我的位置",
+                "address": "台北市大安區信義路三段10號",
+                "latitude": 25.033,
+                "longitude": 121.543,
+            },
+        )
+    )
+    _, messages = container.line_client.replies[-1]
+    assert len(messages) == 1 and "找不到適合看內科的診所" in messages[0].text
+
+
+def test_clinic_event_finds_clinics_with_symptom_from_context(post_line_event, container):
+    """「先看診所」→ clinic 事件：走找診所（不是急診醫院），症狀 / 科別由模型從對話脈絡帶上。"""
+    container.llm_client.decisions.insert(
+        0,
+        (
+            "先看診所",
+            {"event": "clinic", "slots": {"symptom": "肚子痛", "department": "家庭醫學科"}},
+        ),
+    )
+    _text(post_line_event, "先看診所")
+    _, messages = container.line_client.replies[-1]
+    assert "有家庭醫學科的診所" in messages[0].text
+    assert messages[0].quick_reply.items[0].action.type == "location"
+    state = container.conversation_state.peek("U1")
+    assert state.payload == {"for": "clinics", "department": "家庭醫學科", "symptom": "肚子痛"}
+
+
+def test_symptom_with_department_recommends_even_if_flagged_unclear(post_line_event, container):
+    """模型給了完整建議與科別卻又標「需要再問清楚」：有科別就照樣接著找診所。"""
+    container.llm_client.decisions.insert(
+        0,
+        (
+            "肚子痛",
+            {
+                "event": "symptom",
+                "slots": {"symptom": "肚子痛", "department": "內科"},
+                "answer": "肚子痛建議先到內科或家庭醫學科看診。",
+                "needs_clarification": True,
+            },
+        ),
+    )
+    _text(post_line_event, "我肚子痛")
+    _, messages = container.line_client.replies[-1]
+    assert len(messages) == 2 and "有內科的診所" in messages[1].text
+
+
+def test_symptom_clarification_does_not_ask_location(post_line_event, container):
+    """症狀太模糊、模型要再問一句時先不推薦診所。"""
+    container.llm_client.decisions.insert(
+        0,
+        (
+            "怪怪的",
+            {
+                "event": "symptom",
+                "answer": "可以多說一點嗎？哪裡不舒服、多久了？",
+                "needs_clarification": True,
+            },
+        ),
+    )
+    _text(post_line_event, "我覺得怪怪的")
+    _, messages = container.line_client.replies[-1]
+    assert len(messages) == 1
+    assert container.conversation_state.peek("U1") is None
+
+
 def test_symptom_find_hospital_button_carries_department(post_line_event, container):
     """「找醫院」按鈕也帶科別，位置分享回來後優先推薦有該科的急救責任醫院。"""
     _text(post_line_event, "我頭痛兩天")
     _, messages = container.line_client.replies[-1]
-    hospital = next(i for i in messages[0].quick_reply.items if i.action.label == "🏥 找醫院")
+    hospital = next(i for i in messages[-1].quick_reply.items if i.action.label == "🏥 找醫院")
     assert "department=" in hospital.action.data
     post_line_event(_event("postback", postback={"data": hospital.action.data}))
     _, messages = container.line_client.replies[-1]

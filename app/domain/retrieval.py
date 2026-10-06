@@ -66,10 +66,6 @@ def clean_text(text: str) -> str:
     return _UNSAFE.sub("", text).replace("\r\n", "\n")
 
 
-def cjk_ratio(text: str) -> float:
-    return len(_CJK.findall(text)) / max(len(text), 1)
-
-
 def content_hash(text: str) -> str:
     return hashlib.sha1(re.sub(r"\s+", " ", text).strip().encode()).hexdigest()
 
@@ -288,15 +284,11 @@ class _Block:
     marker: str = ""  # 條列 / 標題的編號家族（upper / lower / paren / num / bullet / md / short）
 
 
-def _line_is_noise(line: str, boilerplate: frozenset[str] | None) -> bool:
-    if not line or _NOISE_LINE.match(line) or _DATE_LINE.match(line):
-        return True
-    return bool(boilerplate and len(line) <= 12 and line in boilerplate)
+def _line_is_noise(line: str) -> bool:
+    return bool(not line or _NOISE_LINE.match(line) or _DATE_LINE.match(line))
 
 
-def clean_lines(
-    text: str, *, title: str | None = None, boilerplate: frozenset[str] | None = None
-) -> list[str]:
+def clean_lines(text: str, *, title: str | None = None) -> list[str]:
     """逐行清理：去頭尾空白、樣板行、日期 / 純數字行、與標題重複的首行、PDF 目錄（連續頁碼行）。
 
     回傳的 list 保留空字串當段落邊界（連續空行合併成一個）。
@@ -326,7 +318,7 @@ def clean_lines(
     # 樣板行 → 空行；連續空行合併
     result: list[str] = []
     for line in out:
-        if line and _line_is_noise(line, boilerplate):
+        if line and _line_is_noise(line):
             line = ""
         if line == "" and (not result or result[-1] == ""):
             continue
@@ -507,7 +499,6 @@ def chunk_document(
     max_chars: int = CHUNK_TARGET_CHARS,
     hard_max: int | None = None,
     min_chars: int | None = None,
-    boilerplate: frozenset[str] | None = None,
 ) -> list[Chunk]:
     """結構感知 recursive chunking，回傳含標題路徑的片段。
 
@@ -515,11 +506,10 @@ def chunk_document(
     - `hard_max`（預設 1.5 倍）：單一 block 超過就依 換行 / 句號 / 逗號 遞迴切，不在句中斷。
     - `min_chars`（預設 0.2 倍）：更短的片段併回前一段。
     - `title`：文件標題，用來去掉內文開頭重複的標題行；標題本身不進路徑（已另存 title）。
-    - `boilerplate`：語料級統計出來的網站導覽行，出現就刪。
     """
     hard_max = hard_max or int(max_chars * CHUNK_HARD_MAX_RATIO)
     min_chars = min_chars if min_chars is not None else int(max_chars * CHUNK_MIN_RATIO)
-    lines = clean_lines(text, title=title, boilerplate=boilerplate)
+    lines = clean_lines(text, title=title)
     raw_blocks = [b.strip() for b in "\n".join(lines).split("\n\n") if b.strip()]
     if not raw_blocks:
         return []
@@ -604,44 +594,6 @@ def _merge_chunks(first: Chunk, second: Chunk) -> Chunk:
 def chunk_text(text: str, *, max_chars: int = CHUNK_TARGET_CHARS, **kwargs: Any) -> list[str]:
     """`chunk_document()` 的純文字版（只要片段內容）。"""
     return [c.content for c in chunk_document(text, max_chars=max_chars, **kwargs)]
-
-
-BOILERPLATE_EDGE_LINES = (
-    15  # 只統計每篇開頭 / 結尾這麼多行（頁首頁尾導覽），表格表頭在文中不會被算進去
-)
-_BOILERPLATE_CANDIDATE = re.compile(r"^[\w一-鿿][\w一-鿿 />·・]{1,11}$")
-
-
-def collect_boilerplate(
-    line_iter: Iterable[list[str]], *, min_docs: int = 30, nav_ratio: float = 0.8, max_len: int = 12
-) -> frozenset[str]:
-    """語料級樣板行統計。
-
-    短行「出現在一連串短行之中」的次數 ≥ min_docs 且占其總出現次數 ≥ nav_ratio → 樣板。
-
-    導覽列是一串短行、在文件頭尾；小節標題（「注意事項」）後面接的是長段落、表格表頭在文中，
-    兩者比例都低、會被保留。
-    `line_iter` 每個元素是一篇文章的行（已 strip、含空字串）。
-    """
-    total: Counter[str] = Counter()
-    nav: Counter[str] = Counter()
-    for lines in line_iter:
-        body = [ln for ln in lines if ln]
-        seen: set[str] = set()
-        for idx, line in enumerate(body):
-            if len(line) > max_len or line in seen or not _BOILERPLATE_CANDIDATE.match(line):
-                continue
-            seen.add(line)
-            total[line] += 1
-            at_edge = idx < BOILERPLATE_EDGE_LINES or idx >= len(body) - BOILERPLATE_EDGE_LINES
-            nxt = body[idx + 1] if idx + 1 < len(body) else ""
-            if at_edge and (not nxt or len(nxt) <= TABLE_CELL_MAX):
-                nav[line] += 1
-    return frozenset(
-        line
-        for line, count in nav.items()
-        if count >= min_docs and count / total[line] >= nav_ratio
-    )
 
 
 def hit_label(hit: dict[str, Any]) -> str:

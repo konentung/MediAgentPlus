@@ -5,13 +5,16 @@
   位置訊息（MessageHandler 依狀態轉來，params 帶 address + lat / lng；PENDING_LOCATION 也存座標）
            → `board_for_location()` 依距離列最近的醫院、推薦最近未壅塞者，
              並附上該醫院的位置訊息（可導航）
-  clinics  → 非急症：找附近診所 / 地區醫院（同鄉鎮市區優先、診所優先；`department` 依 AI 建議的
-             科別篩選）；沒有縣市也沒有座標時先請對方分享位置（狀態 for=clinics 帶 department），
+  clinics  → 非急症：找附近診所 / 地區醫院（同鄉鎮市區優先、診所優先）；AI 症狀諮詢帶了
+             `symptom` / `department` 時由模型從同區院所挑出適合的（`recommend_clinics()`）；
+             沒有縣市也沒有座標時先請對方分享位置（狀態 for=clinics 帶 department / symptom），
              位置訊息回來再查
   emergency=1（紅旗命中）：文案改急救導向、按鈕加撥打 119
 """
 
 from __future__ import annotations
+
+import logging
 
 from app.domain.enums import Intent, Permission
 from app.line.context import BotContext
@@ -20,6 +23,10 @@ from app.line.messages import hospital as msg
 from app.line.state_store import AWAIT_LOCATION, PENDING_LOCATION
 from app.services.pharmacy_service import parse_address
 from app.utils.geo import nearest_district, parse_coords
+
+logger = logging.getLogger(__name__)
+
+LOADING_SECONDS = 30  # 模型挑診所要幾秒，先顯示 loading 動畫
 
 
 class FindHospitalHandler(IntentHandler):
@@ -68,6 +75,7 @@ class FindHospitalHandler(IntentHandler):
 
     def _reply_clinics(self, ctx: BotContext, params: dict[str, str]) -> None:
         department = (params.get("department") or "").strip() or None
+        symptom = (params.get("symptom") or "").strip() or None  # 新增：AI 症狀諮詢帶來的症狀摘要
         coords = parse_coords(params.get("lat"), params.get("lng"))
         city = (params.get("city") or "").replace("臺", "台")
         district = params.get("district") or None
@@ -78,18 +86,32 @@ class FindHospitalHandler(IntentHandler):
                 city, district = nearest_district(coords[0], coords[1]) or (None, None)
         if not city:
             payload = {"for": "clinics", "department": department or ""}
+            if symptom:
+                payload["symptom"] = symptom
             ctx.container.conversation_state.set(ctx.line_user_id, AWAIT_LOCATION, payload)
             ctx.reply(msg.clinics_prompt_messages(department))
             return
-        result = ctx.container.triage.nearby_clinics(
+        self._loading(ctx)
+        # 修改：由模型依症狀 / 科別從同區院所挑選（都沒有就挑一般看診的院所）
+        result = ctx.container.triage.recommend_clinics(
             city,
             district,
             lat=coords[0] if coords else None,
             lng=coords[1] if coords else None,
+            symptom=symptom,
             department=department,
         )
         ctx.container.conversation_state.clear(ctx.line_user_id)
         ctx.reply(msg.clinics_messages(result, ctx.liff_url("/er")))
+
+    @staticmethod
+    def _loading(ctx: BotContext) -> None:
+        if not ctx.line_user_id:
+            return
+        try:
+            ctx.container.line_client.show_loading_animation(ctx.line_user_id, LOADING_SECONDS)
+        except Exception:  # noqa: BLE001 - 動畫失敗不影響主流程
+            logger.debug("loading animation failed", exc_info=True)
 
     @staticmethod
     def _liff(ctx: BotContext, board: dict) -> str:

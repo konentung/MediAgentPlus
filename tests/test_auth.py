@@ -44,6 +44,39 @@ def test_line_callback_rejects_bad_state(client):
     assert resp.status_code == 401
 
 
+def test_line_callback_failure_renders_error_page(client, container, monkeypatch, caplog):
+    """callback 是瀏覽器導過來的頁面：連不上 LINE 時要顯示錯誤頁（不是 JSON），並留下原因的 log。"""
+    import requests
+
+    from app.core.exceptions import ExternalServiceError
+
+    def unreachable(code):
+        try:
+            raise requests.ConnectTimeout("https://api.line.me/oauth2/v2.1/token?secret=abc")
+        except requests.RequestException as exc:
+            raise ExternalServiceError("無法連線 LINE token 端點") from exc
+
+    monkeypatch.setattr(container.line_login, "exchange_code", unreachable)
+    state = container.state_store.issue(600)
+    url = f"/api/v1/auth/line/callback?code=abc&state={state.state}"
+    with caplog.at_level("WARNING"):
+        resp = client.get(url, headers={"Accept": "text/html,application/xhtml+xml,*/*;q=0.8"})
+    assert resp.status_code == 502 and resp.content_type.startswith("text/html")
+    body = resp.get_data(as_text=True)
+    assert "外部服務異常" in body and "無法連線 LINE token 端點" in body
+    # log 只有例外型別，不含可能帶機密的網址
+    assert "cause=ConnectTimeout" in caplog.text and "secret=abc" not in caplog.text
+    # 明確要 JSON 的呼叫端仍拿到 JSON；其他 /api/ 路徑不受影響
+    state = container.state_store.issue(600)
+    resp = client.get(
+        f"/api/v1/auth/line/callback?code=abc&state={state.state}",
+        headers={"Accept": "application/json"},
+    )
+    assert resp.status_code == 502 and resp.get_json()["success"] is False
+    resp = client.get("/api/v1/auth/me", headers={"Accept": "text/html"})
+    assert resp.status_code == 401 and resp.is_json
+
+
 def test_line_callback_issues_jwt(client, container, monkeypatch):
     state = container.state_store.issue(600)
     monkeypatch.setattr(

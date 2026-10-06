@@ -182,7 +182,8 @@ def test_run_due_skips_unfollowed_and_marks_failed(container, post_line_event):
 
 def test_respond_via_postback(container, post_line_event):
     schedule = _schedule(container)
-    now = datetime(2026, 9, 28, 8, 31, tzinfo=TAIPEI)
+    # 用今天的 08:31：最後的 history(days=7) 以真實時間往回算，固定日期過了七天就查不到
+    now = datetime.now(TAIPEI).replace(hour=8, minute=31, second=0, microsecond=0)
     container.reminders.run_due(now)
     delivery = container.delivery_repo.list_for_schedules(
         [schedule["id"]], since=now - timedelta(hours=1)
@@ -235,6 +236,15 @@ def test_respond_via_postback(container, post_line_event):
     principal = _principal(container)
     history = container.reminders.history(principal, days=7)
     assert history and history[0]["status"] == "taken" and history[0]["drug_name"] == "Metformin"
+
+
+def test_reminder_menu_opens_liff_directly(post_line_event, container):
+    """選單的「查看 / 編輯提醒」直接開 LIFF 提醒頁，不經過 postback 再回一張 Flex。"""
+    post_line_event(_event("postback", postback={"data": postback_data(Intent.REMINDER)}))
+    _, messages = container.line_client.replies[-1]
+    actions = [i.action for i in messages[0].quick_reply.items]
+    assert [a.label for a in actions] == ["查看 / 編輯提醒", "拍處方箋建立提醒"]
+    assert actions[0].type == "uri" and actions[0].uri.endswith("/reminders")
 
 
 def test_reminder_menu_and_list_via_line(post_line_event, container):

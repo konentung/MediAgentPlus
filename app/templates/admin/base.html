@@ -41,7 +41,7 @@
         <li class="nav-item" data-perm="patient:read"><a class="nav-link {{ 'active' if active == 'patients' }}" href="{{ url_for('admin_pages.patients') }}">病人資料</a></li>
         <li class="nav-item" data-perm="feedback:manage"><a class="nav-link {{ 'active' if active == 'feedback' }}" href="{{ url_for('admin_pages.feedback') }}">意見回饋</a></li>
         <li class="nav-item" data-perm="staff:manage"><a class="nav-link {{ 'active' if active == 'staff' }}" href="{{ url_for('admin_pages.staff') }}">人員與角色</a></li>
-        <li class="nav-item" data-perm="education:content_manage"><a class="nav-link {{ 'active' if active == 'knowledge' }}" href="{{ url_for('admin_pages.knowledge') }}">AI 知識庫</a></li>
+        <li class="nav-item" data-perm="education:content_manage"><a class="nav-link {{ 'active' if active == 'knowledge' }}" href="{{ url_for('admin_pages.knowledge') }}">衛教資訊</a></li>
         <li class="nav-item" data-perm="medication:manage"><a class="nav-link {{ 'active' if active == 'pharmacies' }}" href="{{ url_for('admin_pages.pharmacies') }}">藥局</a></li>
         <li class="nav-item"><a class="nav-link {{ 'active' if active == 'drugs' }}" href="{{ url_for('admin_pages.drugs') }}">藥品</a></li>
         <li class="nav-item" data-perm="education:content_manage"><a class="nav-link {{ 'active' if active == 'imports' }}" href="{{ url_for('admin_pages.imports') }}">資料匯入</a></li>

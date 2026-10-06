@@ -44,7 +44,7 @@ MediAgent+ 的所有資料表都是 `app/models/` 下的 SQLAlchemy 模型，正
 | | `medication_schedules` | 每一項藥的提醒排程 |
 | | `reminder_deliveries` | 每一次提醒推播與回報 |
 | 急診分流（找醫院） | `er_snapshots` | 健保署急診即時資料的時序快照，依使用者位置推薦醫院用 |
-| AI 知識庫 | `knowledge_documents` | RAG 文件 |
+| 衛教資訊 | `knowledge_documents` | RAG 文件 |
 | | `knowledge_chunks` | 文件切段後的檢索片段（tsvector + 向量） |
 | | `knowledge_jobs` | 後台背景維護工作（衛教 txt 匯入、重建片段、算向量） |
 
@@ -450,7 +450,7 @@ Rich Menu「去哪拿藥」拍照 → `PrescriptionService.create_from_image()` 
 
 ---
 
-## AI 知識庫（RAG）
+## 衛教資訊（RAG）
 
 設計文件 `docs/ai-assistant-design.md`。`hospital_id` 空 = 通用；院所文件只有常去院所 / 所屬院所是它的使用者檢索得到。
 
@@ -461,13 +461,13 @@ Rich Menu「去哪拿藥」拍照 → `PrescriptionService.create_from_image()` 
 | `id` | String(32) PK | |
 | `title` | String(200) | 標題；檢索結果的「參考來源」按鈕顯示《標題》。 |
 | `category` | String(32) | 分類代碼，見 `KnowledgeService.CATEGORIES`：`service`（服務說明）/ `faq`（常見問題）/ `symptom`（症狀與就醫）/ `medication`（用藥）/ `education`（衛教）/ `hospital`（院所資訊）。 |
-| `hospital_id` | FK → hospitals (SET NULL) | NULL = 通用（只有 SUPER_ADMIN 能改）；有值 = 該院所專屬。 |
+| `hospital_id` | FK → hospitals (SET NULL) | 文件的歸屬：有值 = 該院所上傳、由該院所的管理員看得到與維護；NULL = 通用（只有 SUPER_ADMIN 看得到、能改）。檢索不分院所（所有人都查得到全部），病人自己院所的片段優先。 |
 | `content` | Text | 全文（Markdown 或純文字），最長 `MAX_CONTENT_CHARS`。 |
-| `department` | String(50) index | 科別（衛教 txt 檔名「01_心臟內科」的科別；未分類 / 手動建立的為 NULL）。檢索時同科別片段加權。 |
+| `department` | String(50) index | 科別：上傳 PDF 時選（整批套用）或在後台編輯，自由文字，各院所可以有自己的分類；可為 NULL。檢索時同科別片段加權。 |
 | `tags` | JSON list | 標籤；衛教匯入時 = [科別]。 |
-| `source` | String(500) index | 來源：Markdown 檔名或原文網址。匯入時以此去重（同檔名 / 同網址都更新同一份）。 |
-| `content_hash` | String(40) index | 內文 SHA-1，跨醫院轉載的相同內容只收一份。 |
-| `meta` | JSON | 出處資訊（衛教匯入時填）：`hospital_name`、`level`（醫學中心 / 區域 / 地區）、`department`、`source_category`（來源站台分類）、`imported_from`（txt 檔名）。 |
+| `source` | String(500) index | 來源：PDF 檔名或手動填的原文網址。PDF 匯入以 (院所, 檔名) 判斷更新（同院所同檔名重傳 = 更新同一份）；是 http 網址時 LINE 回答會附「參考來源」按鈕。 |
+| `content_hash` | String(40) index | 內文 SHA-1。 |
+| `meta` | JSON | PDF 匯入時填：`hospital_name`（出處醫院，LINE 引用標籤用）、`department`、`imported_from`（檔名）、`pages`（頁數）、`chunk_size`（片段目標字數 300 / 400 / 600；沒有設定的文件用預設 400）。 |
 | `active` | Boolean | 停用後不參與檢索。 |
 | `created_by` | String(32) | 建立者或 `system`。 |
 
@@ -486,7 +486,7 @@ Rich Menu「去哪拿藥」拍照 → `PrescriptionService.create_from_image()` 
 | `content` | Text | 片段文字（含「標題路徑：」前綴），就是餵給模型的 K1…Kn。 |
 | `tokens` | JSON list | jieba 搜尋模式 + 字元 bigram 的斷詞結果；SQLite 測試環境的記憶體 BM25 用。 |
 | `search_vector` | TSVECTOR（SQLite 為 Text） | 同一組 tokens 的 tsvector，PostgreSQL 全文檢索，GIN 索引。 |
-| `embedding` | vector(1536)（SQLite 為 JSON） | OpenAI `text-embedding-3-small` 向量，pgvector HNSW 索引；NULL 代表還沒算（`knowledge embed` / 後台「計算向量」只算 NULL 的）。SQLite 用 `JSON(none_as_null=True)` 讓 NULL 真的是 NULL。 |
+| `embedding` | vector(1536)（SQLite 為 JSON） | OpenAI `text-embedding-3-small` 向量，pgvector HNSW 索引；NULL 代表還沒算（PDF 匯入 / 院所重切後自動算，或後台「計算向量」補算，都只算 NULL 的）。SQLite 用 `JSON(none_as_null=True)` 讓 NULL 真的是 NULL。 |
 
 ### `knowledge_jobs` — 後台維護工作
 
@@ -495,9 +495,9 @@ Rich Menu「去哪拿藥」拍照 → `PrescriptionService.create_from_image()` 
 | 欄位 | 型別 | 說明 |
 |---|---|---|
 | `id` | String(32) PK | |
-| `kind` | String(32) | `department_txt`（衛教 txt 匯入）/ `rechunk`（重建片段）/ `embed`（計算向量）。 |
+| `kind` | String(32) | `pdf_import`（衛教 PDF 匯入）/ `rechunk`（重建片段）/ `embed`（計算向量）。 |
 | `status` | String(16) | `queued` → `running` → `succeeded` / `failed`。超過 30 分鐘沒更新的 running 工作會被標成 failed（程序中斷）。 |
-| `params` | JSON | 啟動參數：匯入 = `filename`、`min_chars`、`include_all`、`limit`、`path`（伺服器暫存路徑，API 不外露）；向量 = `batch`、`pending`（啟動時待算數）。 |
+| `params` | JSON | 啟動參數：PDF 匯入 = `filenames`、`path`（伺服器暫存路徑，API 不外露）、`hospital_id`（歸屬院所，空 = 通用）、`department`、`chunk_size`；重建片段 = `documents`、`hospital_id`（空 = 全部）、`chunk_size`（空 = 各文件維持原本大小）；向量 = `batch`、`pending`（啟動時待算數）。院方帳號只看得到 `hospital_id` 是自己院所的工作。 |
 | `progress` | JSON | 執行中的計數：匯入 = `{"created", "read"}`（每 500 篇更新）；向量 = `{"done", "total"}`（每批更新）。頁面每 3 秒輪詢。 |
 | `result` | JSON | 完成摘要：匯入 = `{"created", "skipped", "duplicates", "read"}`；向量 = `{"embedded"}`。 |
 | `error` | Text | 失敗原因。 |
