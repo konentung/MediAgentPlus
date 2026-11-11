@@ -1,0 +1,153 @@
+{% extends "admin/base.html" %}
+{% block title %}病人資料{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4 mb-0">病人資料</h1>
+  <span class="small text-secondary" id="table-stats">—</span>
+</div>
+
+<div class="card mb-3" data-perm="patient:verify">
+  <div class="card-body">
+    <h2 class="h6 fw-bold mb-2">搜尋病人</h2>
+    <p class="small text-secondary mb-2">病人在表單選了本院，會直接出現在下方清單（待病人確認）。沒有選院所的病人才需要在這裡搜尋後加入。</p>
+    <form class="row g-2" id="claim-form" role="search">
+      <div class="col-md"><input class="form-control" name="phone" type="search" inputmode="tel" placeholder="手機號碼：09xxxxxxxx" aria-label="手機號碼"></div>
+      <div class="col-md"><input class="form-control" name="name" type="search" placeholder="姓名" aria-label="姓名"></div>
+      <div class="col-md"><input class="form-control" name="last4" type="search" maxlength="4" inputmode="numeric" placeholder="身分證末四碼" aria-label="身分證末四碼"></div>
+      <div class="col-md d-none" id="claim-hospital-wrap"><input class="form-control" id="claim-hospital" placeholder="加入的院所：名稱或代碼" aria-label="加入的院所"><input type="hidden" id="claim-hospital-id"></div>
+      <div class="col-md-2 d-flex gap-2">
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="submit">搜尋</button>
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="reset">清除</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-body">
+    <form class="row g-2 mb-3" id="filter-form" role="search">
+      <div class="col-md-7"><input class="form-control" type="search" name="q" placeholder="關鍵字：姓名 / 手機 / 身分證末四碼 / 病歷號" aria-label="關鍵字"></div>
+      <div class="col-md-3">
+        <select class="form-select" name="status" aria-label="狀態">
+          <option value="all">全部狀態</option>
+          <option value="pending">待核對</option>
+          <option value="active">已建檔</option>
+          <option value="locked">黑名單</option>
+        </select>
+      </div>
+      <div class="col-md-2 d-flex gap-2">
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="submit">搜尋</button>
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="reset">清除</button>
+      </div>
+    </form>
+    <div class="table-responsive">
+      <table class="table table-sm table-hover align-middle mb-0">
+        <thead class="table-light">
+          <tr><th>姓名</th><th>身分證末四碼</th><th>出生日期</th><th>手機</th><th>就醫院所</th><th></th></tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <p class="small text-secondary mt-3 mb-0 d-none" id="table-empty">沒有符合條件的病人。</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+Admin.boot(async function (ctx) {
+  var params = new URLSearchParams(window.location.search);
+  var state = { status: params.get("status") || "all", q: params.get("q") || "" };
+  var filterForm = document.getElementById("filter-form");
+  filterForm.elements.q.value = state.q;
+  filterForm.elements.status.value = state.status;
+  // 網址帶了不認得的狀態時退回「全部狀態」
+  if (!filterForm.elements.status.value) { state.status = "all"; filterForm.elements.status.value = "all"; }
+
+  // 一般清單與「搜尋病人」結果都畫在同一張表；找不到就是空表 + 提示，不另外開結果區
+  // 就醫院所（每家一筆）：院所帳號只會收到本院那一筆，系統管理員看到病人加入的全部院所
+  function hospitalsCell(p) {
+    var items = p.hospitals || [];
+    if (!items.length) return '<span class="text-secondary">尚未加入院所</span>';
+    return items.map(function (h) {
+      return Admin.esc(h.hospital_name || h.hospital_id) + (h.confirmed ? ' <span class="badge text-bg-success">病人已確認</span>' : ' <span class="badge text-bg-warning">待病人確認</span>');
+    }).join("<br>");
+  }
+  function render(rows, actionCell) {
+    document.getElementById("table-stats").textContent = "共 " + rows.length + " 筆";
+    document.getElementById("table-empty").classList.toggle("d-none", rows.length > 0);
+    document.getElementById("rows").innerHTML = rows.map(function (p) {
+      return "<tr>" +
+        "<td class='fw-semibold'>" + Admin.esc(p.full_name) + "</td>" +
+        "<td>****" + Admin.esc(p.national_id_last4) + "</td>" +
+        "<td>" + Admin.esc(p.birth_date) + "</td>" +
+        "<td>" + Admin.esc(p.phone) + "</td>" +
+        "<td>" + hospitalsCell(p) + "</td>" +
+        '<td class="text-end">' + actionCell(p) + "</td>" +
+        "</tr>";
+    }).join("");
+  }
+  function viewButton(p) {
+    return '<a class="btn btn-sm btn-outline-secondary" href="/admin/patients/' + encodeURIComponent(p.user_id) + '">檢視</a>';
+  }
+
+  async function load() {
+    history.replaceState(null, "", "?status=" + state.status + (state.q ? "&q=" + encodeURIComponent(state.q) : ""));
+    var rows = await ctx.api("/api/v1/admin/patients?status=" + state.status + "&q=" + encodeURIComponent(state.q));
+    render(rows, viewButton);
+  }
+
+  function reload() { load().catch(function (err) { Admin.toast(err.message, "danger"); }); }
+  filterForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    state = { status: filterForm.elements.status.value, q: filterForm.elements.q.value.trim() };
+    reload();
+  });
+  filterForm.addEventListener("reset", function () { state = { status: "all", q: "" }; reload(); });
+  // 搜尋病人：精準比對還沒被任何院所加入的病人 → 加入本院並推播 LINE 請病人確認
+  if (ctx.can("patient:verify")) {
+    var claimForm = document.getElementById("claim-form");
+    // 沒有所屬院所的帳號（SUPER_ADMIN）要自己選把病人加進哪家院所，否則 API 會回「請指定 hospital_id」
+    var claimHospital = document.getElementById("claim-hospital-id"), claimPicker = null;
+    if (!ctx.me.hospital_id) {
+      document.getElementById("claim-hospital-wrap").classList.remove("d-none");
+      claimPicker = Admin.hospitalPicker(document.getElementById("claim-hospital"), claimHospital);
+    }
+    claimForm.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      // 手機 / 姓名 / 末四碼至少填一個，填多個就同時比對；後端每個欄位都是完全相等
+      var f = claimForm.elements, qs = new URLSearchParams();
+      ["phone", "name", "last4"].forEach(function (k) { var v = f[k].value.trim(); if (v) qs.set(k, v); });
+      if (![...qs.keys()].length) { Admin.toast("請至少輸入手機號碼、姓名或身分證末四碼其中一項", "warning"); return; }
+      try {
+        var found = await ctx.api("/api/v1/admin/patients/unclaimed?" + qs);
+        render(found, function (p) {
+          return '<button class="btn btn-sm btn-brand text-nowrap" data-claim="' + Admin.esc(p.user_id) + '">加入本院並請病人確認</button>';
+        });
+        document.querySelectorAll("#rows [data-claim]").forEach(function (b) {
+          b.addEventListener("click", async function () {
+            if (claimPicker && (!claimPicker.validate() || !claimHospital.value)) { Admin.toast("請先選擇要加入的院所", "danger"); return; }
+            b.disabled = true;
+            try {
+              await ctx.api("/api/v1/admin/patients/" + b.getAttribute("data-claim") + "/request-hospital-confirmation", { method: "POST", body: ctx.me.hospital_id ? {} : { hospital_id: claimHospital.value } });
+              Admin.toast("已加入本院並推播給病人，病人在 LINE 上確認後即可核對建檔");
+              // 直接清欄位（不用 reset()，避免觸發 reset 事件再多載入一次）→ 切到「待核對」看剛加入的病人
+              ["phone", "name", "last4"].forEach(function (k) { claimForm.elements[k].value = ""; });
+              state.status = "pending"; filterForm.elements.status.value = "pending"; await load();
+            } catch (err) { Admin.toast(err.message, "danger"); b.disabled = false; }
+          });
+        });
+      } catch (err) { Admin.toast(err.message, "danger"); }
+    });
+    // 清除搜尋條件 → 還原一般清單
+    claimForm.addEventListener("reset", function () {
+      if (claimPicker) claimPicker.set("");  // reset 不會清 hidden 欄位，選好的院所要自己清
+      setTimeout(reload, 0);
+    });
+  }
+
+  await load();
+});
+</script>
+{% endblock %}

@@ -1,0 +1,241 @@
+{% extends "admin/base.html" %}
+{% block title %}院所設定{% endblock %}
+
+{% block content %}
+<h1 class="h4 mb-3">院所設定</h1>
+
+<div class="card mb-3" id="my-hospital-card">
+  <div class="card-body">
+    <h2 class="h6 fw-bold">本院資料</h2>
+    <p class="small text-secondary d-none" id="my-hospital-empty">你的帳號尚未指派院所。系統管理員可在下方「所有院所」新增院所後，到「人員與角色」把你指派到該院所。</p>
+    <form class="row g-3 d-none" id="my-hospital-form">
+      <div class="col-md-3"><label class="form-label" for="mh-id">院所代碼</label><input class="form-control" id="mh-id" disabled></div>
+      <div class="col-md-5"><label class="form-label" for="mh-name">名稱</label><input class="form-control" id="mh-name" name="name" maxlength="100" required></div>
+      <div class="col-md-4"><label class="form-label" for="mh-region">縣市 / 區域</label><input class="form-control" id="mh-region" name="region" maxlength="50"></div>
+      <div class="col-md-8"><label class="form-label" for="mh-address">地址</label><input class="form-control" id="mh-address" name="address" maxlength="200"></div>
+      <div class="col-md-4"><label class="form-label" for="mh-phone">聯絡電話</label><input class="form-control" id="mh-phone" name="contact_phone" maxlength="30"></div>
+      <div class="col-12 text-end"><button class="btn btn-brand" type="submit">儲存</button></div>
+    </form>
+  </div>
+</div>
+
+
+<div class="card mb-3 d-none" id="all-hospitals-card">
+  <div class="card-header bg-white d-flex justify-content-between align-items-center">
+    <span class="fw-bold">所有院所 <span class="small fw-normal text-secondary ms-2" id="hospital-stats">—</span></span>
+    <div class="d-flex gap-2">
+      <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('admin_pages.imports') }}?type=hospitals">匯入 CSV</a>
+      <button class="btn btn-sm btn-brand" data-bs-toggle="collapse" data-bs-target="#create-hospital">新增院所</button>
+    </div>
+  </div>
+  <div class="collapse border-bottom" id="create-hospital">
+    <form class="row g-2 p-3 bg-light" id="create-form" novalidate>
+      <div class="col-md-2"><label class="form-label small mb-1" for="cf-id">代碼 *</label><input class="form-control form-control-sm" id="cf-id" name="id" placeholder="例：H1 或健保機構代碼" pattern="[A-Za-z0-9][A-Za-z0-9_-]{1,31}" maxlength="32" required></div>
+      <div class="col-md-4"><label class="form-label small mb-1" for="cf-name">院所名稱 *</label><input class="form-control form-control-sm" id="cf-name" name="name" maxlength="100" required></div>
+      <div class="col-md-2"><label class="form-label small mb-1" for="cf-region">縣市 / 區域</label><input class="form-control form-control-sm" id="cf-region" name="region" placeholder="例：台北市" maxlength="50"></div>
+      <div class="col-md-2"><label class="form-label small mb-1" for="cf-phone">電話</label><input class="form-control form-control-sm" id="cf-phone" name="contact_phone" maxlength="30"></div>
+      <div class="col-md-2">
+        <label class="form-label small mb-1" for="cf-tier">層級</label>
+        <select class="form-select form-select-sm" id="cf-tier" name="capacity_tier">
+          <option value="">未設定</option>
+          <option value="medical_center">醫學中心</option>
+          <option value="regional">區域醫院</option>
+          <option value="district">地區醫院</option>
+          <option value="clinic">診所</option>
+        </select>
+      </div>
+      <div class="col-md-6"><label class="form-label small mb-1" for="cf-address">地址</label><input class="form-control form-control-sm" id="cf-address" name="address" maxlength="200"></div>
+      <div class="col-md-2"><label class="form-label small mb-1" for="cf-lat">緯度</label><input class="form-control form-control-sm" id="cf-lat" name="lat" placeholder="25.04" inputmode="decimal"></div>
+      <div class="col-md-2"><label class="form-label small mb-1" for="cf-lng">經度</label><input class="form-control form-control-sm" id="cf-lng" name="lng" placeholder="121.56" inputmode="decimal"></div>
+      <div class="col-md-2 d-grid align-self-end"><button class="btn btn-sm btn-brand" type="submit">新增</button></div>
+      <div class="col-12"><label class="form-label small mb-1" for="cf-departments">科別（逗號分隔）</label><input class="form-control form-control-sm" id="cf-departments" name="departments" placeholder="例：家庭醫學科, 內科, 兒科"></div>
+      <div class="col-12 form-text">代碼建立後不能改，會出現在所有資料的 hospital_id 欄位；急救責任醫院請用健保機構代碼，急診即時資料才對得上。座標供「找醫院」算距離，科別供「附近診所」依症狀篩選。</div>
+    </form>
+  </div>
+  <div class="card-body">
+    <form class="row g-2 mb-3" id="hospital-filter" role="search">
+      <div class="col-md-3"><input class="form-control" name="q" type="search" placeholder="關鍵字：代碼 / 名稱 / 地址" aria-label="關鍵字"></div>
+      <div class="col-md-2"><select class="form-select" name="region" aria-label="縣市"></select></div>
+      <div class="col-md-2"><select class="form-select" name="district" aria-label="鄉鎮市區"></select></div>
+      <div class="col-md-2">
+        <select class="form-select" name="tier" aria-label="層級">
+          <option value="">全部層級</option>
+          <option value="medical_center">醫學中心</option>
+          <option value="regional">區域醫院</option>
+          <option value="district">地區醫院</option>
+          <option value="clinic">診所</option>
+        </select>
+      </div>
+      <div class="col-md-1 d-flex align-items-center">
+        <div class="form-check mb-0"><input class="form-check-input" type="checkbox" id="hf-inactive" name="inactive"><label class="form-check-label small text-nowrap" for="hf-inactive">含停用</label></div>
+      </div>
+      <div class="col-md-2 d-flex gap-2">
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="submit">搜尋</button>
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="reset">清除</button>
+      </div>
+    </form>
+    <div class="table-responsive">
+      <table class="table table-sm table-hover align-middle mb-0">
+        <thead class="table-light"><tr><th>代碼</th><th>名稱</th><th>縣市</th><th>鄉鎮市區</th><th>地址</th><th>電話</th><th>層級</th><th>狀態</th><th></th></tr></thead>
+        <tbody id="hospital-rows"></tbody>
+      </table>
+    </div>
+    <p class="small text-secondary mt-3 mb-0 d-none" id="hospital-empty">沒有符合的院所。</p>
+    <div id="hospital-pagination"></div>
+  </div>
+</div>
+
+<!-- 編輯既有院所 -->
+<div class="modal fade" id="edit-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg"><form class="modal-content" id="edit-form">
+    <div class="modal-header"><h2 class="modal-title h6">編輯院所 <code id="edit-id"></code></h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="關閉"></button></div>
+    <div class="modal-body row g-2">
+      <div class="col-md-6"><label class="form-label small mb-1" for="ef-name">院所名稱 *</label><input class="form-control form-control-sm" id="ef-name" name="name" maxlength="100" required></div>
+      <div class="col-md-3"><label class="form-label small mb-1" for="ef-region">縣市 / 區域</label><input class="form-control form-control-sm" id="ef-region" name="region" maxlength="50"></div>
+      <div class="col-md-3">
+        <label class="form-label small mb-1" for="ef-tier">層級</label>
+        <select class="form-select form-select-sm" id="ef-tier" name="capacity_tier">
+          <option value="">未設定</option>
+          <option value="medical_center">醫學中心</option>
+          <option value="regional">區域醫院</option>
+          <option value="district">地區醫院</option>
+          <option value="clinic">診所</option>
+        </select>
+      </div>
+      <div class="col-md-8"><label class="form-label small mb-1" for="ef-address">地址</label><input class="form-control form-control-sm" id="ef-address" name="address" maxlength="200"></div>
+      <div class="col-md-4"><label class="form-label small mb-1" for="ef-phone">電話</label><input class="form-control form-control-sm" id="ef-phone" name="contact_phone" maxlength="30"></div>
+      <div class="col-md-6"><label class="form-label small mb-1" for="ef-lat">緯度</label><input class="form-control form-control-sm" id="ef-lat" name="lat" inputmode="decimal"></div>
+      <div class="col-md-6"><label class="form-label small mb-1" for="ef-lng">經度</label><input class="form-control form-control-sm" id="ef-lng" name="lng" inputmode="decimal"></div>
+      <div class="col-12"><label class="form-label small mb-1" for="ef-departments">科別（逗號分隔）</label><textarea class="form-control form-control-sm" id="ef-departments" name="departments" rows="2"></textarea></div>
+    </div>
+    <div class="modal-footer"><button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">取消</button><button class="btn btn-sm btn-brand" type="submit">儲存</button></div>
+  </form></div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+Admin.boot(async function (ctx) {
+  var TIER = { medical_center: "醫學中心", regional: "區域醫院", district: "地區醫院", clinic: "診所" };
+  var isSuper = ctx.me.role === "super_admin";
+  var mine = ctx.me.hospital_id ? ctx.hospitals[ctx.me.hospital_id] : null;
+  if (mine) {
+    var form = document.getElementById("my-hospital-form");
+    form.classList.remove("d-none");
+    document.getElementById("mh-id").value = mine.id;
+    ["name", "region", "address", "contact_phone"].forEach(function (k) { form.elements[k].value = mine[k] || ""; });
+    if (!ctx.can("hospital:settings")) Array.prototype.forEach.call(form.elements, function (i) { i.disabled = true; });
+    form.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      try {
+        await ctx.api("/api/v1/admin/hospitals/" + mine.id, { method: "PATCH", body: Admin.formData(form) });
+        Admin.toast("已更新本院資料");
+      } catch (err) { Admin.toast(err.message, "danger"); }
+    });
+  } else if (!isSuper) {
+    document.getElementById("my-hospital-empty").classList.remove("d-none");
+  } else {
+    document.getElementById("my-hospital-card").classList.add("d-none");
+  }
+
+
+  if (isSuper) {
+    document.getElementById("all-hospitals-card").classList.remove("d-none");
+    var filterForm = document.getElementById("hospital-filter"), pager = document.getElementById("hospital-pagination");
+    var EMPTY_STATE = { q: "", region: "", district: "", tier: "", inactive: false, page: 1 };
+    var state = Object.assign({}, EMPTY_STATE);
+    filterForm.addEventListener("submit", function (e) {
+      e.preventDefault();
+      var f = filterForm.elements;
+      state = { q: f.q.value.trim(), region: f.region.value, district: f.district.value, tier: f.tier.value, inactive: f.inactive.checked, page: 1 };
+      loadHospitals().catch(function (err) { Admin.toast(err.message, "danger"); });
+    });
+    filterForm.addEventListener("reset", function () {
+      state = Object.assign({}, EMPTY_STATE);
+      loadHospitals().catch(function (err) { Admin.toast(err.message, "danger"); });
+    });
+    async function loadHospitals() {
+      var data = await ctx.api("/api/v1/admin/hospitals?q=" + encodeURIComponent(state.q) + "&region=" + encodeURIComponent(state.region) +
+        "&district=" + encodeURIComponent(state.district) + "&tier=" + encodeURIComponent(state.tier) + "&all=" + (state.inactive ? "1" : "0") + "&page=" + state.page);
+      var rows = data.items, tbody = document.getElementById("hospital-rows");
+      document.getElementById("hospital-stats").textContent = "共 " + data.total + " 筆";
+      document.getElementById("hospital-empty").classList.toggle("d-none", data.total > 0);
+      Admin.pagination(pager, data, function (page) { state.page = page; loadHospitals().catch(function (err) { Admin.toast(err.message, "danger"); }); });
+      var byId = {};
+      rows.forEach(function (h) { byId[h.id] = h; });
+      tbody.innerHTML = rows.map(function (h) {
+        return "<tr class='" + (h.active ? "" : "text-secondary") + "'><td><code>" + Admin.esc(h.id) + "</code></td><td>" + Admin.esc(h.name) + "</td><td>" + Admin.esc(h.city || "—") + "</td>" +
+          "<td>" + Admin.esc(h.district || "—") + "</td><td class='small'>" + Admin.esc(h.address || "—") + "</td>" +
+          "<td>" + Admin.esc(h.contact_phone || "—") + "</td><td>" + Admin.esc(TIER[h.capacity_tier] || "—") + "</td>" +
+          "<td><span class='badge " + (h.active ? "text-bg-success" : "text-bg-secondary") + "'>" + (h.active ? "啟用" : "停用") + "</span></td>" +
+          '<td class="text-end text-nowrap"><button class="btn btn-sm btn-outline-secondary me-1" data-edit="' + Admin.esc(h.id) + '">編輯</button>' +
+          '<button class="btn btn-sm btn-outline-secondary" data-toggle="' + Admin.esc(h.id) + '" data-active="' + h.active + '">' + (h.active ? "停用" : "啟用") + "</button></td></tr>";
+      }).join("");
+      tbody.querySelectorAll("[data-toggle]").forEach(function (b) {
+        b.addEventListener("click", async function () {
+          try {
+            await ctx.api("/api/v1/admin/hospitals/" + b.getAttribute("data-toggle"), { method: "PATCH", body: { active: b.getAttribute("data-active") !== "true" } });
+            Admin.toast("已更新"); await loadHospitals();
+          } catch (err) { Admin.toast(err.message, "danger"); }
+        });
+      });
+      // 編輯既有院所
+      tbody.querySelectorAll("[data-edit]").forEach(function (b) {
+        b.addEventListener("click", function () { openEdit(byId[b.getAttribute("data-edit")]); });
+      });
+    }
+
+    var editModal = new bootstrap.Modal(document.getElementById("edit-modal"));
+    var editForm = document.getElementById("edit-form"), editing = null;
+    function openEdit(h) {
+      editing = h;
+      document.getElementById("edit-id").textContent = h.id;
+      ["name", "region", "address", "contact_phone", "capacity_tier", "departments"].forEach(function (k) { editForm.elements[k].value = h[k] || ""; });
+      editForm.elements.lat.value = h.lat != null ? h.lat : "";
+      editForm.elements.lng.value = h.lng != null ? h.lng : "";
+      editModal.show();
+    }
+    editForm.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      if (!editing) return;
+      try {
+        var updated = await ctx.api("/api/v1/admin/hospitals/" + editing.id, { method: "PATCH", body: Admin.formData(editForm) });
+        if (updated.capacity_tier !== "clinic") ctx.hospitals[updated.id] = updated;
+        editModal.hide();
+        Admin.toast("已更新 " + updated.name);
+        await loadHospitals();
+      } catch (err) { Admin.toast(err.message, "danger"); }
+    });
+    var createForm = document.getElementById("create-form");
+    createForm.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      // 先做前端檢查並顯示原因，瀏覽器內建驗證擋住時看不出原因
+      if (!createForm.checkValidity()) {
+        createForm.classList.add("was-validated");
+        var bad = createForm.querySelector(":invalid");
+        Admin.toast(bad && bad.name === "id" ? "院所代碼須為 2–32 碼英數字、底線或連字號，且以英數字開頭" : "請填寫必填欄位（代碼、名稱）", "warning");
+        if (bad) bad.focus();
+        return;
+      }
+      var btn = createForm.querySelector("button[type=submit]");
+      btn.disabled = true;
+      try {
+        var created = await ctx.api("/api/v1/admin/hospitals", { method: "POST", body: Admin.formData(createForm) });
+        if (created.capacity_tier !== "clinic") ctx.hospitals[created.id] = created;
+        createForm.reset(); createForm.classList.remove("was-validated");
+        Admin.toast("已新增院所 " + created.name);
+        state = Object.assign({}, EMPTY_STATE, { q: created.id });  // 新增後直接顯示這一筆
+        var f = filterForm.elements;
+        f.q.value = created.id; f.tier.value = ""; f.inactive.checked = false;
+        f.region.value = ""; f.region.dispatchEvent(new Event("change"));  // 鄉鎮市區跟著還原
+        await loadHospitals();
+      } catch (err) { Admin.toast(err.message, "danger"); }
+      finally { btn.disabled = false; }
+    });
+    await Admin.districtSelects(filterForm.elements.region, filterForm.elements.district);
+    await loadHospitals();
+  }
+});
+</script>
+{% endblock %}

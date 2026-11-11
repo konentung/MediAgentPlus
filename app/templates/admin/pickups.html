@@ -1,0 +1,116 @@
+{% extends "admin/base.html" %}
+{% block title %}領藥需求{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4 mb-0">領藥需求</h1>
+  <span class="small text-secondary" id="table-stats">—</span>
+</div>
+<div class="card mb-3">
+  <div class="card-body">
+    <form class="row g-2 mb-3" id="filter-form" role="search">
+      <div class="col-md-4">
+        <select class="form-select" name="status" aria-label="狀態">
+          <option value="requested">待備藥</option>
+          <option value="ready">可領取</option>
+          <option value="picked_up">已領取</option>
+          <option value="cancelled">無法調劑</option>
+          <option value="">全部狀態</option>
+        </select>
+      </div>
+      <div class="col-md-2 d-flex gap-2">
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="submit">搜尋</button>
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="reset">清除</button>
+      </div>
+    </form>
+    <div class="table-responsive">
+      <table class="table table-sm table-hover align-middle mb-0">
+        <thead class="table-light"><tr><th>領藥編號</th><th class="d-none" data-all-pharmacies>藥局</th><th>病人（LINE 名稱）</th><th>處方</th><th>藥品</th><th>狀態</th><th>送出時間</th><th></th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <p class="small text-secondary mt-3 mb-0 d-none" id="table-empty">沒有符合的領藥需求。</p>
+    <div id="pagination"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+Admin.boot(async function (ctx) {
+  var filterForm = document.getElementById("filter-form"), tbody = document.getElementById("rows");
+  var state = { status: "requested", page: 1 };
+  // 系統管理員沒有所屬藥局，看的是全部藥局的需求，多顯示一欄是哪家藥局
+  var showPharmacy = !ctx.me.pharmacy_id;
+  if (showPharmacy) document.querySelectorAll("[data-all-pharmacies]").forEach(function (el) { el.classList.remove("d-none"); });
+  var BADGES = { requested: "text-bg-warning", ready: "text-bg-info", picked_up: "text-bg-success", cancelled: "text-bg-secondary" };
+  // 每個可以改成的狀態對應一顆按鈕；cancelled 一定要填原因（病人會收到）
+  var ACTIONS = {
+    ready: { label: "藥備好了", cls: "btn-brand", prompt: "要給病人的說明（選填，例如：晚上 9 點前可領）", required: false },
+    picked_up: { label: "已領取", cls: "btn-brand", prompt: null, required: false },
+    cancelled: { label: "無法調劑", cls: "btn-outline-secondary", prompt: "無法調劑的原因（病人會收到這段說明）", required: true }
+  };
+  function reload() { load().catch(function (err) { Admin.toast(err.message, "danger"); }); }
+
+  function prescriptionSummary(p) {
+    var parts = [p.hospital_name, p.issued_on ? "開立 " + p.issued_on : "", p.days_supply ? p.days_supply + " 天" : ""];
+    if (p.is_chronic_refill) parts.push("慢箋 " + (p.refill_seq || "?") + "/" + (p.refill_total || "?"));
+    return parts.filter(Boolean).map(Admin.esc).join("・") || "—";
+  }
+  function itemLines(items) {
+    return items.map(function (item) {
+      var detail = [item.dose_text, item.frequency_label, item.timing_label, item.duration_days ? item.duration_days + " 天" : "", item.quantity ? "共 " + item.quantity : ""].filter(Boolean).join("　");
+      return "<div>" + Admin.esc(item.drug_name || "—") + (detail ? "<span class='text-secondary ms-2'>" + Admin.esc(detail) + "</span>" : "") + "</div>";
+    }).join("") || "—";
+  }
+
+  async function load() {
+    var data = await ctx.api("/api/v1/admin/pickups?page=" + state.page + (state.status ? "&status=" + state.status : ""));
+    document.getElementById("table-stats").textContent = "共 " + data.total + " 筆";
+    document.getElementById("table-empty").classList.toggle("d-none", data.total > 0);
+    tbody.innerHTML = data.items.map(function (p) {
+      var buttons = p.next_statuses.map(function (next) {
+        var action = ACTIONS[next];
+        return '<button class="btn btn-sm ' + action.cls + ' ms-1" data-id="' + Admin.esc(p.id) + '" data-next="' + next + '">' + action.label + "</button>";
+      }).join("");
+      return "<tr><td><code>" + Admin.esc(p.code) + "</code></td>" +
+        (showPharmacy ? "<td>" + Admin.esc(p.pharmacy_name || p.pharmacy_id) + "</td>" : "") +
+        "<td>" + Admin.esc(p.patient_name || "—") + "</td>" +
+        "<td class='small'>" + prescriptionSummary(p.prescription) + "</td>" +
+        "<td class='small'>" + itemLines(p.prescription.items) + "</td>" +
+        "<td><span class='badge " + BADGES[p.status] + "'>" + Admin.esc(p.status_label) + "</span>" +
+          (p.note ? "<div class='small text-secondary'>" + Admin.esc(p.note) + "</div>" : "") + "</td>" +
+        "<td class='small text-secondary text-nowrap'>" + Admin.fmtDate(p.requested_at) + "</td>" +
+        "<td class='text-end text-nowrap'>" + buttons + "</td></tr>";
+    }).join("");
+    tbody.querySelectorAll("[data-next]").forEach(function (button) {
+      button.addEventListener("click", async function () {
+        var next = button.getAttribute("data-next"), action = ACTIONS[next], note = "";
+        if (action.prompt) {
+          note = window.prompt(action.prompt, "");
+          if (note === null) return;
+          if (action.required && !note.trim()) { Admin.toast("請填寫原因", "warning"); return; }
+        }
+        try {
+          await ctx.api("/api/v1/admin/pickups/" + button.getAttribute("data-id"), { method: "PATCH", body: { status: next, note: note } });
+          Admin.toast(next === "picked_up" ? "已標記領取" : "已更新，病人會收到通知");
+          await load();
+        } catch (err) { Admin.toast(err.message, "danger"); }
+      });
+    });
+    Admin.pagination(document.getElementById("pagination"), data, function (page) { state.page = page; reload(); });
+  }
+
+  filterForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    state = { status: filterForm.elements.status.value, page: 1 };
+    reload();
+  });
+  // reset 會把下拉還原成第一個選項（待備藥），等還原後再重新載入
+  filterForm.addEventListener("reset", function () {
+    setTimeout(function () { state = { status: filterForm.elements.status.value, page: 1 }; reload(); }, 0);
+  });
+  await load();
+});
+</script>
+{% endblock %}

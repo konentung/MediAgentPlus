@@ -1,0 +1,366 @@
+"""ServiceContainer：簡易依賴注入容器，集中組裝 Repository / Service / 外部客戶端。
+
+測試時可直接替換容器內任何元件（例如假的 LineMessagingClient）。
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+
+from flask import Flask, current_app
+
+from app.auth.jwt_service import JwtService
+from app.auth.liff_auth import LiffAuthService
+from app.auth.line_identity import LineIdentityVerifier
+from app.auth.line_login import LineLoginService
+from app.auth.state_store import OAuthStateStore
+from app.core.ratelimit import RateLimiter
+from app.integrations.llm import (
+    DEFAULT_TEXT_MODEL,
+    DEFAULT_VISION_MODEL,
+    DisabledLlmClient,
+    LlmClient,
+    OpenAiClient,
+)
+from app.integrations.media_storage import MediaStorage, build_media_storage
+from app.integrations.nhi_er import DEFAULT_API_URL as DEFAULT_ER_API_URL
+from app.integrations.nhi_er import ErClient, NhiErClient
+from app.integrations.vision import LlmVisionClient, VisionClient
+from app.line.client import LineMessagingClient
+from app.line.state_store import (
+    ConversationStateStore,
+)
+from app.repositories.audit_repository import AuditRepository, SqlAlchemyAuditRepository
+from app.repositories.feedback_repository import FeedbackRepository, SqlAlchemyFeedbackRepository
+from app.repositories.hospital_repository import HospitalRepository, SqlAlchemyHospitalRepository
+from app.repositories.knowledge_repository import (
+    KnowledgeJobRepository,
+    KnowledgeRepository,
+    SqlAlchemyKnowledgeJobRepository,
+    SqlAlchemyKnowledgeRepository,
+)
+from app.repositories.patient_hospital_repository import (
+    PatientHospitalRepository,
+    SqlAlchemyPatientHospitalRepository,
+)
+from app.repositories.patient_record_repository import (
+    PatientRecordRepository,
+    SqlAlchemyPatientRecordRepository,
+)
+from app.repositories.patient_repository import PatientRepository, SqlAlchemyPatientRepository
+from app.repositories.pharmacy_repository import (
+    DrugRepository,
+    PharmacyRepository,
+    SqlAlchemyDrugRepository,
+    SqlAlchemyPharmacyRepository,
+)
+from app.repositories.pickup_repository import PickupRepository, SqlAlchemyPickupRepository
+from app.repositories.prescription_repository import (
+    PrescriptionRepository,
+    SqlAlchemyPrescriptionRepository,
+)
+from app.repositories.reminder_repository import (
+    DeliveryRepository,
+    ScheduleRepository,
+    SqlAlchemyDeliveryRepository,
+    SqlAlchemyScheduleRepository,
+)
+from app.repositories.triage_repository import SnapshotRepository, SqlAlchemySnapshotRepository
+from app.repositories.user_repository import SqlAlchemyUserRepository, UserRepository
+from app.services.conversation_service import ConversationService
+from app.services.feedback_service import FeedbackService
+from app.services.hospital_service import HospitalService
+from app.services.intake_service import IntakeService
+from app.services.knowledge_job_service import KnowledgeJobService
+from app.services.knowledge_service import KnowledgeService
+from app.services.patient_hospital_service import PatientHospitalService
+from app.services.patient_record_service import PatientRecordService
+from app.services.pharmacy_service import PharmacyService
+from app.services.pickup_service import PickupService
+from app.services.prescription_service import PrescriptionService
+from app.services.push_admin_service import PushAdminService
+from app.services.reminder_service import ReminderService
+from app.services.triage_service import TriageService
+from app.services.user_service import UserService
+from app.utils.crypto import FieldCipher
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ServiceContainer:
+    # repositories
+    user_repo: UserRepository
+    audit_repo: AuditRepository
+    feedback_repo: FeedbackRepository
+    hospital_repo: HospitalRepository
+    patient_repo: PatientRepository
+    patient_hospital_repo: PatientHospitalRepository
+    patient_record_repo: PatientRecordRepository
+    prescription_repo: PrescriptionRepository
+    pharmacy_repo: PharmacyRepository
+    pickup_repo: PickupRepository
+    drug_repo: DrugRepository
+    schedule_repo: ScheduleRepository
+    delivery_repo: DeliveryRepository
+    snapshot_repo: SnapshotRepository
+    knowledge_repo: KnowledgeRepository
+    knowledge_job_repo: KnowledgeJobRepository
+    state_store: OAuthStateStore
+    conversation_state: ConversationStateStore
+    # services
+    users: UserService
+    feedback: FeedbackService
+    hospitals: HospitalService
+    intake: IntakeService
+    patient_hospitals: PatientHospitalService
+    patient_records: PatientRecordService
+    pharmacies: PharmacyService
+    pickups: PickupService
+    prescriptions: PrescriptionService
+    reminders: ReminderService
+    push_admin: PushAdminService
+    triage: TriageService
+    knowledge: KnowledgeService
+    knowledge_jobs: KnowledgeJobService
+    conversation: ConversationService
+    vision_client: VisionClient
+    llm_client: LlmClient
+    er_client: ErClient
+    cipher: FieldCipher
+    media_storage: MediaStorage
+    jwt: JwtService
+    line_login: LineLoginService
+    liff_auth: LiffAuthService
+    line_client: LineMessagingClient
+
+    @classmethod
+    def build(cls, app: Flask) -> ServiceContainer:
+        cfg = app.config
+        user_repo = SqlAlchemyUserRepository()
+        audit_repo = SqlAlchemyAuditRepository()
+        feedback_repo = SqlAlchemyFeedbackRepository()
+        hospital_repo = SqlAlchemyHospitalRepository()
+        patient_repo = SqlAlchemyPatientRepository()
+        patient_hospital_repo = SqlAlchemyPatientHospitalRepository()
+        patient_record_repo = SqlAlchemyPatientRecordRepository()
+        prescription_repo = SqlAlchemyPrescriptionRepository()
+        pharmacy_repo = SqlAlchemyPharmacyRepository()
+        pickup_repo = SqlAlchemyPickupRepository()
+        drug_repo = SqlAlchemyDrugRepository()
+        schedule_repo = SqlAlchemyScheduleRepository()
+        delivery_repo = SqlAlchemyDeliveryRepository()
+        snapshot_repo = SqlAlchemySnapshotRepository()
+        knowledge_repo = SqlAlchemyKnowledgeRepository()
+        knowledge_job_repo = SqlAlchemyKnowledgeJobRepository()
+        state_store = OAuthStateStore()
+        conversation_state = ConversationStateStore()
+        app.extensions["rate_limiter"] = RateLimiter()
+        cipher = FieldCipher(cfg.get("PATIENT_DATA_KEY"), fallback_secret=cfg["SECRET_KEY"])
+
+        hospitals = HospitalService(hospital_repo)
+        users = UserService(
+            user_repo, hospitals, _csv_set(cfg.get("SUPER_ADMIN_LINE_USER_IDS")), pharmacy_repo
+        )
+        feedback = FeedbackService(feedback_repo, patient_repo, patient_hospital_repo)
+        jwt_service = JwtService(
+            secret=cfg["JWT_SECRET_KEY"],
+            algorithm=cfg["JWT_ALGORITHM"],
+            access_expires=cfg["JWT_ACCESS_TOKEN_EXPIRES"],
+            staff_access_expires=cfg["JWT_STAFF_ACCESS_TOKEN_EXPIRES"],
+        )
+        login_verifier = LineIdentityVerifier(cfg["LINE_LOGIN_CHANNEL_ID"])
+        line_login = LineLoginService(
+            channel_id=cfg["LINE_LOGIN_CHANNEL_ID"],
+            channel_secret=cfg["LINE_LOGIN_CHANNEL_SECRET"],
+            redirect_uri=cfg["LINE_LOGIN_REDIRECT_URI"],
+            scope=cfg["LINE_LOGIN_SCOPE"],
+            state_store=state_store,
+            state_ttl_seconds=cfg["OAUTH_STATE_TTL_SECONDS"],
+            verifier=login_verifier,
+        )
+        liff_auth = LiffAuthService(
+            LineIdentityVerifier(cfg["LIFF_CHANNEL_ID"]), liff_id=cfg["LIFF_ID"]
+        )
+        line_client = LineMessagingClient(cfg["LINE_CHANNEL_ACCESS_TOKEN"])
+        # Service 透過 getter 取用 line_client，測試替換 container.line_client 時才會一起生效
+        intake = IntakeService(
+            patient_repo,
+            user_repo,
+            cipher,
+            lambda: container.line_client,
+            patient_hospital_repo,
+        )
+        patient_hospitals = PatientHospitalService(
+            patient_hospital_repo, patient_repo, patient_record_repo, hospitals
+        )
+        patient_records = PatientRecordService(
+            patient_repo,
+            patient_record_repo,
+            user_repo,
+            hospitals,
+            audit_repo,
+            lambda: container.line_client,
+            patient_hospital_repo,
+        )
+
+        openai_api_key = cfg.get("OPENAI_API_KEY", "")
+        text_model = cfg.get("AI_MODEL") or DEFAULT_TEXT_MODEL
+        vision_model = cfg.get("OCR_MODEL") or DEFAULT_VISION_MODEL
+        llm_client: LlmClient
+        vision_llm: LlmClient
+        if openai_api_key:
+            vision_llm = OpenAiClient(
+                vision_model, openai_api_key, int(cfg.get("OCR_TIMEOUT_SECONDS", 90))
+            )
+            llm_client = OpenAiClient(
+                text_model,
+                openai_api_key,
+                int(cfg.get("AI_TIMEOUT_SECONDS", 60)),
+                embedding_model=cfg.get("EMBEDDING_MODEL") or None,
+            )
+        else:
+            # 開發環境沒金鑰時停用 AI、不讓 create_app() 失敗；正式環境由 ProductionConfig 要求金鑰
+            logger.warning("OPENAI_API_KEY 未設定：AI 對話助理、處方辨識與語意檢索停用")
+            vision_llm = DisabledLlmClient(vision_model)
+            llm_client = DisabledLlmClient(text_model)
+        vision_client = LlmVisionClient(vision_llm)
+        pharmacies = PharmacyService(pharmacy_repo, drug_repo)
+        pickups = PickupService(
+            pickup_repo, prescription_repo, pharmacy_repo, user_repo, lambda: container.line_client
+        )
+        prescriptions = PrescriptionService(
+            prescription_repo,
+            pharmacies,
+            lambda: container.vision_client,
+            cipher,
+            lambda: container.media_storage,
+            int(cfg.get("REFILL_REMINDER_DAYS_BEFORE", 3)),
+        )
+        reminders = ReminderService(
+            schedule_repo,
+            delivery_repo,
+            prescription_repo,
+            user_repo,
+            lambda: container.line_client,
+            liff_id=cfg.get("LIFF_ID", ""),
+            window_minutes=int(cfg.get("REMINDER_WINDOW_MINUTES", 15)),
+        )
+
+        push_admin = PushAdminService(schedule_repo, delivery_repo, user_repo, audit_repo)
+
+        # 急診分流（找醫院）：健保署急診即時 API；測試替換 container.er_client
+        er_client = NhiErClient(
+            cfg.get("NHI_ER_API_URL") or DEFAULT_ER_API_URL,
+            timeout_seconds=int(cfg.get("NHI_ER_TIMEOUT_SECONDS", 20)),
+        )
+        triage = TriageService(
+            snapshot_repo,
+            hospital_repo,
+            lambda: container.er_client,
+            llm=lambda: container.llm_client,  # 依症狀挑診所
+            liff_id=cfg.get("LIFF_ID", ""),
+            stale_minutes=int(cfg.get("TRIAGE_STALE_MINUTES", 30)),
+            retention_days=int(cfg.get("TRIAGE_RETENTION_DAYS", 30)),
+        )
+
+        knowledge = KnowledgeService(
+            knowledge_repo,
+            lambda: container.llm_client,
+            top_k=int(cfg.get("KNOWLEDGE_TOP_K", 4)),
+            hospitals=hospital_repo,
+        )
+        knowledge_jobs = KnowledgeJobService(
+            knowledge_job_repo,
+            knowledge,
+            Path(cfg.get("MEDIA_ROOT", "var/media")) / "knowledge-imports",
+            spawn=_background_thread(app),
+        )
+        conversation = ConversationService(
+            knowledge,
+            pharmacies,
+            triage,
+            patient_repo,
+            conversation_state,
+            lambda: container.llm_client,
+            records=patient_record_repo,
+            hospital_links=patient_hospital_repo,
+            enabled=bool(cfg.get("AI_ENABLED", True)),
+            history_turns=int(cfg.get("AI_HISTORY_TURNS", 6)),
+            history_ttl=int(cfg.get("AI_HISTORY_TTL_SECONDS", 1800)),
+            top_k=int(cfg.get("KNOWLEDGE_TOP_K", 4)),
+        )
+
+        container = cls(
+            user_repo=user_repo,
+            audit_repo=audit_repo,
+            feedback_repo=feedback_repo,
+            hospital_repo=hospital_repo,
+            patient_repo=patient_repo,
+            patient_hospital_repo=patient_hospital_repo,
+            patient_record_repo=patient_record_repo,
+            prescription_repo=prescription_repo,
+            pharmacy_repo=pharmacy_repo,
+            pickup_repo=pickup_repo,
+            drug_repo=drug_repo,
+            schedule_repo=schedule_repo,
+            delivery_repo=delivery_repo,
+            snapshot_repo=snapshot_repo,
+            knowledge_repo=knowledge_repo,
+            knowledge_job_repo=knowledge_job_repo,
+            state_store=state_store,
+            conversation_state=conversation_state,
+            users=users,
+            feedback=feedback,
+            hospitals=hospitals,
+            intake=intake,
+            patient_hospitals=patient_hospitals,
+            patient_records=patient_records,
+            pharmacies=pharmacies,
+            pickups=pickups,
+            prescriptions=prescriptions,
+            reminders=reminders,
+            push_admin=push_admin,
+            triage=triage,
+            knowledge=knowledge,
+            knowledge_jobs=knowledge_jobs,
+            conversation=conversation,
+            vision_client=vision_client,
+            llm_client=llm_client,
+            er_client=er_client,
+            cipher=cipher,
+            media_storage=build_media_storage(cfg),
+            jwt=jwt_service,
+            line_login=line_login,
+            liff_auth=liff_auth,
+            line_client=line_client,
+        )
+        return container
+
+
+def get_container() -> ServiceContainer:
+    return current_app.extensions["container"]
+
+
+def _csv_set(value: str | None) -> frozenset[str]:
+    return frozenset(item.strip() for item in (value or "").split(",") if item.strip())
+
+
+def _background_thread(app: Flask) -> Callable[[Callable[[], None]], None]:
+    """在背景 daemon 執行緒內帶著 app context 執行。
+
+    測試可把 `container.knowledge_jobs.spawn` 換成同步呼叫。
+    """
+
+    def spawn(fn: Callable[[], None]) -> None:
+        def target() -> None:
+            with app.app_context():
+                fn()
+
+        threading.Thread(target=target, name="knowledge-job", daemon=True).start()
+
+    return spawn

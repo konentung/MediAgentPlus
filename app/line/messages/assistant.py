@@ -1,0 +1,108 @@
+"""AI 助理回覆的組裝：回答文字 + 參考來源（原文連結）+ 下一步 Quick Reply。
+
+有引用片段時用 Flex：正文在上、來源按鈕在下（最多 3 個、開原文網址）；沒有就純文字。
+Flex 只放要給使用者看的內容，不放說明用的小字。
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from linebot.v3.messaging import Message, QuickReply, QuickReplyItem
+
+from app.domain.enums import Intent
+from app.domain.retrieval import hit_label
+from app.line.messages import theme
+from app.line.messages.builder import MessageBuilder as M
+
+AI_FAILED_TEXT = "我暫時無法判斷你的問題，可以從下方選單選擇服務，或稍後再試一次。"
+CLARIFY_TEXT = "可以再多說一點嗎？例如哪裡不舒服、持續多久，或你想找哪一種服務。"
+# 通用版出院衛教選了科別，但知識庫沒有該科的出院照護內容
+NO_DISCHARGE_DATA_TEXT = (
+    "知識庫目前沒有這個科別的出院照護資料。出院後的注意事項請以出院衛教單與原院所說明為準，"
+    "有傷口紅腫、發燒、疼痛加劇或原本症狀變嚴重時請儘快回診；有生命危險請撥打 119。"
+)
+MAX_SOURCES = 3
+
+
+def action_items(
+    actions: list[str], liff_url: str, *, department: str | None = None
+) -> list[QuickReplyItem]:
+    """決策的 actions → Quick Reply；對應表在這裡，模型不需要知道 postback 格式。
+    `department`（症狀諮詢建議的科別）會帶進「附近診所」按鈕，讓找診所依科別篩選。"""
+    items: list[QuickReplyItem] = []
+    dept_params = {"department": department} if department else {}
+    clinic_params = {"action": "clinics", **dept_params}
+    for action in actions:
+        if action == "find_hospital":
+            # 帶科別，找醫院時優先推薦有該科的急救責任醫院
+            items.append(M.postback_item("🏥 找醫院", Intent.FIND_HOSPITAL, **dept_params))
+        elif action == "find_clinic":
+            items.append(M.postback_item("🏠 附近診所", Intent.FIND_HOSPITAL, **clinic_params))
+        elif action == "share_location":
+            items.append(M.location_item("📍 分享位置"))
+        elif action == "find_pharmacy":
+            items.append(
+                M.postback_item("💊 找附近藥局", Intent.MEDICATION, action="locate_prompt")
+            )
+        elif action == "drug_lookup":
+            items.append(M.postback_item("🔍 查藥名", Intent.MEDICATION, action="drug"))
+        elif action == "take_prescription_photo":
+            items.append(M.postback_item("📷 拍處方箋", Intent.MEDICATION, action="photo"))
+        elif action == "reminder_menu":
+            items.append(M.postback_item("⏰ 服藥提醒", Intent.REMINDER))
+        elif action == "discharge_menu":
+            items.append(M.postback_item("🏠 出院衛教", Intent.DISCHARGE))
+        elif action == "intake_form":
+            items.append(M.postback_item("📝 基本資料", Intent.INTAKE))
+        elif action == "feedback":
+            items.append(M.postback_item("💬 問題回報", Intent.FEEDBACK))
+    return items[:13]
+
+
+def answer_messages(
+    answer: str,
+    actions: list[str],
+    liff_url: str,
+    sources: list[dict[str, Any]] | None = None,
+    *,
+    department: str | None = None,
+) -> list[Message]:
+    quick = action_items(actions, liff_url, department=department) or None
+    text = answer or CLARIFY_TEXT
+    links = [s for s in (sources or []) if (s.get("source") or "").startswith("http")]
+    if not links:
+        return [M.text(text, quick_replies=quick)]
+    message = M.flex(text[:100], _answer_bubble(text, links[:MAX_SOURCES]))
+    if quick:
+        message.quick_reply = QuickReply(items=quick)
+    return [message]
+
+
+def with_actions(
+    messages: list[Message], actions: list[str], liff_url: str, *, department: str | None = None
+) -> list[Message]:
+    """把下一步按鈕接在最後一則訊息原有的 Quick Reply 後面（LINE 只顯示最後一則的 Quick Reply）。"""
+    items = action_items(actions, liff_url, department=department)
+    if messages and items:
+        last = messages[-1]
+        current = list(last.quick_reply.items) if last.quick_reply else []
+        last.quick_reply = QuickReply(items=(current + items)[:13])
+    return messages
+
+
+def _answer_bubble(text: str, sources: list[dict[str, Any]]) -> dict[str, Any]:
+    buttons = [
+        theme.link_button({"type": "uri", "label": hit_label(hit)[:40], "uri": hit["source"]})
+        for hit in sources
+    ]
+    return theme.bubble(
+        [theme.text(text)],
+        header=theme.brand_strip(f"{theme.BRAND_NAME} 照護小幫手"),
+        footer=[theme.text("參考來源", size="xs", color=theme.MUTED), *buttons],
+        size="mega",
+    )
+
+
+def failed_messages() -> list[Message]:
+    return [M.text(AI_FAILED_TEXT, quick_replies=[M.postback_item("主選單", Intent.MENU)])]

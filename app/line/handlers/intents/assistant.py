@@ -1,0 +1,227 @@
+"""自由文字 → AI 助理（RAG + 事件判斷）→ 套用既有 LINE 模組回應。
+
+`ConversationService.decide()` 回 `AssistantDecision`；這裡只做「事件 → 模組」的對應：
+  hospital   → FindHospitalHandler（請分享位置，依距離推薦）
+  clinic     → 找診所（FindHospitalHandler action=clinics，帶症狀 / 科別，由模型從同區院所挑）
+  medication → MedicationHandler（有藥名就查藥；否則選單）
+  pharmacy   → 找附近藥局；reminder / human / intake → 對應模組
+  discharge  → 已驗證且模型依「病人資料」寫出個人化衛教 → 直接回答；否則 DischargeHandler 通用版
+  symptom    → 回答（分級 + 建議科別）；非急症直接接「找附近診所」（依症狀科別：使用者說了縣市就
+               同一次回覆列出院所，否則請分享位置）；urgent → 找醫院 / 附近診所按鈕
+  faq / smalltalk / unknown → 回答文字 + 下一步按鈕
+模組回覆用 `ctx.capture()` 收集，跟 AI 的回答文字合併成一次 reply（LINE 上限 5 則）。
+AI 失敗（未啟用、逾時、格式錯誤）退回關鍵字比對；仍無法對應才回失敗訊息。
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from typing import TYPE_CHECKING
+
+from app.core.exceptions import ExternalServiceError
+from app.domain.assistant_schema import AssistantDecision, Slots
+from app.domain.enums import Intent
+from app.domain.retrieval import department_in_text
+from app.line.context import BotContext
+from app.line.handlers.intents.base import IntentHandler
+from app.line.intents import TEXT_KEYWORDS
+from app.line.messages import assistant as msg
+from app.line.messages import common
+from app.line.messages.builder import MessageBuilder as M
+from app.services.triage_service import MAX_SYMPTOM_CHARS
+
+if TYPE_CHECKING:
+    from app.line.router import IntentRouter
+
+logger = logging.getLogger(__name__)
+
+LOADING_SECONDS = 60  # LINE 上限；模型回覆後動畫自動消失
+_DISCHARGED_FROM = re.compile(r"從.{1,12}出院")  # 通用版出院衛教「選擇科別」送出的文字
+
+
+class AssistantHandler(IntentHandler):
+    intent = Intent.ASSISTANT
+    feature_name = "AI 助理"
+
+    def __init__(self, router: IntentRouter) -> None:
+        self._router = router
+
+    def handle(self, ctx: BotContext, params: dict[str, str]) -> None:
+        text = (params.get("text") or "").strip()
+        if not text:
+            ctx.reply(common.fallback_messages())
+            return
+        self._loading(ctx)
+        try:
+            decision = ctx.container.conversation.decide(ctx.principal, text)
+        except ExternalServiceError as exc:
+            logger.warning("Assistant unavailable (%s); falling back to keywords", exc.message)
+            self._fallback(ctx, text)
+            return
+        # 只記分類結果（不含使用者文字），回覆不如預期時才查得出模型怎麼判斷
+        logger.info(
+            "Assistant decision: event=%s risk=%s department=%s clarify=%s actions=%s",
+            decision.event,
+            decision.risk,
+            decision.slots.department,
+            decision.needs_clarification,
+            decision.actions,
+        )
+        messages = self._compose(ctx, text, decision)
+        try:
+            ctx.reply(messages)
+        except Exception:  # noqa: BLE001 - 模型太慢 reply token 過期時改用 push
+            logger.warning("Reply token expired after AI decision; falling back to push")
+            ctx.push(messages)
+
+    # ---- 事件 → 模組 ----
+
+    def _compose(self, ctx: BotContext, text: str, decision: AssistantDecision) -> list:
+        liff_intake = ctx.liff_url("/intake")
+        event = decision.event
+        urgent = decision.risk == "urgent"
+        slots = decision.slots
+        module: list = []
+        if event == "clinic":
+            # 「先看診所」「附近有診所嗎」→ 直接找診所（症狀 / 科別由模型從對話脈絡帶上）
+            module = self._run(ctx, Intent.FIND_HOSPITAL, self._clinic_params(slots))
+        elif event == "hospital":
+            # 找醫院只認使用者位置：不論有沒有提到縣市，都請對方分享位置；
+            # 模型依症狀判斷出科別時帶上，推薦時優先有該科的醫院
+            params: dict[str, str] = {}
+            if slots.department:
+                params["department"] = slots.department
+            module = self._run(ctx, Intent.FIND_HOSPITAL, params)
+        elif event == "medication":
+            if slots.drug_name:
+                module = self._run(
+                    ctx, Intent.MEDICATION, {"action": "lookup", "q": slots.drug_name}
+                )
+            else:
+                module = self._run(ctx, Intent.MEDICATION, {"action": "menu"})
+        elif event == "pharmacy":
+            module = self._run(ctx, Intent.MEDICATION, {"action": "locate_prompt"})
+        elif event == "reminder":
+            action = (
+                "list" if any(k in text for k in ("查看", "有哪些", "列出", "幾點")) else "menu"
+            )
+            module = self._run(ctx, Intent.REMINDER, {"action": action})
+        elif event == "discharge":
+            if decision.answer:
+                # 衛教諮詢：模型已依病人的診斷 / 慢性病（或使用者說的科別）與知識庫
+                # 寫出「現在該做什麼」
+                # 未驗證的使用者只要模型有答案（通用版選科別後）也直接回
+                actions = decision.actions or ["find_clinic", "reminder_menu", "feedback"]
+                return msg.answer_messages(decision.answer, actions, liff_intake, decision.sources)
+            if department_in_text(text) or _DISCHARGED_FROM.search(text):
+                # 使用者已經選了科別但知識庫沒內容；再回「選擇科別」卡片會一直繞圈
+                return msg.answer_messages(
+                    msg.NO_DISCHARGE_DATA_TEXT, ["find_clinic", "feedback"], liff_intake
+                )
+            module = self._run(ctx, Intent.DISCHARGE, {})
+        elif event == "feedback":
+            module = self._run(ctx, Intent.FEEDBACK, {})
+        elif event == "intake":
+            # 基本資料入口：Flex 列出「基本資料表」與「我的就醫院所」兩張表單
+            module = self._run(ctx, Intent.INTAKE, {})
+
+        if module:
+            lead = [M.text(decision.answer)] if decision.answer else []
+            return (lead + module)[:5]
+
+        # symptom / faq / smalltalk / unknown：回答 + 下一步
+        actions = list(decision.actions)
+        if event == "symptom" and urgent:
+            # 急症：先給找醫院，另附同科別的診所選項
+            if "find_hospital" not in actions:
+                actions.insert(0, "find_hospital")
+            if "find_clinic" not in actions:
+                actions.append("find_clinic")
+        elif (
+            event == "symptom"
+            and decision.answer
+            and (slots.department or not decision.needs_clarification)
+        ):
+            # 病人直接描述症狀（非急症）→ 回答後直接接著推薦診所，不用再按「附近診所」。
+            # 模型有時給了完整建議與科別卻又標「需要再問清楚」，有科別就照樣推薦
+            return self._symptom_with_clinics(ctx, text, decision, actions, liff_intake)
+        if event == "unknown" and not decision.answer:
+            # 沒有下一步動作時給主選單
+            quick = msg.action_items(actions, liff_intake) or [
+                M.postback_item("主選單", Intent.MENU)
+            ]
+            return [
+                M.text(
+                    msg.CLARIFY_TEXT if decision.needs_clarification else msg.AI_FAILED_TEXT,
+                    quick_replies=quick,
+                )
+            ]
+        return msg.answer_messages(
+            decision.answer,
+            actions,
+            liff_intake,
+            decision.sources,
+            # 症狀諮詢的科別同時帶進「找醫院」與「附近診所」按鈕，推薦時依症狀對應科別
+            department=slots.department if event == "symptom" else None,
+        )
+
+    def _symptom_with_clinics(
+        self,
+        ctx: BotContext,
+        text: str,
+        decision: AssistantDecision,
+        actions: list[str],
+        liff_intake: str,
+    ) -> list:
+        """病況諮詢（非急症）：回答後直接接「找附近診所」，依症狀建議的科別推薦院所主檔裡的診所。
+
+        使用者說了所在縣市 → 同一次回覆就列出院所；沒說 → `FindHospitalHandler` 請對方分享位置
+        並記下「等位置 for=clinics + 科別」，位置訊息回來再依科別找。
+        """
+        slots = decision.slots
+        params = self._clinic_params(slots, fallback_symptom=text)
+        answer = msg.answer_messages(decision.answer, [], liff_intake, decision.sources)
+        messages = (answer + self._run(ctx, Intent.FIND_HOSPITAL, params))[:5]
+        # 診所模組已經處理「附近診所 / 分享位置」，模型給的其餘下一步接在最後一則的按鈕後面
+        rest = [a for a in actions if a not in ("find_clinic", "share_location")]
+        return msg.with_actions(messages, rest, liff_intake, department=slots.department)
+
+    @staticmethod
+    def _clinic_params(slots: Slots, *, fallback_symptom: str = "") -> dict[str, str]:
+        """找診所模組的參數：症狀摘要 + 科別（模型依這兩者從同區院所挑）+ 使用者說的所在地。"""
+        params = {"action": "clinics"}
+        symptom = (slots.symptom or fallback_symptom)[:MAX_SYMPTOM_CHARS]
+        if symptom:
+            params["symptom"] = symptom
+        for key in ("department", "city", "district"):
+            value = getattr(slots, key)
+            if value:
+                params[key] = value
+        return params
+
+    def _run(self, ctx: BotContext, intent: Intent, params: dict[str, str]) -> list:
+        """執行既有模組並收集它的回覆（不直接送出）。"""
+        handler = self._router.handler_for(intent)
+        if handler is None:
+            return []
+        with ctx.capture() as captured:
+            handler.execute(ctx, params)
+        return captured
+
+    def _fallback(self, ctx: BotContext, text: str) -> None:
+        intent = next((v for k, v in TEXT_KEYWORDS.items() if k in text), None)
+        handler = self._router.handler_for(intent) if intent else None
+        if handler is None:
+            ctx.reply(msg.failed_messages())
+            return
+        handler.execute(ctx, {"text": text})
+
+    @staticmethod
+    def _loading(ctx: BotContext) -> None:
+        if not ctx.line_user_id:
+            return
+        try:
+            ctx.container.line_client.show_loading_animation(ctx.line_user_id, LOADING_SECONDS)
+        except Exception:  # noqa: BLE001 - 動畫失敗不影響主流程
+            logger.debug("loading animation failed", exc_info=True)

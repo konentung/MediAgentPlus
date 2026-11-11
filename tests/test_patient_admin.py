@@ -1,0 +1,889 @@
+"""院方後台：病人列表 / 核對建檔 / 退回 / 修正 / 就診紀錄，以及院所隔離與權限。"""
+
+from __future__ import annotations
+
+import pytest
+
+from app.domain.enums import BindingStatus, Intent, Permission, Role
+from app.domain.rbac import permissions_for
+from app.line.intents import postback_data
+from tests.test_intake import add_hospital, fill_all
+from tests.test_webhook import _event
+
+H1, H2 = "H1", "H2"
+
+
+@pytest.fixture()
+def staff(make_user):
+    return make_user(Role.CLINIC_STAFF, BindingStatus.UNBOUND, hospital_id=H1)
+
+
+@pytest.fixture()
+def submitted_patient(client, make_user, auth_header, staff, post_line_event):
+    """一位填完表、已送出，且 H1 院方在後台「加入本院」、病人按「是」確認過的 GUEST。"""
+    user = make_user(Role.GUEST, line_user_id="Upatient")
+    assert fill_all(client, auth_header(user)).status_code == 200
+    resp = client.post(
+        f"/api/v1/admin/patients/{user.id}/request-hospital-confirmation",
+        json={},
+        headers=auth_header(staff),
+    )
+    assert resp.status_code == 200, resp.get_json()
+    post_line_event(
+        _event(
+            "postback",
+            user_id="Upatient",
+            postback={"data": postback_data(Intent.HOSPITAL_CONFIRM, hospital_id=H1, answer="yes")},
+        )
+    )
+    return user
+
+
+# ---- RBAC ----
+def test_new_permissions_role_matrix():
+    assert Permission.INTAKE_WRITE_OWN in permissions_for(Role.GUEST)
+    # 大醫院分工：行政人員核對建檔、不碰就診紀錄；醫護人員寫就診紀錄與風險追蹤、不能核對建檔
+    assert Permission.PATIENT_VERIFY in permissions_for(Role.HOSPITAL_STAFF)
+    assert Permission.ENCOUNTER_MANAGE not in permissions_for(Role.HOSPITAL_STAFF)
+    assert Permission.PATIENT_VERIFY not in permissions_for(Role.MEDICAL_STAFF)
+    assert Permission.ENCOUNTER_MANAGE in permissions_for(Role.MEDICAL_STAFF)
+    assert Permission.PATIENT_WRITE in permissions_for(Role.MEDICAL_STAFF)
+    # 診所人員：一個角色做完兩邊的事
+    assert permissions_for(Role.CLINIC_STAFF) == permissions_for(
+        Role.HOSPITAL_STAFF
+    ) | permissions_for(Role.MEDICAL_STAFF)
+    assert Permission.PATIENT_READ not in permissions_for(Role.PATIENT)
+
+
+def test_medical_staff_can_read_but_not_verify(client, submitted_patient, make_user, auth_header):
+    agent = make_user(Role.MEDICAL_STAFF, hospital_id=H1)
+    headers = auth_header(agent)
+    assert (
+        client.get(f"/api/v1/admin/patients/{submitted_patient.id}", headers=headers).status_code
+        == 200
+    )
+    resp = client.post(
+        f"/api/v1/admin/patients/{submitted_patient.id}/verify", json={}, headers=headers
+    )
+    assert resp.status_code == 403
+
+
+# ---- 列表 / 詳情 ----
+def test_pending_list_scoped_to_linked_hospital(
+    client, submitted_patient, staff, make_user, auth_header
+):
+    rows = client.get(
+        "/api/v1/admin/patients?status=pending", headers=auth_header(staff)
+    ).get_json()
+    assert [r["user_id"] for r in rows["data"]] == [submitted_patient.id]
+    assert rows["data"][0]["national_id_last4"] == "6789"
+
+    other = make_user(Role.MEDICAL_STAFF, hospital_id=H2)
+    assert (
+        client.get("/api/v1/admin/patients?status=all", headers=auth_header(other)).get_json()[
+            "data"
+        ]
+        == []
+    )
+    assert (
+        client.get(
+            f"/api/v1/admin/patients/{submitted_patient.id}", headers=auth_header(other)
+        ).status_code
+        == 403
+    )
+    superadmin = make_user(Role.SUPER_ADMIN)
+    assert (
+        len(
+            client.get("/api/v1/admin/patients", headers=auth_header(superadmin)).get_json()["data"]
+        )
+        == 1
+    )
+
+
+def test_staff_without_hospital_is_refused(client, submitted_patient, make_user, auth_header):
+    unassigned = make_user(Role.MEDICAL_STAFF, hospital_id=None)
+    assert client.get("/api/v1/admin/patients", headers=auth_header(unassigned)).status_code == 403
+
+
+def test_detail_masks_national_id_and_search_by_last4(
+    client, submitted_patient, staff, auth_header
+):
+    headers = auth_header(staff)
+    detail = client.get(
+        f"/api/v1/admin/patients/{submitted_patient.id}", headers=headers
+    ).get_json()["data"]
+    assert detail["profile"]["national_id"] == "******6789"
+    assert "national_id_encrypted" not in detail["profile"]
+    assert detail["record"] is None and detail["submissions"][0]["status"] == "submitted"
+    hits = client.get("/api/v1/admin/patients?status=all&q=6789", headers=headers).get_json()[
+        "data"
+    ]
+    assert len(hits) == 1
+
+
+# ---- 核對 / 退回 ----
+def test_verify_creates_record_and_promotes_user(
+    client, container, submitted_patient, staff, make_user, auth_header
+):
+    headers = auth_header(staff)
+    resp = client.post(
+        f"/api/v1/admin/patients/{submitted_patient.id}/verify",
+        json={"medical_record_no": "MR-001", "identity_method": "nhi_card"},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.get_json()
+    record = resp.get_json()["data"]
+    assert record["hospital_id"] == H1 and record["medical_record_no"] == "MR-001"
+
+    user = container.user_repo.get_by_id(submitted_patient.id)
+    assert user.binding_status is BindingStatus.VERIFIED and user.role is Role.PATIENT
+    assert container.line_client.pushes[-1][0] == "Upatient"
+
+    detail = client.get(
+        f"/api/v1/admin/patients/{submitted_patient.id}", headers=headers
+    ).get_json()["data"]
+    assert detail["submissions"][0]["status"] == "reviewed"
+    # 建檔後出現在「已建檔」清單，且驗證後病人可讀自己的 profile
+    active = client.get("/api/v1/admin/patients?status=active", headers=headers).get_json()["data"]
+    assert active[0]["medical_record_no"] == "MR-001"
+    assert client.get("/api/v1/liff/profile", headers=auth_header(user)).status_code == 200
+
+    # 身分證不存明碼也不存密文：任何角色（含 HOSPITAL_ADMIN）都只拿得到遮罩
+    admin = make_user(Role.HOSPITAL_ADMIN, hospital_id=H1)
+    detail = client.get(
+        f"/api/v1/admin/patients/{submitted_patient.id}", headers=auth_header(admin)
+    ).get_json()["data"]
+    assert detail["profile"]["national_id"] == "******6789"
+    assert "national_id_fingerprint" not in detail["profile"]
+
+
+def test_verify_requires_submission(client, make_user, auth_header, staff):
+    user = make_user()
+    client.put("/api/v1/liff/intake/steps/6", json={"partial": True}, headers=auth_header(user))
+    assert add_hospital(client, auth_header(user), H1).status_code == 201
+    # 草稿對院所不可見（403）；SUPER_ADMIN 看得到但仍不能核對（422）
+    resp = client.post(
+        f"/api/v1/admin/patients/{user.id}/verify", json={}, headers=auth_header(staff)
+    )
+    assert resp.status_code == 403
+    superadmin = make_user(Role.SUPER_ADMIN)
+    resp = client.post(
+        f"/api/v1/admin/patients/{user.id}/verify",
+        json={"hospital_id": H1},
+        headers=auth_header(superadmin),
+    )
+    assert resp.status_code == 422
+
+
+def test_reject_returns_to_unbound_and_notifies(
+    client, container, submitted_patient, staff, auth_header
+):
+    assert (
+        client.post(
+            f"/api/v1/admin/patients/{submitted_patient.id}/reject",
+            json={"reason": ""},
+            headers=auth_header(staff),
+        ).status_code
+        == 422
+    )
+    resp = client.post(
+        f"/api/v1/admin/patients/{submitted_patient.id}/reject",
+        json={"reason": "身分證字號與證件不符"},
+        headers=auth_header(staff),
+    )
+    assert resp.status_code == 200
+    assert (
+        container.user_repo.get_by_id(submitted_patient.id).binding_status is BindingStatus.UNBOUND
+    )
+    assert "身分證字號與證件不符" in container.line_client.pushes[-1][1][0].text
+    # 退回後 submitted_at 清空：院所看不到、也不能核對，直到病人重新送出
+    assert (
+        client.get(
+            f"/api/v1/admin/patients/{submitted_patient.id}", headers=auth_header(staff)
+        ).status_code
+        == 403
+    )
+    assert (
+        client.get("/api/v1/admin/patients?status=all", headers=auth_header(staff)).get_json()[
+            "data"
+        ]
+        == []
+    )
+
+
+# ---- 修正 / 就診 / 風險 / 追蹤 / 備註 ----
+@pytest.fixture()
+def verified_patient(client, submitted_patient, staff, auth_header):
+    client.post(
+        f"/api/v1/admin/patients/{submitted_patient.id}/verify", json={}, headers=auth_header(staff)
+    )
+    return submitted_patient
+
+
+def test_correct_profile_records_corrections(client, verified_patient, staff, auth_header):
+    headers = auth_header(staff)
+    url = f"/api/v1/admin/patients/{verified_patient.id}"
+    resp = client.patch(
+        url + "/profile",
+        json={"changes": {"phone": "0987654321"}, "note": "電話更正"},
+        headers=headers,
+    )
+    assert resp.status_code == 200 and resp.get_json()["data"]["profile"]["phone"] == "0987654321"
+    detail = client.get(url, headers=headers).get_json()["data"]
+    assert detail["reviews"][0]["corrections"]["phone"] == {
+        "from": "0912345678",
+        "to": "0987654321",
+    }
+    # 身分證與同意事項不可由院方修改；格式錯誤會被擋
+    assert (
+        client.patch(
+            url + "/profile", json={"changes": {"national_id": "B123456789"}}, headers=headers
+        ).status_code
+        == 422
+    )
+    assert (
+        client.patch(
+            url + "/profile", json={"changes": {"phone": "123"}}, headers=headers
+        ).status_code
+        == 422
+    )
+
+
+def test_correction_requires_record(client, submitted_patient, staff, auth_header):
+    resp = client.patch(
+        f"/api/v1/admin/patients/{submitted_patient.id}/profile",
+        json={"changes": {"phone": "0987654321"}},
+        headers=auth_header(staff),
+    )
+    assert resp.status_code == 409
+
+
+def test_encounter_flag_followup_note_flow(client, container, verified_patient, staff, auth_header):
+    headers = auth_header(staff)
+    url = f"/api/v1/admin/patients/{verified_patient.id}"
+    enc = client.post(
+        url + "/encounters",
+        json={
+            "encounter_type": "inpatient",
+            "visit_date": "2026-09-01",
+            "discharged_at": "2026-09-10",
+            "discharge_code": "DM-01",
+            "diagnoses": [{"icd10_code": "E11", "description": "第二型糖尿病"}],
+        },
+        headers=headers,
+    )
+    assert enc.status_code == 201, enc.get_json()
+    enc_id = enc.get_json()["data"]["id"]
+    assert (
+        client.patch(
+            url + f"/encounters/{enc_id}", json={"department": "新陳代謝科"}, headers=headers
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            url + "/encounters",
+            json={"encounter_type": "spa", "visit_date": "2026-09-01"},
+            headers=headers,
+        ).status_code
+        == 422
+    )
+    assert container.patient_record_repo.latest_discharge_code(verified_patient.id) == "DM-01"
+
+    flag = client.post(url + "/flags", json={"flag_type": "fall", "level": "high"}, headers=headers)
+    assert flag.status_code == 201
+    assert (
+        client.patch(
+            url + f"/flags/{flag.get_json()['data']['id']}", json={"active": False}, headers=headers
+        ).get_json()["data"]["active"]
+        is False
+    )
+
+    fu = client.post(
+        url + "/follow-ups", json={"kind": "revisit", "due_date": "2026-09-20"}, headers=headers
+    )
+    assert fu.status_code == 201
+    assert (
+        client.patch(
+            url + f"/follow-ups/{fu.get_json()['data']['id']}",
+            json={"status": "done"},
+            headers=headers,
+        ).status_code
+        == 200
+    )
+
+    assert (
+        client.post(url + "/notes", json={"body": "注意血糖"}, headers=headers).status_code == 201
+    )
+    assert client.post(url + "/notes", json={"body": "  "}, headers=headers).status_code == 422
+
+    detail = client.get(url, headers=headers).get_json()["data"]
+    assert detail["encounters"][0]["department"] == "新陳代謝科"
+    assert (
+        len(detail["flags"]) == 1 and len(detail["follow_ups"]) == 1 and len(detail["notes"]) == 1
+    )
+
+    dash = client.get("/api/v1/admin/dashboard", headers=headers).get_json()["data"]
+    assert set(dash) == {"pending_patients", "due_follow_ups", "open_feedback"}
+
+
+def test_other_hospital_cannot_touch_record(client, verified_patient, make_user, auth_header):
+    other = make_user(Role.MEDICAL_STAFF, hospital_id=H2)
+    resp = client.post(
+        f"/api/v1/admin/patients/{verified_patient.id}/flags",
+        json={"flag_type": "fall"},
+        headers=auth_header(other),
+    )
+    assert resp.status_code == 403
+
+
+# ---- 人員管理 API ----
+def test_list_users_scoped_to_hospital(client, make_user, auth_header):
+    admin = make_user(Role.HOSPITAL_ADMIN, hospital_id=H1)
+    make_user(Role.CLINIC_STAFF, hospital_id=H1)
+    make_user(Role.CLINIC_STAFF, hospital_id=H2)
+    rows = client.get("/api/v1/admin/users", headers=auth_header(admin)).get_json()["data"]
+    assert {r["hospital_id"] for r in rows} == {H1}
+    assert (
+        client.get(
+            "/api/v1/admin/users",
+            headers=auth_header(make_user(Role.CLINIC_STAFF, hospital_id=H1)),
+        ).status_code
+        == 403
+    )
+
+
+# ---- 後台頁面 ----
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/admin/",
+        "/admin/patients",
+        "/admin/patients/abc",
+        "/admin/feedback",
+        "/admin/staff",
+        "/admin/settings",
+        "/admin/permissions",
+        "/admin/audit",
+        "/admin/imports",
+    ],
+)
+def test_admin_pages_render_shell(client, path):
+    resp = client.get(path)
+    assert resp.status_code == 200
+    assert "MediAgent+ 後台" in resp.get_data(as_text=True)
+
+
+def test_admin_login_page_renders_with_line_button(client):
+    resp = client.get("/admin/login")
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    assert "院方後台登入" in html
+    assert "/api/v1/auth/line/login?redirect_to=%2Fadmin" in html or "redirect_to=/admin" in html
+
+
+def test_admin_login_page_keeps_next(client):
+    html = client.get("/admin/login?next=/admin/patients").get_data(as_text=True)
+    assert "redirect_to=%2Fadmin%2Fpatients" in html or "redirect_to=/admin/patients" in html
+    # next 只能是後台路徑，其他一律回 /admin
+    html = client.get("/admin/login?next=https://evil.com").get_data(as_text=True)
+    assert "evil.com" not in html
+    html = client.get("/admin/login?next=/liff/intake").get_data(as_text=True)
+    assert "redirect_to=%2Fliff" not in html and "/liff/intake" not in html
+
+
+# ---- 鎖定 / 解鎖 / 稽核 ----
+def test_lock_unlock_and_audit(client, container, submitted_patient, staff, make_user, auth_header):
+    url = f"/api/v1/admin/patients/{submitted_patient.id}"
+    headers = auth_header(staff)
+    assert client.post(url + "/unlock", json={}, headers=headers).status_code == 409
+    resp = client.post(url + "/lock", json={"reason": "證件疑似冒用"}, headers=headers)
+    assert resp.status_code == 200 and resp.get_json()["data"]["binding_status"] == "locked"
+    assert (
+        container.user_repo.get_by_id(submitted_patient.id).binding_status is BindingStatus.LOCKED
+    )
+    # 鎖定中：病人不能填、院所不能核對、但列表「已鎖定」看得到
+    patient_headers = auth_header(container.user_repo.get_by_id(submitted_patient.id))
+    assert (
+        client.post("/api/v1/liff/intake/submit", json={}, headers=patient_headers).status_code
+        == 403
+    )
+    assert client.post(url + "/verify", json={}, headers=headers).status_code == 409
+    locked = client.get("/api/v1/admin/patients?status=locked", headers=headers).get_json()["data"]
+    assert [p["user_id"] for p in locked] == [submitted_patient.id]
+
+    assert client.post(url + "/unlock", json={}, headers=headers).status_code == 200
+    assert (
+        container.user_repo.get_by_id(submitted_patient.id).binding_status is BindingStatus.UNBOUND
+    )
+
+    # 稽核：鎖定 + 解鎖各一筆，只有 AUDIT_READ 能看
+    admin = make_user(Role.HOSPITAL_ADMIN, hospital_id=H1)
+    assert client.get("/api/v1/admin/audit", headers=headers).status_code == 403
+    logs = client.get("/api/v1/admin/audit", headers=auth_header(admin)).get_json()["data"]
+    assert [entry["action"] for entry in logs] == ["patient.unlock", "patient.lock"]
+    # 鎖定 / 解鎖都是 staff 做的
+    assert logs[0]["actor_id"] == staff.id and logs[0]["target_user_id"] == submitted_patient.id
+
+
+def test_verify_twice_only_updates_mrn(client, container, verified_patient, staff, auth_header):
+    url = f"/api/v1/admin/patients/{verified_patient.id}/verify"
+    pushes_before = len(container.line_client.pushes)
+    resp = client.post(url, json={"medical_record_no": "MR-999"}, headers=auth_header(staff))
+    assert resp.status_code == 200 and resp.get_json()["data"]["medical_record_no"] == "MR-999"
+    assert len(container.line_client.pushes) == pushes_before  # 不再重複推播
+
+
+def test_draft_not_visible_to_hospital(client, make_user, auth_header, staff):
+    user = make_user()
+    client.put("/api/v1/liff/intake/steps/6", json={"partial": True}, headers=auth_header(user))
+    assert add_hospital(client, auth_header(user), H1).status_code == 201
+    assert (
+        client.get(f"/api/v1/admin/patients/{user.id}", headers=auth_header(staff)).status_code
+        == 403
+    )
+
+
+def test_super_admin_list_dedupes_multi_hospital_records(
+    client, container, verified_patient, make_user, auth_header
+):
+    other_staff = make_user(Role.MEDICAL_STAFF, hospital_id=H2)
+    container.patient_record_repo.create(user_id=verified_patient.id, hospital_id=H2)
+    superadmin = make_user(Role.SUPER_ADMIN)
+    rows = client.get(
+        "/api/v1/admin/patients?status=active", headers=auth_header(superadmin)
+    ).get_json()["data"]
+    assert [r["user_id"] for r in rows] == [verified_patient.id]
+    # 多院所建檔的病人，SUPER_ADMIN 寫入操作要求以院所帳號操作
+    assert (
+        client.post(
+            f"/api/v1/admin/patients/{verified_patient.id}/notes",
+            json={"body": "x"},
+            headers=auth_header(superadmin),
+        ).status_code
+        == 422
+    )
+    assert other_staff.hospital_id == H2
+
+
+def test_staff_without_hospital_cannot_list_users_or_feedback(client, make_user, auth_header):
+    admin = make_user(Role.HOSPITAL_ADMIN, hospital_id=None)
+    assert client.get("/api/v1/admin/users", headers=auth_header(admin)).status_code == 403
+    assert client.get("/api/v1/admin/feedback", headers=auth_header(admin)).status_code == 403
+
+
+def test_hospital_admin_can_find_unassigned_newcomer_and_offboard(client, make_user, auth_header):
+    admin = make_user(Role.HOSPITAL_ADMIN, hospital_id=H1)
+    newcomer = make_user(Role.GUEST)
+    other_hospital_user = make_user(Role.CLINIC_STAFF, hospital_id=H2)
+    rows = client.get("/api/v1/admin/users?staff=0", headers=auth_header(admin)).get_json()["data"]
+    ids = {r["user_id"] for r in rows}
+    assert newcomer.id in ids and other_hospital_user.id not in ids
+    # 指派後歸本院；降回 GUEST（離職）也可以
+    resp = client.put(
+        f"/api/v1/admin/users/{newcomer.id}/role",
+        json={"role": "hospital_staff"},
+        headers=auth_header(admin),
+    )
+    assert resp.status_code == 200 and resp.get_json()["data"]["hospital_id"] == H1
+    resp = client.put(
+        f"/api/v1/admin/users/{newcomer.id}/role",
+        json={"role": "guest"},
+        headers=auth_header(admin),
+    )
+    assert resp.status_code == 200 and resp.get_json()["data"]["role"] == "guest"
+
+
+def test_role_assignment_guards(client, make_user, auth_header):
+    admin = make_user(Role.HOSPITAL_ADMIN, hospital_id=H1)
+    peer_admin = make_user(Role.HOSPITAL_ADMIN, hospital_id=H1)
+    superadmin_in_h1 = make_user(Role.SUPER_ADMIN, hospital_id=H1)
+    # 不能改自己
+    assert (
+        client.put(
+            f"/api/v1/admin/users/{admin.id}/role",
+            json={"role": "hospital_staff"},
+            headers=auth_header(admin),
+        ).status_code
+        == 403
+    )
+    # 同院另一位管理員可以調整（在可指派集合內），但 SUPER_ADMIN 不行
+    assert (
+        client.put(
+            f"/api/v1/admin/users/{peer_admin.id}/role",
+            json={"role": "medical_staff"},
+            headers=auth_header(admin),
+        ).status_code
+        == 200
+    )
+    assert (
+        client.put(
+            f"/api/v1/admin/users/{superadmin_in_h1.id}/role",
+            json={"role": "hospital_staff"},
+            headers=auth_header(admin),
+        ).status_code
+        == 403
+    )
+    # 院方角色必須有院所；SUPER_ADMIN 可清空院所（給 super_admin 用）
+    superadmin = make_user(Role.SUPER_ADMIN)
+    target = make_user(Role.CLINIC_STAFF, hospital_id=H1)
+    assert (
+        client.put(
+            f"/api/v1/admin/users/{target.id}/role",
+            json={"role": "hospital_staff", "hospital_id": ""},
+            headers=auth_header(superadmin),
+        ).status_code
+        == 422
+    )
+    resp = client.put(
+        f"/api/v1/admin/users/{target.id}/role",
+        json={"role": "super_admin", "hospital_id": ""},
+        headers=auth_header(superadmin),
+    )
+    assert resp.status_code == 200 and resp.get_json()["data"]["hospital_id"] is None
+
+
+def test_correct_profile_cannot_touch_hospital_links(client, verified_patient, staff, auth_header):
+    """就醫院所不是自填欄位，院方修正資料不能動它（不認得的欄位回 422）。"""
+    resp = client.patch(
+        f"/api/v1/admin/patients/{verified_patient.id}/profile",
+        json={"changes": {"preferred_hospital_id": H2}},
+        headers=auth_header(staff),
+    )
+    assert resp.status_code == 422
+
+
+def test_super_admin_claims_verifies_and_adds_encounter(
+    client, make_user, auth_header, post_line_event
+):
+    """SUPER_ADMIN 沒有所屬院所：指定 hospital_id 才能請病人確認，之後建檔、新增住院紀錄。"""
+    admin = make_user(Role.SUPER_ADMIN, BindingStatus.UNBOUND)
+    user = make_user(Role.GUEST, line_user_id="Upatient")
+    assert fill_all(client, auth_header(user)).status_code == 200
+    headers = auth_header(admin)
+    base = f"/api/v1/admin/patients/{user.id}"
+
+    # 沒有所屬院所：沒指定院所不能新增就診紀錄、也不能請病人確認
+    encounter = {"encounter_type": "inpatient", "visit_date": "2026-10-01"}
+    assert client.post(f"{base}/encounters", json=encounter, headers=headers).status_code == 422
+    resp = client.post(f"{base}/request-hospital-confirmation", json={}, headers=headers)
+    assert resp.status_code == 422
+
+    resp = client.post(
+        f"{base}/request-hospital-confirmation", json={"hospital_id": H1}, headers=headers
+    )
+    assert resp.status_code == 200, resp.get_json()
+    post_line_event(
+        _event(
+            "postback",
+            user_id="Upatient",
+            postback={"data": postback_data(Intent.HOSPITAL_CONFIRM, hospital_id=H1, answer="yes")},
+        )
+    )
+    resp = client.post(f"{base}/verify", json={"hospital_id": H1}, headers=headers)
+    assert resp.status_code == 200, resp.get_json()
+    resp = client.post(f"{base}/encounters", json=encounter, headers=headers)
+    assert resp.status_code == 201, resp.get_json()
+
+
+@pytest.mark.parametrize("role", [Role.HOSPITAL_ADMIN, Role.CLINIC_STAFF])
+def test_hospital_roles_assign_hospital_before_record(
+    client, make_user, auth_header, post_line_event, role
+):
+    """單位管理員 / 診所人員：還沒建檔就能把病人指定到本院，病人同意後才建檔、新增就診紀錄。"""
+    actor = make_user(role, BindingStatus.UNBOUND, hospital_id=H1)
+    user = make_user(Role.GUEST, line_user_id="Upatient")
+    assert fill_all(client, auth_header(user)).status_code == 200
+    headers = auth_header(actor)
+    base = f"/api/v1/admin/patients/{user.id}"
+
+    # 還沒人新增的病人：找得到本人、可以直接指定到本院（不需要先建檔）
+    found = client.get("/api/v1/admin/patients/unclaimed?phone=0912345678", headers=headers)
+    assert [p["user_id"] for p in found.get_json()["data"]] == [user.id]
+    resp = client.post(f"{base}/request-hospital-confirmation", json={}, headers=headers)
+    assert resp.status_code == 200, resp.get_json()
+    pending = client.get("/api/v1/admin/patients?status=pending", headers=headers).get_json()
+    assert [p["user_id"] for p in pending["data"]] == [user.id]
+
+    # 病人還沒同意：不能建檔
+    assert client.post(f"{base}/verify", json={}, headers=headers).status_code == 409
+    post_line_event(
+        _event(
+            "postback",
+            user_id="Upatient",
+            postback={"data": postback_data(Intent.HOSPITAL_CONFIRM, hospital_id=H1, answer="yes")},
+        )
+    )
+    assert client.post(f"{base}/verify", json={}, headers=headers).status_code == 200
+    encounter = {"encounter_type": "inpatient", "visit_date": "2026-10-01"}
+    assert client.post(f"{base}/encounters", json=encounter, headers=headers).status_code == 201
+
+
+def test_unclaimed_search_accepts_any_single_field(client, make_user, auth_header):
+    """搜尋病人：手機 / 姓名 / 末四碼任一欄位都能單獨搜尋，多欄位同時成立，全空回 422。"""
+    actor = make_user(Role.CLINIC_STAFF, BindingStatus.UNBOUND, hospital_id=H1)
+    user = make_user(Role.GUEST, line_user_id="Upatient")
+    assert fill_all(client, auth_header(user)).status_code == 200
+    headers = auth_header(actor)
+    url = "/api/v1/admin/patients/unclaimed"
+
+    def ids(query: str) -> list[str]:
+        resp = client.get(f"{url}?{query}", headers=headers)
+        assert resp.status_code == 200, resp.get_json()
+        return [p["user_id"] for p in resp.get_json()["data"]]
+
+    assert ids("name=王小明") == [user.id]
+    assert ids("last4=6789") == [user.id]
+    assert ids("name=王小明&last4=6789&phone=0912345678") == [user.id]
+    assert ids("name=王小明&last4=0000") == []  # 多欄位要同時成立
+    assert ids("name=王小") == []  # 完全相等，不做模糊搜尋
+    assert client.get(url, headers=headers).status_code == 422
+
+
+def _answer_hospital(post_line_event, answer: str) -> None:
+    post_line_event(
+        _event(
+            "postback",
+            user_id="Upatient",
+            postback={
+                "data": postback_data(Intent.HOSPITAL_CONFIRM, hospital_id=H1, answer=answer)
+            },
+        )
+    )
+
+
+@pytest.fixture()
+def unclaimed_patient(client, make_user, auth_header):
+    """填完表、已送出，還沒被任何院所新增的病人。"""
+    user = make_user(Role.GUEST, line_user_id="Upatient")
+    assert fill_all(client, auth_header(user)).status_code == 200
+    return user
+
+
+ENCOUNTER = {"encounter_type": "inpatient", "visit_date": "2026-10-01"}
+
+
+def test_encounter_before_record_creates_draft_and_asks_patient(
+    app, client, staff, unclaimed_patient, auth_header, post_line_event
+):
+    """沒建檔也能新增就診紀錄：自動把病人指定到本院、推播確認，病人同意並核對後轉成正式建檔。"""
+    headers = auth_header(staff)
+    base = f"/api/v1/admin/patients/{unclaimed_patient.id}"
+    line = app.extensions["container"].line_client
+    pushed_before = len(line.pushes)
+
+    resp = client.post(f"{base}/encounters", json=ENCOUNTER, headers=headers)
+    assert resp.status_code == 201, resp.get_json()
+    assert len(line.pushes) == pushed_before + 1  # 請病人確認就醫院所
+    detail = client.get(base, headers=headers).get_json()["data"]
+    assert detail["record"]["status"] == "draft"
+    assert [(h["hospital_id"], h["confirmed"]) for h in detail["hospitals"]] == [(H1, False)]
+    assert detail["user"]["binding_status"] == BindingStatus.PENDING.value
+    assert len(detail["encounters"]) == 1
+
+    # 第二筆不再重複推播；病人還沒同意不能建檔
+    assert client.post(f"{base}/encounters", json=ENCOUNTER, headers=headers).status_code == 201
+    assert len(line.pushes) == pushed_before + 1
+    assert client.post(f"{base}/verify", json={}, headers=headers).status_code == 409
+
+    _answer_hospital(post_line_event, "yes")
+    resp = client.post(f"{base}/verify", json={"medical_record_no": "MRN1"}, headers=headers)
+    assert resp.status_code == 200, resp.get_json()
+    detail = client.get(base, headers=headers).get_json()["data"]
+    assert detail["record"]["status"] == "active"
+    assert detail["record"]["medical_record_no"] == "MRN1"
+    assert detail["record"]["identity_verified_at"]
+    assert detail["user"]["binding_status"] == BindingStatus.VERIFIED.value
+    assert len(detail["encounters"]) == 2
+
+
+def test_patient_denial_deletes_draft_encounters(
+    app, client, staff, unclaimed_patient, auth_header, post_line_event
+):
+    headers = auth_header(staff)
+    base = f"/api/v1/admin/patients/{unclaimed_patient.id}"
+    assert client.post(f"{base}/encounters", json=ENCOUNTER, headers=headers).status_code == 201
+
+    _answer_hospital(post_line_event, "no")
+    container = app.extensions["container"]
+    assert container.patient_record_repo.list_for_user(unclaimed_patient.id) == []
+    assert container.patient_hospital_repo.list_for_user(unclaimed_patient.id) == []
+    # 病人回到「沒人新增」：本院看不到了
+    assert client.get(base, headers=headers).status_code == 403
+
+
+def test_encounter_by_other_hospital_adds_its_own_link(
+    client, container, make_user, submitted_patient, auth_header
+):
+    """病人已在 H1：H2 也能直接新增就診紀錄（開 H2 的暫存紀錄、請病人確認），H1 那一筆不受影響。"""
+    other = make_user(Role.CLINIC_STAFF, BindingStatus.UNBOUND, hospital_id=H2)
+    pushes_before = len(container.line_client.pushes)
+    resp = client.post(
+        f"/api/v1/admin/patients/{submitted_patient.id}/encounters",
+        json=ENCOUNTER,
+        headers=auth_header(other),
+    )
+    assert resp.status_code == 201, resp.get_json()
+    assert len(container.line_client.pushes) == pushes_before + 1
+    links = {
+        h["hospital_id"]: h["confirmed"]
+        for h in container.patient_hospital_repo.list_for_user(submitted_patient.id)
+    }
+    assert links == {H1: True, H2: False}
+
+
+def test_invalid_encounter_does_not_claim_patient(
+    app, client, staff, unclaimed_patient, auth_header
+):
+    resp = client.post(
+        f"/api/v1/admin/patients/{unclaimed_patient.id}/encounters",
+        json={"encounter_type": "inpatient"},
+        headers=auth_header(staff),
+    )
+    assert resp.status_code == 422
+    links = app.extensions["container"].patient_hospital_repo.list_for_user(unclaimed_patient.id)
+    assert links == []
+
+
+# ---- 病人在「我的就醫院所」自己加入院所 → 院方直接看得到、可直接建檔；可同時在多家就醫 ----
+def test_patient_added_hospital_can_verify_without_confirmation(
+    client, container, make_user, auth_header, staff
+):
+    user = make_user(Role.GUEST, line_user_id="Upatient")
+    patient_headers = auth_header(user)
+    assert fill_all(client, patient_headers).status_code == 200
+    assert add_hospital(client, patient_headers, H1).status_code == 201
+    headers = auth_header(staff)
+    base = f"/api/v1/admin/patients/{user.id}"
+
+    # 病人加的院所：不必搜尋就出現在待核對清單，且已確認
+    rows = client.get("/api/v1/admin/patients?status=pending", headers=headers).get_json()["data"]
+    assert [(r["user_id"], r["hospital_confirmed"]) for r in rows] == [(user.id, True)]
+    assert rows[0]["hospitals"] == [
+        {"hospital_id": H1, "hospital_name": "第一醫院", "confirmed": True}
+    ]
+    detail = client.get(base, headers=headers).get_json()["data"]
+    assert [h["hospital_id"] for h in detail["hospitals"]] == [H1]
+    assert "preferred_hospital_id" not in detail["profile"]
+    # 別家院所看不到
+    other = auth_header(make_user(Role.CLINIC_STAFF, hospital_id=H2))
+    assert client.get("/api/v1/admin/patients", headers=other).get_json()["data"] == []
+    assert client.get(base, headers=other).status_code == 403
+
+    # 本人自己加的就算確認：不用推播、不能再「請病人確認」、可直接核對建檔
+    resp = client.post(f"{base}/request-hospital-confirmation", json={}, headers=headers)
+    assert resp.status_code == 409
+    assert client.post(f"{base}/verify", json={}, headers=headers).status_code == 200
+    assert container.user_repo.get_by_id(user.id).binding_status is BindingStatus.VERIFIED
+    # 已建檔的院所病人端不能移除（院所看得到的 filed 旗標也亮起）
+    mine = client.get("/api/v1/liff/hospitals/mine", headers=patient_headers).get_json()["data"]
+    assert mine["hospitals"][0]["filed"] is True
+    assert (
+        client.delete("/api/v1/liff/hospitals/mine/H1", headers=patient_headers).status_code == 409
+    )
+
+
+def test_patient_can_be_filed_at_multiple_hospitals(
+    client, container, make_user, auth_header, staff, post_line_event
+):
+    """同一位病人：H1 由病人自己加入並建檔；H2 事後搜尋加入、病人按「是」後也能建檔，互不影響。"""
+    user = make_user(Role.GUEST, line_user_id="Upatient")
+    patient_headers = auth_header(user)
+    assert fill_all(client, patient_headers).status_code == 200
+    assert add_hospital(client, patient_headers, H1).status_code == 201
+    base = f"/api/v1/admin/patients/{user.id}"
+    assert client.post(f"{base}/verify", json={}, headers=auth_header(staff)).status_code == 200
+
+    other = auth_header(make_user(Role.CLINIC_STAFF, hospital_id=H2, line_user_id="Uother"))
+    # H2 搜尋得到（已在 H1 建檔不影響），加入本院並請病人確認
+    found = client.get("/api/v1/admin/patients/unclaimed?name=王小明", headers=other).get_json()[
+        "data"
+    ]
+    assert [p["user_id"] for p in found] == [user.id]
+    # H1 再搜就找不到：病人已經在 H1
+    assert (
+        client.get(
+            "/api/v1/admin/patients/unclaimed?name=王小明", headers=auth_header(staff)
+        ).get_json()["data"]
+        == []
+    )
+    pushes_before = len(container.line_client.pushes)
+    resp = client.post(f"{base}/request-hospital-confirmation", json={}, headers=other)
+    assert resp.status_code == 200, resp.get_json()
+    assert len(container.line_client.pushes) == pushes_before + 1
+    # 還沒確認：H2 看得到（待病人確認）但不能建檔
+    rows = client.get("/api/v1/admin/patients?status=all", headers=other).get_json()["data"]
+    assert [(r["user_id"], r["hospital_confirmed"]) for r in rows] == [(user.id, False)]
+    assert client.post(f"{base}/verify", json={}, headers=other).status_code == 409
+
+    post_line_event(
+        _event(
+            "postback",
+            user_id="Upatient",
+            postback={"data": postback_data(Intent.HOSPITAL_CONFIRM, hospital_id=H2, answer="yes")},
+        )
+    )
+    assert client.post(f"{base}/verify", json={}, headers=other).status_code == 200
+    records = container.patient_record_repo.list_for_user(user.id)
+    assert sorted(r["hospital_id"] for r in records) == [H1, H2]
+    # 兩家各自看自己的那一筆；SUPER_ADMIN 看全部
+    detail = client.get(base, headers=other).get_json()["data"]
+    assert [h["hospital_id"] for h in detail["hospitals"]] == [H2]
+    superadmin = auth_header(make_user(Role.SUPER_ADMIN))
+    detail = client.get(base, headers=superadmin).get_json()["data"]
+    assert sorted(h["hospital_id"] for h in detail["hospitals"]) == [H1, H2]
+    # 病人端兩家都已建檔
+    mine = client.get("/api/v1/liff/hospitals/mine", headers=patient_headers).get_json()["data"]
+    assert sorted((h["hospital_id"], h["filed"]) for h in mine["hospitals"]) == [
+        (H1, True),
+        (H2, True),
+    ]
+
+
+def test_patient_declines_hospital_request(
+    client, container, make_user, auth_header, staff, post_line_event
+):
+    """院方加入本院、病人按「不是」：那一筆就醫院所刪掉、該院所不再看得到這位病人；其他院所不受影響。"""
+    user = make_user(Role.GUEST, line_user_id="Upatient")
+    patient_headers = auth_header(user)
+    assert fill_all(client, patient_headers).status_code == 200
+    assert add_hospital(client, patient_headers, H2).status_code == 201
+    headers = auth_header(staff)
+    base = f"/api/v1/admin/patients/{user.id}"
+    assert (
+        client.post(f"{base}/request-hospital-confirmation", json={}, headers=headers).status_code
+        == 200
+    )
+    mine = client.get("/api/v1/liff/hospitals/mine", headers=patient_headers).get_json()["data"]
+    assert [(h["hospital_id"], h["confirmed"]) for h in mine["hospitals"]] == [
+        (H2, True),
+        (H1, False),
+    ]
+
+    _answer_hospital(post_line_event, "no")
+
+    assert [h["hospital_id"] for h in container.patient_hospital_repo.list_for_user(user.id)] == [
+        H2
+    ]
+    assert client.get("/api/v1/admin/patients", headers=headers).get_json()["data"] == []
+    assert client.get(base, headers=headers).status_code == 403
+
+
+def test_patient_confirms_hospital_request_from_liff(client, make_user, auth_header, staff):
+    """院方的確認要求也可以在 LIFF 頁面回答（不一定要按 LINE 的按鈕）。"""
+    user = make_user(Role.GUEST, line_user_id="Upatient")
+    patient_headers = auth_header(user)
+    assert fill_all(client, patient_headers).status_code == 200
+    base = f"/api/v1/admin/patients/{user.id}"
+    headers = auth_header(staff)
+    assert (
+        client.post(f"{base}/request-hospital-confirmation", json={}, headers=headers).status_code
+        == 200
+    )
+    confirm = f"/api/v1/liff/hospitals/mine/{H1}/confirm"
+    assert (
+        client.post(confirm, json={"accepted": "yes"}, headers=patient_headers).status_code == 422
+    )
+    resp = client.post(confirm, json={"accepted": True}, headers=patient_headers)
+    assert resp.status_code == 200, resp.get_json()
+    assert client.post(f"{base}/verify", json={}, headers=headers).status_code == 200

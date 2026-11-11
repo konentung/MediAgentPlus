@@ -1,0 +1,172 @@
+{% extends "admin/base.html" %}
+{% block title %}推播管理{% endblock %}
+
+{% block content %}
+<h1 class="h4 mb-2">推播管理</h1>
+<p class="small text-secondary mb-3">系統定時送出的推播。目前只有服藥提醒（每 5 分鐘檢查一次），之後的每日任務推播也會出現在這裡。核對結果、領藥通知這類即時通知不留紀錄，不在此頁。</p>
+
+<div class="row g-3 mb-3">
+  <div class="col-6 col-lg-2"><div class="card h-100"><div class="card-body"><div class="text-secondary small">今日已送出</div><div class="h3 fw-bold mb-0" data-stat="sent_today">—</div></div></div></div>
+  <div class="col-6 col-lg-2"><div class="card h-100"><div class="card-body"><div class="text-secondary small">今日已服用</div><div class="h3 fw-bold mb-0" data-stat="taken_today">—</div></div></div></div>
+  <div class="col-6 col-lg-2"><div class="card h-100"><div class="card-body"><div class="text-secondary small">今日送出失敗</div><div class="h3 fw-bold mb-0" data-stat="failed_today">—</div></div></div></div>
+  <div class="col-6 col-lg-2"><div class="card h-100"><div class="card-body"><div class="text-secondary small">今日略過</div><div class="h3 fw-bold mb-0" data-stat="skipped_today">—</div></div></div></div>
+  <div class="col-6 col-lg-2"><div class="card h-100"><div class="card-body"><div class="text-secondary small">今天有效的排程</div><div class="h3 fw-bold mb-0" data-stat="active_schedules">—</div></div></div></div>
+  <div class="col-6 col-lg-2"><div class="card h-100"><div class="card-body"><div class="text-secondary small">已封鎖帳號的人</div><div class="h3 fw-bold mb-0" data-stat="push_disabled_users">—</div></div></div></div>
+</div>
+
+<ul class="nav nav-tabs mb-3" role="tablist">
+  <li class="nav-item" role="presentation"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-deliveries" type="button" role="tab" aria-controls="tab-deliveries" aria-selected="true">推播紀錄</button></li>
+  <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-schedules" type="button" role="tab" aria-controls="tab-schedules" aria-selected="false">提醒排程</button></li>
+</ul>
+
+<div class="tab-content">
+  <div class="tab-pane fade show active" id="tab-deliveries" role="tabpanel">
+    <div class="card mb-3">
+      <div class="card-body">
+        <div class="d-flex justify-content-end mb-2"><span class="small text-secondary" id="delivery-stats">—</span></div>
+        <form class="row g-2 mb-3" id="delivery-filter" role="search">
+          <div class="col-md-4">
+            <select class="form-select" name="status" aria-label="狀態">
+              <option value="">全部狀態</option>
+            </select>
+          </div>
+          <div class="col-md-2 d-flex gap-2">
+            <button class="btn btn-outline-secondary flex-fill text-nowrap" type="submit">搜尋</button>
+            <button class="btn btn-outline-secondary flex-fill text-nowrap" type="reset">清除</button>
+          </div>
+        </form>
+        <div class="table-responsive">
+          <table class="table table-sm table-hover align-middle mb-0">
+            <thead class="table-light"><tr><th>預定時間</th><th>使用者（LINE 名稱）</th><th>藥品</th><th>狀態</th><th>送出時間</th><th>回應時間</th></tr></thead>
+            <tbody id="delivery-rows"></tbody>
+          </table>
+        </div>
+        <p class="small text-secondary mt-3 mb-0 d-none" id="delivery-empty">沒有符合的推播紀錄。</p>
+        <div id="delivery-pagination"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tab-pane fade" id="tab-schedules" role="tabpanel">
+    <div class="card mb-3">
+      <div class="card-body">
+        <div class="d-flex justify-content-end mb-2"><span class="small text-secondary" id="schedule-stats">—</span></div>
+        <form class="row g-2 mb-3" id="schedule-filter" role="search">
+          <div class="col-md-4">
+            <select class="form-select" name="active" aria-label="啟用狀態">
+              <option value="">全部排程</option>
+              <option value="1">啟用的</option>
+              <option value="0">已停用的</option>
+            </select>
+          </div>
+          <div class="col-md-2 d-flex gap-2">
+            <button class="btn btn-outline-secondary flex-fill text-nowrap" type="submit">搜尋</button>
+            <button class="btn btn-outline-secondary flex-fill text-nowrap" type="reset">清除</button>
+          </div>
+        </form>
+        <div class="table-responsive">
+          <table class="table table-sm table-hover align-middle mb-0">
+            <thead class="table-light"><tr><th>使用者（LINE 名稱）</th><th>藥品</th><th>頻率</th><th>提醒時間</th><th>期間</th><th>狀態</th><th></th></tr></thead>
+            <tbody id="schedule-rows"></tbody>
+          </table>
+        </div>
+        <p class="small text-secondary mt-3 mb-0 d-none" id="schedule-empty">沒有符合的提醒排程。</p>
+        <div id="schedule-pagination"></div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+Admin.boot(async function (ctx) {
+  var DELIVERY_BADGES = { pending: "text-bg-secondary", sent: "text-bg-info", taken: "text-bg-success", snoozed: "text-bg-warning", skipped: "text-bg-secondary", failed: "text-bg-danger" };
+  var SCHEDULE_BADGES = { active: "text-bg-success", paused: "text-bg-warning", finished: "text-bg-secondary", stopped: "text-bg-secondary" };
+  var deliveryFilter = document.getElementById("delivery-filter"), scheduleFilter = document.getElementById("schedule-filter");
+  var deliveryState = { status: "", page: 1 }, scheduleState = { active: "", page: 1 };
+  function guard(promise) { promise.catch(function (err) { Admin.toast(err.message, "danger"); }); }
+  // 狀態選項與中文名稱來自後端（push_admin_service.DELIVERY_STATUS_LABELS），不在頁面重寫一份
+  var statusSelect = deliveryFilter.elements.status;
+  Object.keys(Admin.choices.push_delivery_statuses).forEach(function (value) {
+    statusSelect.add(new Option(Admin.choices.push_delivery_statuses[value], value));
+  });
+
+  // 封鎖官方帳號的人：排程還在，但實際上送不出去，名字旁邊標出來
+  function userCell(row) {
+    return Admin.esc(row.user_name || "—") + (row.push_enabled === false ? ' <span class="badge text-bg-secondary">已封鎖</span>' : "");
+  }
+
+  async function loadOverview() {
+    var stats = await ctx.api("/api/v1/admin/pushes/overview");
+    document.querySelectorAll("[data-stat]").forEach(function (el) { el.textContent = stats[el.getAttribute("data-stat")]; });
+  }
+
+  async function loadDeliveries() {
+    var data = await ctx.api("/api/v1/admin/pushes/deliveries?page=" + deliveryState.page + (deliveryState.status ? "&status=" + deliveryState.status : ""));
+    document.getElementById("delivery-stats").textContent = "共 " + data.total + " 筆";
+    document.getElementById("delivery-empty").classList.toggle("d-none", data.total > 0);
+    document.getElementById("delivery-rows").innerHTML = data.items.map(function (d) {
+      return "<tr><td class='small text-nowrap'>" + Admin.fmtDate(d.scheduled_for) + "</td>" +
+        "<td>" + userCell(d) + "</td>" +
+        "<td>" + Admin.esc(d.drug_name || "—") + "</td>" +
+        "<td><span class='badge " + (DELIVERY_BADGES[d.status] || "text-bg-secondary") + "'>" + Admin.esc(d.status_label) + "</span></td>" +
+        "<td class='small text-secondary text-nowrap'>" + Admin.fmtDate(d.sent_at) + "</td>" +
+        "<td class='small text-secondary text-nowrap'>" + Admin.fmtDate(d.responded_at) + "</td></tr>";
+    }).join("");
+    Admin.pagination(document.getElementById("delivery-pagination"), data, function (page) { deliveryState.page = page; guard(loadDeliveries()); });
+  }
+
+  async function loadSchedules() {
+    var data = await ctx.api("/api/v1/admin/pushes/schedules?page=" + scheduleState.page + (scheduleState.active ? "&active=" + scheduleState.active : ""));
+    var tbody = document.getElementById("schedule-rows");
+    document.getElementById("schedule-stats").textContent = "共 " + data.total + " 筆";
+    document.getElementById("schedule-empty").classList.toggle("d-none", data.total > 0);
+    tbody.innerHTML = data.items.map(function (s) {
+      var period = Admin.esc(s.start_date || "") + " 起" + (s.end_date ? "，到 " + Admin.esc(s.end_date) : "");
+      return "<tr><td>" + userCell(s) + "</td>" +
+        "<td>" + Admin.esc(s.drug_name) + (s.dose_text ? "<span class='small text-secondary ms-2'>" + Admin.esc(s.dose_text) + "</span>" : "") + "</td>" +
+        "<td class='small'>" + Admin.esc(s.frequency_label || "—") + "</td>" +
+        "<td class='small'>" + Admin.esc(s.times.join("、") || "—") + "</td>" +
+        "<td class='small text-secondary'>" + period + "</td>" +
+        "<td><span class='badge " + SCHEDULE_BADGES[s.status] + "'>" + Admin.esc(s.status_label) + "</span>" +
+          (s.status === "paused" ? "<div class='small text-secondary'>到 " + Admin.esc(s.paused_until) + "</div>" : "") + "</td>" +
+        "<td class='text-end'><button class='btn btn-sm btn-outline-secondary' data-id='" + Admin.esc(s.id) + "' data-active='" + (s.active ? "0" : "1") + "' data-drug='" + Admin.esc(s.drug_name) + "'>" + (s.active ? "停用" : "啟用") + "</button></td></tr>";
+    }).join("");
+    tbody.querySelectorAll("button[data-id]").forEach(function (button) {
+      button.addEventListener("click", async function () {
+        var enable = button.getAttribute("data-active") === "1";
+        var question = (enable ? "啟用" : "停用") + "「" + button.getAttribute("data-drug") + "」的提醒？" + (enable ? "" : "這位使用者之後不會再收到這顆藥的提醒。") + "這個操作會留下稽核紀錄。";
+        if (!window.confirm(question)) return;
+        try {
+          await ctx.api("/api/v1/admin/pushes/schedules/" + encodeURIComponent(button.getAttribute("data-id")), { method: "PATCH", body: { active: enable } });
+          Admin.toast(enable ? "已啟用" : "已停用");
+          await Promise.all([loadSchedules(), loadOverview()]);
+        } catch (err) { Admin.toast(err.message, "danger"); }
+      });
+    });
+    Admin.pagination(document.getElementById("schedule-pagination"), data, function (page) { scheduleState.page = page; guard(loadSchedules()); });
+  }
+
+  deliveryFilter.addEventListener("submit", function (e) {
+    e.preventDefault();
+    deliveryState = { status: deliveryFilter.elements.status.value, page: 1 };
+    guard(loadDeliveries());
+  });
+  // reset 事件在欄位清空前觸發，等清空後再重新載入
+  deliveryFilter.addEventListener("reset", function () {
+    setTimeout(function () { deliveryState = { status: "", page: 1 }; guard(loadDeliveries()); }, 0);
+  });
+  scheduleFilter.addEventListener("submit", function (e) {
+    e.preventDefault();
+    scheduleState = { active: scheduleFilter.elements.active.value, page: 1 };
+    guard(loadSchedules());
+  });
+  scheduleFilter.addEventListener("reset", function () {
+    setTimeout(function () { scheduleState = { active: "", page: 1 }; guard(loadSchedules()); }, 0);
+  });
+
+  await Promise.all([loadOverview(), loadDeliveries(), loadSchedules()]);
+});
+</script>
+{% endblock %}

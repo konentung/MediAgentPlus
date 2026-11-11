@@ -1,0 +1,81 @@
+{% extends "admin/base.html" %}
+{% block title %}藥局{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4 mb-0">藥局</h1>
+  <span class="small text-secondary" id="pharmacy-stats">—</span>
+</div>
+<div class="card mb-3">
+  <div class="card-body">
+    <form class="row g-2 mb-3" id="filter-form" role="search">
+      <div class="col-md-4"><input class="form-control" id="filter-q" type="search" placeholder="關鍵字：代碼 / 名稱 / 地址" aria-label="關鍵字"></div>
+      <div class="col-md-3"><select class="form-select" id="filter-city" aria-label="縣市"></select></div>
+      <div class="col-md-3"><select class="form-select" id="filter-district" aria-label="鄉鎮市區"></select></div>
+      <div class="col-md-2 d-flex gap-2">
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="submit">搜尋</button>
+        <button class="btn btn-outline-secondary flex-fill text-nowrap" type="reset">清除</button>
+      </div>
+    </form>
+    <div class="table-responsive">
+      <table class="table table-sm table-hover align-middle mb-0">
+        <thead class="table-light"><tr><th>代碼</th><th>名稱</th><th>縣市</th><th>鄉鎮市區</th><th>地址</th><th>電話</th><th>健保特約</th><th>今日營業</th><th class="d-none" data-edit-col></th></tr></thead>
+        <tbody id="table-body"></tbody>
+      </table>
+    </div>
+    <p class="small text-secondary mt-3 mb-0 d-none" id="table-empty">沒有符合的藥局。</p>
+    <div id="pagination"></div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+Admin.boot(async function (ctx) {
+  var statsEl = document.getElementById("pharmacy-stats"), body = document.getElementById("table-body");
+  var empty = document.getElementById("table-empty"), pager = document.getElementById("pagination");
+  var filterForm = document.getElementById("filter-form");
+  var fields = { city: document.getElementById("filter-city"), district: document.getElementById("filter-district"), q: document.getElementById("filter-q") };
+  var state = { city: "", district: "", q: "", page: 1 };
+  // 系統管理員可以代改任何藥局的資料（藥局人員改自己的走選單「我的藥局」）
+  var canEdit = ctx.can("pharmacy:settings") && !ctx.me.pharmacy_id;
+  if (canEdit) document.querySelector("[data-edit-col]").classList.remove("d-none");
+
+  function openLabel(p) {
+    if (p.open_now === null) return "—";
+    return (p.open_now ? "營業中" : "休息") + (p.today_hours.length ? "（" + p.today_hours.join("、") + "）" : "");
+  }
+
+  async function load() {
+    var qs = "?city=" + encodeURIComponent(state.city) + "&district=" + encodeURIComponent(state.district) +
+      "&q=" + encodeURIComponent(state.q) + "&page=" + state.page;
+    var data = await ctx.api("/api/v1/admin/pharmacies" + qs);
+    statsEl.textContent = "共 " + data.total + " 筆";
+    empty.classList.toggle("d-none", data.total > 0);
+    body.innerHTML = data.items.map(function (p) {
+      return "<tr" + (p.active ? "" : " class='text-secondary'") + "><td><code>" + Admin.esc(p.id) + "</code></td><td>" + Admin.esc(p.name) +
+        "</td><td>" + Admin.esc(p.city || "—") + "</td><td>" + Admin.esc(p.district || "—") +
+        "</td><td class='small'>" + Admin.esc(p.address || "—") + "</td><td>" + Admin.esc(p.phone || "—") +
+        "</td><td>" + (p.nhi_contracted ? "是" : "否") + "</td><td class='small'>" + Admin.esc(openLabel(p)) + "</td>" +
+        (canEdit ? '<td class="text-end"><a class="btn btn-sm btn-outline-secondary" href="{{ url_for('admin_pages.my_pharmacy') }}?pharmacy_id=' + encodeURIComponent(p.id) + '">編輯</a></td>' : "") + "</tr>";
+    }).join("");
+    Admin.pagination(pager, data, function (page) { state.page = page; load().catch(function (err) { Admin.toast(err.message, "danger"); }); });
+  }
+
+  filterForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    Object.keys(fields).forEach(function (k) { state[k] = fields[k].value.trim(); });
+    state.page = 1;
+    load().catch(function (err) { Admin.toast(err.message, "danger"); });
+  });
+  filterForm.addEventListener("reset", function () {
+    state = { city: "", district: "", q: "", page: 1 };
+    load().catch(function (err) { Admin.toast(err.message, "danger"); });
+  });
+
+  await Admin.districtSelects(fields.city, fields.district);
+  await load();
+});
+</script>
+{% endblock %}

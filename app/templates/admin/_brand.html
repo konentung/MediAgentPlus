@@ -1,0 +1,26 @@
+{# MediAgent+ logo 元件：內嵌 SVG（座標取自 svg/ 的 logo 原檔），顏色由 admin/_theme.html 的類別決定。 #}
+
+{# 心電圖折線，顏色跟著 currentColor #}
+{% macro ecg(class="") -%}
+<svg class="ma-ecg {{ class }}" viewBox="-1 15 118 76" aria-hidden="true" focusable="false"><polyline class="ma-ecg-line" points="4,54 34,54 50,20 70,86 88,36 98,54 112,54" stroke-width="9"/></svg>
+{%- endmacro %}
+
+{# Loading 用：淡色底線 + 描線動畫（pathLength=100 讓 dasharray 不必知道實際長度） #}
+{% macro ecg_loader() -%}
+<svg class="ma-ecg-loader" viewBox="-1 15 118 76" aria-hidden="true" focusable="false"><polyline class="ma-ecg-line ma-ecg-track" points="4,54 34,54 50,20 70,86 88,36 98,54 112,54" stroke-width="9"/><polyline class="ma-ecg-line ma-ecg-draw" pathLength="100" points="4,54 34,54 50,20 70,86 88,36 98,54 112,54" stroke-width="9"/></svg>
+{%- endmacro %}
+
+{# 紅色十字「+」：兩個圓角矩形交叉 #}
+{% macro plus() -%}
+<svg class="ma-plus" viewBox="0 0 30 30" aria-hidden="true" focusable="false"><rect x="0" y="9" width="30" height="12" rx="3.5"/><rect x="9" y="0" width="12" height="30" rx="3.5"/></svg>
+{%- endmacro %}
+
+{# 橫式 logo：心電圖線 + 字標 + 紅十字（放在深色底上） #}
+{% macro logo_horizontal() -%}
+{{ ecg("ma-logo-ecg") }}<span class="ma-wordmark">mediagent{{ plus() }}</span>
+{%- endmacro %}
+
+{# 圓形 logo（white 變體） #}
+{% macro logo_circle(class="") -%}
+<svg class="ma-logo-circle {{ class }}" viewBox="0 0 200 200" role="img" aria-label="MediAgent+"><circle class="ma-logo-bg" cx="100" cy="100" r="99" stroke-width="2"/><polyline class="ma-ecg-line" points="30,104 62,104 78,72 98,138 116,88 126,104 138,104" stroke-width="10"/><rect class="ma-cross" x="146" y="97" width="30" height="14" rx="4"/><rect class="ma-cross" x="154" y="89" width="14" height="30" rx="4"/></svg>
+{%- endmacro %}

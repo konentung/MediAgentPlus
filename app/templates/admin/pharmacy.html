@@ -1,0 +1,133 @@
+{% extends "admin/base.html" %}
+{% block title %}我的藥局{% endblock %}
+
+{% block content %}
+<h1 class="h4 mb-3" id="page-title">我的藥局</h1>
+<div class="card mb-3 d-none" id="pick-first">
+  <div class="card-body">
+    <form class="row g-2" id="pick-form">
+      <div class="col-md-8"><input class="form-control" id="pick-pharmacy" placeholder="要修改的藥局：名稱或代碼" aria-label="藥局"><input type="hidden" id="pick-pharmacy-id"></div>
+      <div class="col-md-4 col-lg-3 d-flex"><button class="btn btn-brand flex-fill text-nowrap" type="submit">編輯這家藥局</button></div>
+    </form>
+    <p class="small text-secondary mt-3 mb-0">也可以到<a href="{{ url_for('admin_pages.pharmacies') }}">藥局清單</a>用縣市篩選，按該列的「編輯」。</p>
+  </div>
+</div>
+<div class="card mb-3 d-none" id="pharmacy-card">
+  <div class="card-body">
+    <p class="small text-secondary">
+      這裡的電話、地址與營業時段就是病人在 LINE「去哪拿藥」看到的內容。儲存後，之後系統重新匯入開放資料也不會蓋掉你改的資料。
+    </p>
+    <form class="row g-3" id="pharmacy-form" novalidate>
+      <div class="col-md-3"><label class="form-label" for="ph-id">藥局代碼</label><input class="form-control" id="ph-id" disabled></div>
+      <div class="col-md-6"><label class="form-label" for="ph-name">名稱</label><input class="form-control" id="ph-name" maxlength="100" disabled></div>
+      <div class="col-md-3"><label class="form-label" for="ph-nhi">健保特約</label><input class="form-control" id="ph-nhi" disabled></div>
+      <div class="col-md-8">
+        <label class="form-label" for="ph-address">地址</label>
+        <input class="form-control" id="ph-address" name="address" maxlength="200" required aria-describedby="ph-address-help">
+        <div class="form-text" id="ph-address-help">需包含縣市與鄉鎮市區，病人是依所在的鄉鎮市區找藥局。</div>
+      </div>
+      <div class="col-md-4"><label class="form-label" for="ph-phone">電話</label><input class="form-control" id="ph-phone" name="phone" maxlength="30"></div>
+      <div class="col-12">
+        <span class="form-label d-block">營業時段</span>
+        <div class="table-responsive">
+          <table class="table table-sm table-bordered align-middle text-center mb-0">
+            <thead class="table-light" id="hours-head"></thead>
+            <tbody id="hours-body"></tbody>
+          </table>
+        </div>
+        <div class="form-text">勾選有營業的時段（上午 12 點前、下午 12 到 18 點、晚上 18 點後）；全部不勾 = 病人端顯示「營業時間請電洽」。</div>
+      </div>
+      <div class="col-12 d-none" id="ph-active-row">
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="ph-active">
+          <label class="form-check-label" for="ph-active">啟用中（關閉後病人找不到這家藥局）</label>
+        </div>
+      </div>
+      <div class="col-12 d-flex justify-content-between align-items-center">
+        <span class="small text-secondary" id="ph-updated"></span>
+        <button class="btn btn-brand" type="submit">儲存</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+Admin.boot(async function (ctx) {
+  var form = document.getElementById("pharmacy-form");
+  var WEEKDAYS = Admin.choices.weekdays, SLOTS = Admin.choices.pharmacy_slots;
+  var pharmacyId = null;
+  // 藥局帳號看自己的藥局；系統管理員從藥局清單的「編輯」帶 ?pharmacy_id= 進來，另可改名稱與啟用狀態
+  var requested = new URLSearchParams(window.location.search).get("pharmacy_id");
+  var isSuper = ctx.me.role === "super_admin";
+  var nameInput = document.getElementById("ph-name"), activeInput = document.getElementById("ph-active");
+  if (!ctx.me.pharmacy_id && !requested) {
+    // 沒有所屬藥局、也沒指定要改哪一家：輸入名稱或代碼從清單點選
+    var pickHidden = document.getElementById("pick-pharmacy-id");
+    var pickPicker = Admin.pharmacyPicker(document.getElementById("pick-pharmacy"), pickHidden);
+    document.getElementById("pick-form").addEventListener("submit", function (e) {
+      e.preventDefault();
+      if (!pickPicker.validate() || !pickHidden.value) { Admin.toast("請從清單挑選藥局或輸入藥局代碼", "warning"); return; }
+      window.location.search = "?pharmacy_id=" + encodeURIComponent(pickHidden.value);
+    });
+    document.getElementById("pick-first").classList.remove("d-none");
+    return;
+  }
+  document.getElementById("pharmacy-card").classList.remove("d-none");
+  if (isSuper) {
+    document.getElementById("page-title").textContent = "藥局資料";
+    nameInput.disabled = false;
+    document.getElementById("ph-active-row").classList.remove("d-none");
+  }
+
+  // 營業時段表：一列一個時段、一欄一天，每格一個 checkbox（data-day / data-slot）
+  document.getElementById("hours-head").innerHTML = "<tr><th scope='col'>時段</th>" +
+    Object.keys(WEEKDAYS).map(function (day) { return "<th scope='col'>" + Admin.esc(WEEKDAYS[day]) + "</th>"; }).join("") + "</tr>";
+  document.getElementById("hours-body").innerHTML = Object.keys(SLOTS).map(function (slot) {
+    return "<tr><th scope='row' class='table-light'>" + Admin.esc(SLOTS[slot]) + "</th>" + Object.keys(WEEKDAYS).map(function (day) {
+      return '<td><input class="form-check-input" type="checkbox" data-day="' + day + '" data-slot="' + slot + '" aria-label="' + Admin.esc(WEEKDAYS[day] + SLOTS[slot]) + '"></td>';
+    }).join("") + "</tr>";
+  }).join("");
+
+  function fill(p) {
+    pharmacyId = p.id;
+    document.getElementById("ph-id").value = p.id;
+    nameInput.value = p.name;
+    activeInput.checked = p.active;
+    document.getElementById("ph-nhi").value = p.nhi_contracted ? "是" : "否";
+    form.elements.address.value = p.address || "";
+    form.elements.phone.value = p.phone || "";
+    form.querySelectorAll("[data-day]").forEach(function (box) {
+      box.checked = (p.opening_hours[box.getAttribute("data-day")] || []).indexOf(box.getAttribute("data-slot")) >= 0;
+    });
+    document.getElementById("ph-updated").textContent = p.self_managed_at ? "上次修改：" + Admin.fmtDate(p.self_managed_at) : "";
+  }
+  function collectHours() {
+    var hours = {};
+    form.querySelectorAll("[data-day]:checked").forEach(function (box) {
+      var day = box.getAttribute("data-day");
+      (hours[day] = hours[day] || []).push(box.getAttribute("data-slot"));
+    });
+    return hours;
+  }
+
+  form.addEventListener("submit", async function (e) {
+    e.preventDefault();
+    if (!form.elements.address.value.trim()) { Admin.toast("請填寫地址", "warning"); return; }
+    var body = { address: form.elements.address.value.trim(), phone: form.elements.phone.value.trim(), opening_hours: collectHours() };
+    if (isSuper) {
+      if (!nameInput.value.trim()) { Admin.toast("請填寫名稱", "warning"); return; }
+      body.name = nameInput.value.trim();
+      body.active = activeInput.checked;
+    }
+    try {
+      fill(await ctx.api("/api/v1/admin/pharmacies/" + encodeURIComponent(pharmacyId), { method: "PATCH", body: body }));
+      Admin.toast("已儲存藥局資料");
+    } catch (err) { Admin.toast(err.message, "danger"); }
+  });
+
+  fill(await ctx.api("/api/v1/admin/pharmacy" + (requested ? "?pharmacy_id=" + encodeURIComponent(requested) : "")));
+});
+</script>
+{% endblock %}

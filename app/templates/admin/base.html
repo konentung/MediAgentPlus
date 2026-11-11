@@ -1,0 +1,458 @@
+{% import "admin/_brand.html" as brand -%}
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}後台{% endblock %} - MediAgent+</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  {% include "admin/_theme.html" %}
+  <style>
+    /* 頁首：整頁寬、固定在最上方；左邊 logo、右邊登入者資訊 + 登出 */
+    :root { --ma-header-h: 3.75rem; }
+    .ma-header { min-height: var(--ma-header-h); background: var(--ma-ink); border-bottom: 1px solid rgba(var(--ma-gray-rgb), .35); }
+    .ma-header .ma-logo { color: var(--ma-platinum); font-size: 1.15rem; }
+    .ma-header .ma-logo-ecg { height: 1.5rem; color: var(--ma-gray); }
+    .ma-header .ma-logo-caption { color: var(--ma-gray); letter-spacing: .08em; }
+    .ma-header-user { color: var(--ma-gray); line-height: 1.3; }
+    .ma-header-user #me-name { color: var(--ma-platinum); }
+    /* 提示訊息顯示在頁首下方，不蓋住登出按鈕 */
+    .ma-toast-area { top: var(--ma-header-h); }
+    /* 側邊欄：深靛藍底，hover / active 用淡色底 + 左側紅色指示條 */
+    .sidebar { background: var(--ma-ink); }
+    /* 桌機：側邊欄固定在頁首下方、不跟著內容捲動；選單比視窗高時在側邊欄內自己捲 */
+    @media (min-width: 768px) {
+      .sidebar { position: sticky; top: var(--ma-header-h); height: calc(100vh - var(--ma-header-h)); align-self: flex-start; overflow-y: auto; }
+    }
+    .sidebar .nav-link { color: rgba(var(--ma-platinum-rgb), .75); border-left: 3px solid transparent; border-radius: 0 .5rem .5rem 0; }
+    .sidebar .nav-link:hover, .sidebar .nav-link.active { color: var(--ma-platinum); background: rgba(var(--ma-platinum-rgb), .10); border-left-color: var(--ma-red); }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body>
+<div id="gate" class="d-flex align-items-center justify-content-center min-vh-100">
+  <div class="text-center" role="status">
+    {{ brand.ecg_loader() }}
+    <p class="mt-3 text-secondary">正在確認登入狀態…</p>
+  </div>
+</div>
+
+<div id="shell" class="d-none">
+ {# 頁首 + 內容直向排列並撐滿視窗高度，側邊欄才會延伸到底 #}
+ <div class="d-flex flex-column min-vh-100">
+  <header class="ma-header sticky-top d-flex align-items-center justify-content-between gap-3 px-3 py-2">
+    <a class="ma-logo text-decoration-none d-flex align-items-center gap-2 flex-shrink-0" href="{{ url_for('admin_pages.dashboard') }}" aria-label="MediAgent+ 後台">
+      {{ brand.logo_horizontal() }}<span class="ma-logo-caption small ms-2 d-none d-sm-inline">院方後台</span>
+    </a>
+    <div class="d-flex align-items-center gap-3 overflow-hidden">
+      <div class="ma-header-user small text-end overflow-hidden d-none d-sm-block">
+        <div id="me-name" class="fw-semibold text-truncate"></div>
+        <div id="me-meta" class="text-truncate"></div>
+      </div>
+      <button type="button" id="logout" class="btn btn-sm btn-outline-secondary flex-shrink-0">登出</button>
+    </div>
+  </header>
+  <div class="container-fluid flex-grow-1 d-flex flex-column">
+  <div class="row flex-grow-1">
+    <nav class="col-md-3 col-lg-2 sidebar p-3" aria-label="後台選單">
+      <ul class="nav nav-pills flex-column gap-1">
+        <li class="nav-item"><a class="nav-link {{ 'active' if active == 'dashboard' }}" href="{{ url_for('admin_pages.dashboard') }}">儀表板</a></li>
+        <li class="nav-item" data-perm="patient:read"><a class="nav-link {{ 'active' if active == 'patients' }}" href="{{ url_for('admin_pages.patients') }}">病人資料</a></li>
+        <li class="nav-item" data-perm="feedback:manage"><a class="nav-link {{ 'active' if active == 'feedback' }}" href="{{ url_for('admin_pages.feedback') }}">問題回報</a></li>
+        {# 領藥需求：藥局帳號看自己藥局的，系統管理員看全部。data-org="pharmacy"：只給有所屬藥局的帳號看
+           （系統管理員沒有「我的藥局」，改從「藥局」清單的「編輯」進同一頁） #}
+        <li class="nav-item" data-perm="pickup:manage"><a class="nav-link {{ 'active' if active == 'pickups' }}" href="{{ url_for('admin_pages.pickups') }}">領藥需求</a></li>
+        <li class="nav-item" data-perm="pharmacy:settings" data-org="pharmacy"><a class="nav-link {{ 'active' if active == 'pharmacy' }}" href="{{ url_for('admin_pages.my_pharmacy') }}">我的藥局</a></li>
+        <li class="nav-item" data-perm="staff:manage"><a class="nav-link {{ 'active' if active == 'staff' }}" href="{{ url_for('admin_pages.staff') }}">人員與角色</a></li>
+        <li class="nav-item" data-perm="education:content_manage"><a class="nav-link {{ 'active' if active == 'knowledge' }}" href="{{ url_for('admin_pages.knowledge') }}">衛教資訊</a></li>
+        <li class="nav-item" data-perm="medication:manage"><a class="nav-link {{ 'active' if active == 'pharmacies' }}" href="{{ url_for('admin_pages.pharmacies') }}">藥局</a></li>
+        <li class="nav-item"><a class="nav-link {{ 'active' if active == 'drugs' }}" href="{{ url_for('admin_pages.drugs') }}">藥品</a></li>
+        <li class="nav-item" data-perm="education:content_manage"><a class="nav-link {{ 'active' if active == 'imports' }}" href="{{ url_for('admin_pages.imports') }}">資料匯入</a></li>
+        <li class="nav-item" data-perm="push:manage"><a class="nav-link {{ 'active' if active == 'pushes' }}" href="{{ url_for('admin_pages.pushes') }}">推播管理</a></li>
+        <li class="nav-item" data-perm="hospital:settings"><a class="nav-link {{ 'active' if active == 'settings' }}" href="{{ url_for('admin_pages.settings') }}">院所設定</a></li>
+        <li class="nav-item" data-perm="audit:read"><a class="nav-link {{ 'active' if active == 'audit' }}" href="{{ url_for('admin_pages.audit') }}">稽核紀錄</a></li>
+        <li class="nav-item" data-perm="permission:read"><a class="nav-link {{ 'active' if active == 'permissions' }}" href="{{ url_for('admin_pages.permissions') }}">權限表</a></li>
+      </ul>
+    </nav>
+    <main class="col-md-9 col-lg-10 p-4">
+      <div id="toast-area" class="toast-container ma-toast-area position-fixed end-0 p-3"></div>
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+  </div>
+ </div>
+</div>
+
+<script id="admin-choices" type="application/json">{{ admin_choices_json | safe }}</script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+  // 後台共用：sessionStorage 內的 JWT → /api/v1/auth/me → 依權限顯示選單；資料請求都帶 Bearer。
+  // 沒有 refresh token：access token 到期（院方預設 8 小時）就導回登入頁重新登入。
+  window.Admin = (function () {
+    var CHOICES = JSON.parse(document.getElementById("admin-choices").textContent);
+    var tokens = { access: null };
+    var me = null;
+    var hospitals = {};  // id → 院所物件，boot 時載入
+
+    function readTokens() {
+      try { tokens.access = sessionStorage.getItem("access_token"); } catch (err) { /* ignore */ }
+    }
+
+    // 導到後台登入頁：帶上目前頁面（登入後回來）。登出 = 清掉本機 token
+    function toLogin() {
+      try { sessionStorage.clear(); } catch (err) { /* ignore */ }
+      var next = window.location.pathname + window.location.search;
+      var url = "{{ url_for('admin_pages.login') }}?next=" + encodeURIComponent(next);
+      window.location.replace(url);
+    }
+
+    async function api(path, options) {
+      options = options || {};
+      var headers = Object.assign({ "Content-Type": "application/json", Accept: "application/json", "ngrok-skip-browser-warning": "1" }, options.headers || {});
+      if (tokens.access) headers.Authorization = "Bearer " + tokens.access;
+      var resp = await fetch(path, Object.assign({}, options, {
+        headers: headers,
+        body: options.body && typeof options.body !== "string" ? JSON.stringify(options.body) : options.body
+      }));
+      if (resp.status === 401) {
+        toLogin();
+        return new Promise(function () {});
+      }
+      var body = await resp.json();
+      if (!resp.ok) {
+        var error = new Error(body.error ? body.error.message : "請求失敗");
+        error.details = body.error ? body.error.details : null;
+        error.status = resp.status;
+        throw error;
+      }
+      return body.data;
+    }
+
+    // multipart 上傳（CSV / 衛教 txt）：用 XHR 才拿得到上傳進度；onProgress(percent) 可省略。
+    // 大檔（例如 96MB 的健保用藥）經 ngrok 上傳會很慢，沒有進度使用者會以為當掉。
+    function upload(path, file, onProgress, fields) {
+      // file 可以是單一 File（欄位 file）或 File 陣列（欄位 files，多檔一次上傳）
+      return new Promise(function (resolve, reject) {
+        var data = new FormData();
+        if (Array.isArray(file)) file.forEach(function (f) { data.append("files", f); });
+        else data.append("file", file);
+        Object.keys(fields || {}).forEach(function (key) { data.append(key, fields[key]); });
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", path);
+        xhr.setRequestHeader("Authorization", "Bearer " + tokens.access);
+        xhr.setRequestHeader("Accept", "application/json");
+        xhr.setRequestHeader("ngrok-skip-browser-warning", "1");
+        xhr.upload.onprogress = function (e) {
+          if (onProgress && e.lengthComputable) onProgress(Math.round(e.loaded * 100 / e.total));
+        };
+        xhr.onerror = function () { reject(new Error("連線中斷，檔案沒有送達伺服器")); };
+        xhr.onload = function () {
+          if (xhr.status === 401) { toLogin(); return; }
+          var body = null;
+          try { body = JSON.parse(xhr.responseText); } catch (err) { /* 不是 JSON（例如 proxy 的錯誤頁） */ }
+          if (xhr.status >= 200 && xhr.status < 300 && body) { resolve(body.data); return; }
+          reject(new Error(body && body.error ? body.error.message : "上傳失敗（HTTP " + xhr.status + "）"));
+        };
+        xhr.send(data);
+      });
+    }
+
+    // 表格分頁：把 API 回的 {page, pages, total, per_page} 畫成 Bootstrap pagination，點頁碼呼叫 onPage(page)
+    function pagination(container, data, onPage) {
+      container.innerHTML = "";
+      if (!data.total) return;
+      var first = (data.page - 1) * data.per_page + 1, last = Math.min(data.page * data.per_page, data.total);
+      var info = document.createElement("div");
+      info.className = "small text-secondary";
+      info.textContent = "第 " + first + "–" + last + " 筆，共 " + data.total + " 筆（" + data.page + " / " + data.pages + " 頁）";
+      var ul = document.createElement("ul");
+      ul.className = "pagination pagination-sm mb-0";
+      function item(label, page, disabled, active) {
+        var li = document.createElement("li");
+        li.className = "page-item" + (disabled ? " disabled" : "") + (active ? " active" : "");
+        var a = document.createElement("a");
+        a.className = "page-link"; a.href = "#"; a.textContent = label;
+        a.addEventListener("click", function (e) { e.preventDefault(); if (!disabled && !active) onPage(page); });
+        li.appendChild(a); ul.appendChild(li);
+      }
+      item("上一頁", data.page - 1, data.page <= 1, false);
+      // 目前頁前後各 2 頁，加頭尾
+      var start = Math.max(1, data.page - 2), end = Math.min(data.pages, data.page + 2);
+      if (start > 1) { item("1", 1, false, false); if (start > 2) item("…", 0, true, false); }
+      for (var p = start; p <= end; p++) item(String(p), p, false, p === data.page);
+      if (end < data.pages) { if (end < data.pages - 1) item("…", 0, true, false); item(String(data.pages), data.pages, false, false); }
+      item("下一頁", data.page + 1, data.page >= data.pages, false);
+      // 頁數多時提供「跳到第 N 頁」輸入框（Enter 或按「前往」）
+      var nav = document.createElement("div");
+      nav.className = "d-flex align-items-center gap-2";
+      nav.appendChild(ul);
+      if (data.pages > 5) {
+        var jump = document.createElement("form");
+        jump.className = "input-group input-group-sm";
+        jump.style.width = "9rem";
+        jump.innerHTML = '<input type="number" class="form-control" min="1" max="' + data.pages + '" placeholder="頁數" aria-label="跳到第幾頁">' +
+          '<button class="btn btn-outline-secondary" type="submit">前往</button>';
+        jump.addEventListener("submit", function (e) {
+          e.preventDefault();
+          var p = parseInt(jump.querySelector("input").value, 10);
+          if (!p || p < 1 || p > data.pages) { toast("請輸入 1–" + data.pages + " 之間的頁數", "warning"); return; }
+          if (p !== data.page) onPage(p);
+        });
+        nav.appendChild(jump);
+      }
+      container.className = "d-flex flex-wrap justify-content-between align-items-center gap-2 mt-3";
+      container.appendChild(info); container.appendChild(nav);
+    }
+
+    function can(permission) { return me && me.permissions.indexOf(permission) >= 0; }
+
+    function label(group, value) {
+      return (CHOICES[group] && CHOICES[group][value]) || value || "—";
+    }
+
+    function hospitalName(id) {
+      return id ? (hospitals[id] ? hospitals[id].name : id) : "—";
+    }
+
+    // 單位選取器（院所 / 藥局共用）：輸入名稱關鍵字或代碼 → 向後端搜尋 → 跳出清單點選；
+    // 選到的代碼寫進 hidden（表單送出用），文字框顯示「名稱（代碼）」。
+    // 院所含診所有上萬家、藥局也是，所以不預載清單，每次輸入才查（一次最多 15 筆）。
+    // 清單用 Bootstrap Dropdown（Popper 定位），放在表格或 modal 裡不會被裁掉。
+    var ORG_CODE = /^[A-Za-z0-9][A-Za-z0-9_-]{1,31}$/;
+    var ORG_SEARCH_DELAY_MS = 250;
+    var ORG_KINDS = {
+      hospital: { url: "/api/v1/admin/hospitals", noun: "院所", names: {} },
+      pharmacy: { url: "/api/v1/admin/pharmacies", noun: "藥局", names: {} }
+    };
+    function orgPicker(input, hidden, kindKey) {
+      var kind = ORG_KINDS[kindKey], names = kind.names;
+      var results = [], activeIndex = -1, timer = null, requestSeq = 0;
+      var menu = document.createElement("div");
+      menu.className = "dropdown-menu shadow-sm ma-picker-menu";
+      menu.setAttribute("role", "listbox");
+      input.insertAdjacentElement("afterend", menu);
+      input.setAttribute("autocomplete", "off");
+      input.setAttribute("role", "combobox");
+      var dropdown = new bootstrap.Dropdown(input, { autoClose: false, popperConfig: { strategy: "fixed" } });
+
+      function nameOf(id) {
+        if (names[id]) return names[id];
+        return kindKey === "hospital" && hospitals[id] ? hospitals[id].name : null;
+      }
+      function labelOf(id) { var name = nameOf(id); return name ? name + "（" + id + "）" : id; }
+      function choose(id, name) {
+        if (id && name) names[id] = name;
+        hidden.value = id || "";
+        input.value = id ? labelOf(id) : "";
+        input.classList.remove("is-invalid");
+      }
+      function close() { clearTimeout(timer); requestSeq++; dropdown.hide(); }
+      function open() { dropdown.show(); dropdown.update(); }
+      function hint(text) {
+        results = []; activeIndex = -1;
+        menu.innerHTML = '<span class="dropdown-item-text small text-secondary">' + esc(text) + "</span>";
+        open();
+      }
+      function highlight(index) {
+        activeIndex = index;
+        Array.prototype.forEach.call(menu.querySelectorAll("[data-index]"), function (item, i) {
+          item.classList.toggle("active", i === index);
+          if (i === index) item.scrollIntoView({ block: "nearest" });
+        });
+      }
+      function render(data) {
+        results = data.items; activeIndex = -1;
+        if (!results.length) { hint("找不到符合的" + kind.noun + "，請換個關鍵字或直接輸入代碼"); return; }
+        menu.innerHTML = results.map(function (row, i) {
+          var place = [row.city, row.district].filter(Boolean).join("") || row.address || "";
+          return '<button type="button" class="dropdown-item" role="option" data-index="' + i + '">' +
+            '<div class="text-truncate">' + esc(row.name) + "</div>" +
+            '<div class="small text-secondary text-truncate">' + esc([row.id, place].filter(Boolean).join("・")) + "</div></button>";
+        }).join("") + (data.total > results.length ?
+          '<span class="dropdown-item-text small text-secondary">還有 ' + (data.total - results.length) + " 筆，請多打幾個字縮小範圍</span>" : "");
+        open();
+      }
+      async function search(text) {
+        var seq = ++requestSeq;
+        try {
+          var data = await api(kind.url + "?q=" + encodeURIComponent(text));
+          // 只採用最後一次輸入的結果；使用者已經離開欄位就不再跳出清單
+          if (seq === requestSeq && document.activeElement === input) render(data);
+        } catch (err) {
+          if (seq === requestSeq && document.activeElement === input) hint("搜尋失敗：" + err.message);
+        }
+      }
+      // 文字 → 代碼。回傳 false = 認不得（標成錯誤）；空白 = 不指定
+      function sync() {
+        var text = input.value.trim();
+        if (!text) { choose(""); return true; }
+        if (hidden.value && text === labelOf(hidden.value)) return true;
+        var lower = text.toLowerCase();
+        var hits = results.filter(function (row) { return row.id.toLowerCase() === lower || row.name === text; });
+        if (hits.length === 1) { choose(hits[0].id, hits[0].name); return true; }
+        var tail = text.match(/（([^（）]+)）$/);
+        var code = tail ? tail[1] : text;
+        // 沒從清單點選、直接打代碼也接受，存檔時由後端檢查這個代碼存不存在
+        if (ORG_CODE.test(code)) { choose(code); return true; }
+        hidden.value = "";
+        input.classList.add("is-invalid");
+        return false;
+      }
+
+      input.addEventListener("input", function () {
+        hidden.value = "";  // 文字改了，原本選的就不算數，等重新點選或離開欄位時再對一次
+        input.classList.remove("is-invalid");
+        clearTimeout(timer);
+        var text = input.value.trim();
+        if (!text) { close(); return; }
+        timer = setTimeout(function () { search(text); }, ORG_SEARCH_DELAY_MS);
+      });
+      input.addEventListener("focus", function () {
+        if (!input.value.trim()) hint("輸入" + kind.noun + "名稱或代碼搜尋");
+      });
+      input.addEventListener("keydown", function (e) {
+        var shown = menu.classList.contains("show");
+        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+          if (!shown || !results.length) return;
+          e.preventDefault();
+          var step = e.key === "ArrowDown" ? 1 : -1;
+          highlight((activeIndex + step + results.length) % results.length);
+        } else if (e.key === "Enter" && shown && activeIndex >= 0) {
+          e.preventDefault();  // 選清單裡的項目，不要順便把表單送出去
+          choose(results[activeIndex].id, results[activeIndex].name);
+          close();
+        } else if (e.key === "Escape" && shown) {
+          e.stopPropagation();  // 只關清單，不要連外層的 modal 一起關掉
+          close();
+        }
+      });
+      input.addEventListener("blur", function () { close(); sync(); });
+      // 點清單時不要讓文字框失焦（失焦會先把清單關掉，點不到）
+      menu.addEventListener("mousedown", function (e) { e.preventDefault(); });
+      menu.addEventListener("click", function (e) {
+        var item = e.target.closest("[data-index]");
+        if (!item) return;
+        var row = results[Number(item.getAttribute("data-index"))];
+        choose(row.id, row.name);
+        close();
+      });
+
+      return {
+        // 程式設定目前的值；知道名稱時一併給（診所 / 藥局不在預載的清單裡，沒給只會顯示代碼）
+        set: function (id, name) { close(); choose(id || "", name); },
+        validate: sync
+      };
+    }
+    function hospitalPicker(input, hidden) { return orgPicker(input, hidden, "hospital"); }
+    function pharmacyPicker(input, hidden) { return orgPicker(input, hidden, "pharmacy"); }
+
+    // 篩選用的縣市 / 鄉鎮市區連動下拉：選了縣市才列出該縣市的鄉鎮市區；表單 reset 時一併還原
+    var districtData = null;
+    async function districtSelects(citySelect, districtSelect) {
+      if (!districtData) districtData = await api("/api/v1/admin/districts");
+      function fill(select, emptyLabel, values) {
+        select.innerHTML = '<option value="">' + esc(emptyLabel) + "</option>";
+        values.forEach(function (value) {
+          var opt = document.createElement("option");
+          opt.value = value; opt.textContent = value;
+          select.appendChild(opt);
+        });
+      }
+      function fillDistricts() {
+        var picked = districtData.filter(function (c) { return c.city === citySelect.value; })[0];
+        fill(districtSelect, picked ? "全部鄉鎮市區" : "鄉鎮市區（先選縣市）", picked ? picked.districts : []);
+        districtSelect.disabled = !picked;
+      }
+      fill(citySelect, "全部縣市", districtData.map(function (c) { return c.city; }));
+      fillDistricts();
+      citySelect.addEventListener("change", fillDistricts);
+      // reset 事件在欄位清空前觸發，等清空後再重畫鄉鎮市區
+      if (citySelect.form) citySelect.form.addEventListener("reset", function () { setTimeout(fillDistricts, 0); });
+    }
+
+    function esc(text) {
+      return String(text == null ? "" : text).replace(/[&<>"']/g, function (c) {
+        return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+      });
+    }
+
+    function fmtDate(value) {
+      if (!value) return "—";
+      var d = new Date(value);
+      return isNaN(d) ? value : d.toLocaleString("zh-TW", { hour12: false });
+    }
+
+    function toast(message, kind) {
+      var area = document.getElementById("toast-area");
+      var node = document.createElement("div");
+      node.className = "toast align-items-center text-bg-" + (kind || "success") + " border-0";
+      node.setAttribute("role", "status");
+      node.innerHTML = '<div class="d-flex"><div class="toast-body">' + esc(message) + '</div>' +
+        '<button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="關閉"></button></div>';
+      area.appendChild(node);
+      var t = new bootstrap.Toast(node, { delay: 3500 });
+      node.addEventListener("hidden.bs.toast", function () { node.remove(); });
+      t.show();
+    }
+
+    // 從 form 收集成物件：空字串 → null，checkbox → boolean
+    function formData(form) {
+      var out = {};
+      Array.prototype.forEach.call(form.elements, function (input) {
+        if (!input.name) return;
+        if (input.type === "checkbox") out[input.name] = input.checked;
+        else out[input.name] = input.value.trim() === "" ? null : input.value.trim();
+      });
+      return out;
+    }
+
+    function options(select, group, includeEmpty) {
+      select.innerHTML = includeEmpty ? '<option value="">請選擇</option>' : "";
+      Object.keys(CHOICES[group]).forEach(function (value) {
+        var opt = document.createElement("option");
+        opt.value = value; opt.textContent = CHOICES[group][value];
+        select.appendChild(opt);
+      });
+    }
+
+    async function boot(pageInit) {
+      readTokens();
+      if (!tokens.access) { toLogin(); return; }
+      try {
+        me = await api("/api/v1/auth/me");
+      } catch (err) { toLogin(); return; }
+      // 不是院方人員就不進後台，也不顯示登入頁，直接回首頁
+      if (!me.is_staff) { window.location.replace({{ url_for("pages.home") | tojson }}); return; }
+      document.getElementById("gate").classList.add("d-none");
+      document.querySelectorAll("[data-perm]").forEach(function (item) {
+        if (!can(item.getAttribute("data-perm"))) item.classList.add("d-none");
+      });
+      // 「我的藥局」這類需要所屬藥局的選單：系統管理員沒有所屬藥局，不顯示
+      document.querySelectorAll('[data-org="pharmacy"]').forEach(function (item) {
+        if (!me.pharmacy_id) item.classList.add("d-none");
+      });
+      try {
+        // 只載入醫院層級（約幾百家）供下拉選單與名稱顯示；診所有上萬家，不在這裡載
+        (await api("/api/v1/admin/hospitals/options")).forEach(function (h) { hospitals[h.id] = h; });
+      } catch (err) { /* 院所清單載不到不影響其他頁面 */ }
+      document.getElementById("me-name").textContent = me.display_name || me.user_id;
+      // 頁首右上角：顯示名稱 + 「角色・所屬單位（院所或藥局）」
+      var scope = me.hospital_id ? hospitalName(me.hospital_id)
+        : me.pharmacy_id ? (me.pharmacy_name || me.pharmacy_id)
+        : (me.role === "super_admin" ? "全部院所" : "尚未指派院所");
+      document.getElementById("me-meta").textContent = label("roles", me.role) + "・" + scope;
+      document.getElementById("logout").addEventListener("click", function () { toLogin(); });
+      document.getElementById("shell").classList.remove("d-none");
+      try {
+        await pageInit({ me: me, api: api, can: can, hospitals: hospitals });
+      } catch (err) {
+        toast(err.message || "載入失敗", "danger");
+      }
+    }
+
+    return { boot: boot, api: api, upload: upload, pagination: pagination, can: can, label: label, esc: esc, fmtDate: fmtDate, toast: toast, formData: formData, options: options, choices: CHOICES, hospitalName: hospitalName, hospitalPicker: hospitalPicker, pharmacyPicker: pharmacyPicker, districtSelects: districtSelects };
+  })();
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

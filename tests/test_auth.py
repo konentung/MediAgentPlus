@@ -1,0 +1,147 @@
+import json
+import re
+from datetime import timedelta
+
+import pytest
+
+from app.auth.jwt_service import JwtService
+from app.auth.line_identity import LineIdentity
+from app.core.exceptions import AuthenticationError
+from app.domain.enums import Role
+from app.domain.principal import Principal
+
+
+def test_jwt_roundtrip():
+    svc = JwtService("s", "HS256", timedelta(minutes=5))
+    issued = svc.issue(Principal(user_id="u1", role=Role.PATIENT, line_user_id="L1"))
+    claims = svc.decode(issued.access_token)
+    assert claims["sub"] == "u1" and claims["role"] == "patient"
+
+
+def test_jwt_expired():
+    svc = JwtService("s", "HS256", timedelta(seconds=-1))
+    issued = svc.issue(Principal(user_id="u1", role=Role.GUEST))
+    with pytest.raises(AuthenticationError):
+        svc.decode(issued.access_token)
+
+
+def test_me_requires_token(client):
+    assert client.get("/api/v1/auth/me").status_code == 401
+    assert (
+        client.get("/api/v1/auth/me", headers={"Authorization": "Bearer nope"}).status_code == 401
+    )
+
+
+def test_line_login_redirects_to_line(client):
+    resp = client.get("/api/v1/auth/line/login")
+    assert resp.status_code == 302
+    assert resp.headers["Location"].startswith("https://access.line.me/oauth2/v2.1/authorize?")
+    assert "state=" in resp.headers["Location"] and "nonce=" in resp.headers["Location"]
+
+
+def test_line_callback_rejects_bad_state(client):
+    resp = client.get("/api/v1/auth/line/callback?code=abc&state=forged")
+    assert resp.status_code == 401
+
+
+def test_line_callback_failure_renders_error_page(client, container, monkeypatch, caplog):
+    """callback 是瀏覽器導過來的頁面：連不上 LINE 時要顯示錯誤頁（不是 JSON），並留下原因的 log。"""
+    import requests
+
+    from app.core.exceptions import ExternalServiceError
+
+    def unreachable(code):
+        try:
+            raise requests.ConnectTimeout("https://api.line.me/oauth2/v2.1/token?secret=abc")
+        except requests.RequestException as exc:
+            raise ExternalServiceError("無法連線 LINE token 端點") from exc
+
+    monkeypatch.setattr(container.line_login, "exchange_code", unreachable)
+    state = container.state_store.issue(600)
+    url = f"/api/v1/auth/line/callback?code=abc&state={state.state}"
+    with caplog.at_level("WARNING"):
+        resp = client.get(url, headers={"Accept": "text/html,application/xhtml+xml,*/*;q=0.8"})
+    assert resp.status_code == 502 and resp.content_type.startswith("text/html")
+    body = resp.get_data(as_text=True)
+    assert "外部服務異常" in body and "無法連線 LINE token 端點" in body
+    # log 只有例外型別，不含可能帶機密的網址
+    assert "cause=ConnectTimeout" in caplog.text and "secret=abc" not in caplog.text
+    # 明確要 JSON 的呼叫端仍拿到 JSON；其他 /api/ 路徑不受影響
+    state = container.state_store.issue(600)
+    resp = client.get(
+        f"/api/v1/auth/line/callback?code=abc&state={state.state}",
+        headers={"Accept": "application/json"},
+    )
+    assert resp.status_code == 502 and resp.get_json()["success"] is False
+    resp = client.get("/api/v1/auth/me", headers={"Accept": "text/html"})
+    assert resp.status_code == 401 and resp.is_json
+
+
+def test_line_callback_issues_jwt(client, container, monkeypatch):
+    state = container.state_store.issue(600)
+    monkeypatch.setattr(
+        container.line_login,
+        "exchange_code",
+        lambda code: type(
+            "T",
+            (),
+            {
+                "access_token": "a",
+                "id_token": "i",
+                "refresh_token": None,
+                "expires_in": 1,
+                "scope": "",
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        container.line_login._verifier,
+        "verify_id_token",
+        lambda id_token, nonce=None: LineIdentity(line_user_id="Uabc", display_name="小明"),
+    )
+    resp = client.get(f"/api/v1/auth/line/callback?code=abc&state={state.state}")
+    assert resp.status_code == 200
+    assert resp.content_type.startswith("text/html")
+    assert "小明" in resp.get_data(as_text=True)
+    match = re.search(
+        r'<script id="auth-tokens" type="application/json">(.*?)</script>',
+        resp.get_data(as_text=True),
+        re.DOTALL,
+    )
+    token = json.loads(match.group(1))["access_token"]
+    me = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.get_json()["data"]["line_user_id"] == "Uabc"
+    assert me.get_json()["data"]["role"] == "guest"
+
+
+def test_liff_auth_issues_jwt(client, container, monkeypatch):
+    monkeypatch.setattr(
+        container.liff_auth._verifier,
+        "verify_id_token",
+        lambda id_token, nonce=None: LineIdentity(line_user_id="Uliff", display_name="LIFF 使用者"),
+    )
+    resp = client.post("/api/v1/liff/auth", json={"id_token": "x"})
+    assert resp.status_code == 200
+    data = resp.get_json()["data"]
+    assert data["principal"]["line_user_id"] == "Uliff"
+    assert "access_token" in data["tokens"]
+    assert client.post("/api/v1/liff/auth", json={}).status_code == 422
+
+
+def test_config_defaults_to_production_and_rejects_sample_secrets(monkeypatch):
+    from config.settings import get_config
+
+    monkeypatch.delenv("FLASK_ENV", raising=False)
+    for key in ("SECRET_KEY", "JWT_SECRET_KEY"):
+        monkeypatch.setenv(key, "change-me")
+    for key in (
+        "LINE_CHANNEL_SECRET",
+        "LINE_CHANNEL_ACCESS_TOKEN",
+        "LINE_LOGIN_CHANNEL_ID",
+        "LINE_LOGIN_CHANNEL_SECRET",
+        "LIFF_ID",
+        "PATIENT_DATA_KEY",
+    ):
+        monkeypatch.setenv(key, "x")
+    with pytest.raises(RuntimeError):
+        get_config()

@@ -1,0 +1,155 @@
+{% extends "liff/base.html" %}
+
+{% block title %}我的就醫院所 - MediAgent+{% endblock %}
+
+{% block content %}
+<header class="mb-3">
+  <h1 class="h5 brand mb-1">我的就醫院所</h1>
+  <p class="small text-secondary mb-0">加入你就醫的醫院或診所，院所才看得到你填的基本資料並為你建檔。可以加好幾家，之後去新的院所再加即可。</p>
+</header>
+
+<div class="alert alert-warning small d-none" id="not-submitted" role="alert">
+  你還沒送出基本資料。院所要等基本資料送出後才能核對建檔，請先<a href="/liff/intake" class="alert-link">填寫基本資料</a>。
+</div>
+
+<div class="card shadow-sm border-0 mb-3">
+  <div class="card-body">
+    <h2 class="h6 fw-bold">加入院所</h2>
+    <div class="input-group">
+      <input class="form-control" type="search" id="search" autocomplete="off" placeholder="輸入院所名稱關鍵字，例如：台大、仁愛" aria-label="搜尋院所">
+      <button class="btn btn-outline-secondary" type="button" id="btn-clear">清除</button>
+    </div>
+    <div class="list-group mt-2" id="results" role="listbox" aria-label="院所搜尋結果"></div>
+    <div class="form-text" id="search-hint" aria-live="polite"></div>
+  </div>
+</div>
+
+<div class="card shadow-sm border-0 mb-3">
+  <div class="card-body">
+    <h2 class="h6 fw-bold">已加入的院所</h2>
+    <p class="small text-secondary mb-0 d-none" id="empty">還沒有加入任何院所。</p>
+    <ul class="list-group list-group-flush" id="mine"></ul>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var SEARCH_DELAY_MS = 300;
+
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) {
+      if (k === "text") node.textContent = attrs[k];
+      else node.setAttribute(k, attrs[k]);
+    });
+    (children || []).forEach(function (c) { if (c) node.appendChild(c); });
+    return node;
+  }
+
+  LiffApp.boot(async function (ctx) {
+    var search = document.getElementById("search"), results = document.getElementById("results");
+    var hint = document.getElementById("search-hint"), list = document.getElementById("mine");
+    var mine = [], timer = null, requestSeq = 0;
+
+    // 狀態：院所已建檔 > 已確認（自己加的，或已回答院方「是」）> 院方加入、等你確認
+    function statusBadge(h) {
+      if (h.filed) return el("span", { class: "badge text-bg-success", text: "已建檔" });
+      if (h.confirmed) return el("span", { class: "badge text-bg-info", text: "已確認，等院所核對" });
+      return el("span", { class: "badge text-bg-warning", text: "院所請你確認" });
+    }
+
+    function renderMine() {
+      list.innerHTML = "";
+      document.getElementById("empty").classList.toggle("d-none", mine.length > 0);
+      mine.forEach(function (h) {
+        var actions = el("div", { class: "d-flex gap-2 mt-2" });
+        if (!h.confirmed) {
+          var yes = el("button", { type: "button", class: "btn btn-sm btn-brand", text: "是，我在這裡就醫" });
+          yes.addEventListener("click", function () { act("POST", "/api/v1/liff/hospitals/mine/" + encodeURIComponent(h.hospital_id) + "/confirm", { accepted: true }, "已確認，院所核對後會通知你"); });
+          actions.appendChild(yes);
+        }
+        if (!h.filed) {
+          var remove = el("button", { type: "button", class: "btn btn-sm btn-outline-secondary", text: h.confirmed ? "移除" : "不是，移除" });
+          remove.addEventListener("click", function () {
+            if (!window.confirm("確定要移除「" + h.hospital_name + "」？這家院所將看不到你的資料。")) return;
+            act("DELETE", "/api/v1/liff/hospitals/mine/" + encodeURIComponent(h.hospital_id), null, "已移除");
+          });
+          actions.appendChild(remove);
+        }
+        list.appendChild(el("li", { class: "list-group-item px-0" }, [
+          el("div", { class: "d-flex justify-content-between align-items-start gap-2" }, [
+            el("div", { class: "fw-semibold", text: h.hospital_name || h.hospital_id }),
+            statusBadge(h)
+          ]),
+          h.filed ? el("div", { class: "small text-secondary", text: "已由院所核對建檔；若不再於此就醫，請聯絡院所。" }) : actions
+        ]));
+      });
+    }
+
+    async function load() {
+      var data = await ctx.api("/api/v1/liff/hospitals/mine");
+      mine = data.hospitals || [];
+      document.getElementById("not-submitted").classList.toggle("d-none", !!data.submitted);
+      renderMine();
+    }
+
+    async function act(method, path, body, doneText) {
+      try {
+        await ctx.api(path, { method: method, body: body });
+        LiffApp.toast(doneText);
+        await load();
+      } catch (err) { LiffApp.toast(err.message || "操作失敗", "danger"); }
+    }
+
+    function clearResults() { requestSeq += 1; clearTimeout(timer); results.innerHTML = ""; hint.textContent = ""; }
+
+    async function doSearch(keyword) {
+      var seq = ++requestSeq;
+      try {
+        var found = await ctx.api("/api/v1/liff/hospitals?q=" + encodeURIComponent(keyword));
+        if (seq !== requestSeq) return;  // 使用者又打了字，舊的回應不要蓋掉新的
+        results.innerHTML = "";
+        found.forEach(function (h) {
+          var already = mine.some(function (m) { return m.hospital_id === h.id; });
+          var item = el("button", { type: "button", class: "list-group-item list-group-item-action d-flex justify-content-between align-items-center gap-2", role: "option" }, [
+            el("div", {}, [
+              el("div", { class: "fw-semibold", text: h.name }),
+              h.address ? el("div", { class: "small text-secondary", text: h.address }) : null
+            ]),
+            el("span", { class: "badge " + (already ? "text-bg-secondary" : "text-bg-light border"), text: already ? "已加入" : "加入" })
+          ]);
+          if (already) item.disabled = true;
+          item.addEventListener("click", async function () {
+            item.disabled = true;
+            try {
+              await ctx.api("/api/v1/liff/hospitals/mine", { method: "POST", body: { hospital_id: h.id } });
+              LiffApp.toast("已加入「" + h.name + "」");
+              search.value = ""; clearResults();
+              await load();
+            } catch (err) { item.disabled = false; LiffApp.toast(err.message || "加入失敗", "danger"); }
+          });
+          results.appendChild(item);
+        });
+        hint.textContent = found.length ? "點選要加入的院所" : "找不到符合的院所，請換個關鍵字";
+      } catch (err) {
+        if (seq !== requestSeq) return;
+        results.innerHTML = "";
+        hint.textContent = "院所搜尋暫時無法使用，請稍後再試";
+      }
+    }
+
+    search.addEventListener("input", function () {
+      clearTimeout(timer);
+      var keyword = search.value.trim();
+      if (keyword.length < 2) { clearResults(); hint.textContent = keyword ? "請至少輸入 2 個字" : ""; return; }
+      timer = setTimeout(function () { doSearch(keyword); }, SEARCH_DELAY_MS);
+    });
+    document.getElementById("btn-clear").addEventListener("click", function () { search.value = ""; clearResults(); });
+
+    await load();
+  });
+})();
+</script>
+{% endblock %}

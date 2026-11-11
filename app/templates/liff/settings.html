@@ -1,0 +1,101 @@
+{% extends "liff/base.html" %}
+
+{% block title %}設定 - MediAgent+{% endblock %}
+
+{% block content %}
+<header class="mb-3">
+  <h1 class="h5 brand mb-0">設定</h1>
+</header>
+
+<div class="card shadow-sm border-0 mb-3">
+  <div class="card-body">
+    <div class="d-flex align-items-center justify-content-between">
+      <div>
+        <div class="text-secondary small">綁定狀態</div>
+        <div class="fw-bold" id="status-text">—</div>
+      </div>
+      <span class="badge" id="status-badge"></span>
+    </div>
+    <p class="small text-secondary mt-2 mb-0" id="status-hint"></p>
+  </div>
+</div>
+
+<div class="card shadow-sm border-0 mb-3 d-none" id="summary-card">
+  <div class="card-body">
+    <h2 class="h6 fw-bold">已填寫資料摘要</h2>
+    <dl class="row small mb-0" id="summary"></dl>
+  </div>
+</div>
+
+<div class="card shadow-sm border-0 mb-3">
+  <div class="card-body">
+    <h2 class="h6 fw-bold">我的就醫院所</h2>
+    <p class="small text-secondary mb-2" id="hospitals-hint">加入你就醫的醫院或診所，院所才看得到你的資料並為你建檔。</p>
+    <ul class="list-unstyled small mb-0" id="hospitals"></ul>
+  </div>
+</div>
+
+<div class="d-grid gap-2">
+  <a class="btn btn-brand" href="/liff/intake" id="btn-intake">填寫基本資料</a>
+  <a class="btn btn-outline-secondary" href="/liff/hospitals">管理我的就醫院所</a>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var STATUS = {
+    unbound: { label: "未填寫", badge: "text-bg-secondary", hint: "填寫基本資料並經院所核對後，即可使用個人化衛教與服藥提醒。" },
+    pending: { label: "等待院所核對", badge: "text-bg-warning", hint: "資料已送出、目前唯讀，院所核對身份後會透過 LINE 通知您。" },
+    verified: { label: "已驗證", badge: "text-bg-success", hint: "您可以使用所有個人化功能。資料為唯讀，需要修改請於就診時告知院所人員。" },
+    locked: { label: "已鎖定", badge: "text-bg-danger", hint: "帳號因資料異常暫時鎖定，請於就診時向院所人員說明，由院方核對後解除。" }
+  };
+  var SUMMARY_KEYS = [["full_name", "姓名"], ["national_id", "身分證"], ["phone", "手機"]];
+  var HOSPITAL_STATUS = { filed: "已建檔", confirmed: "已確認，等院所核對", pending: "院所請你確認" };
+
+  LiffApp.boot(async function (ctx) {
+    var status = STATUS[ctx.principal.binding_status] || STATUS.unbound;
+    document.getElementById("status-text").textContent = status.label;
+    document.getElementById("status-badge").className = "badge " + status.badge;
+    document.getElementById("status-badge").textContent = ctx.principal.binding_status;
+    document.getElementById("status-hint").textContent = status.hint;
+    var btn = document.getElementById("btn-intake");
+    if (ctx.principal.binding_status === "locked") btn.classList.add("disabled");
+    if (ctx.principal.binding_status === "pending" || ctx.principal.binding_status === "verified") {
+      btn.textContent = "檢視已送出的基本資料";
+      btn.className = "btn btn-outline-secondary";
+    }
+
+    var state = await ctx.api("/api/v1/liff/intake");
+    var data = Object.assign({}, state.data || {});
+    // 就醫院所是獨立的表單（每家一筆），這裡只列出來；加入 / 移除到「管理我的就醫院所」
+    var hospitals = (await ctx.api("/api/v1/liff/hospitals/mine")).hospitals || [];
+    var ul = document.getElementById("hospitals");
+    hospitals.forEach(function (h) {
+      var li = document.createElement("li");
+      li.className = "d-flex justify-content-between align-items-center py-1";
+      var name = document.createElement("span"); name.textContent = h.hospital_name || h.hospital_id;
+      var badge = document.createElement("span");
+      var key = h.filed ? "filed" : h.confirmed ? "confirmed" : "pending";
+      badge.className = "badge " + (key === "filed" ? "text-bg-success" : key === "confirmed" ? "text-bg-info" : "text-bg-warning");
+      badge.textContent = HOSPITAL_STATUS[key];
+      li.appendChild(name); li.appendChild(badge); ul.appendChild(li);
+    });
+    if (hospitals.length) document.getElementById("hospitals-hint").textContent = "院所核對建檔後才能使用個人化功能。";
+    if ((state.completed_steps || []).length) {
+      var dl = document.getElementById("summary");
+      SUMMARY_KEYS.forEach(function (pair) {
+        if (!data[pair[0]]) return;
+        var dt = document.createElement("dt"); dt.className = "col-4 text-secondary"; dt.textContent = pair[1];
+        var dd = document.createElement("dd"); dd.className = "col-8 mb-1"; dd.textContent = data[pair[0]];
+        dl.appendChild(dt); dl.appendChild(dd);
+      });
+      var dt2 = document.createElement("dt"); dt2.className = "col-4 text-secondary"; dt2.textContent = "完成步驟";
+      var dd2 = document.createElement("dd"); dd2.className = "col-8 mb-1"; dd2.textContent = state.completed_steps.length + " / " + state.total_steps;
+      dl.appendChild(dt2); dl.appendChild(dd2);
+      document.getElementById("summary-card").classList.remove("d-none");
+    }
+  });
+})();
+</script>
+{% endblock %}
